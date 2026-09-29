@@ -1,0 +1,17 @@
+[package]
+name = "halcyon-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror = "2.0.21"
+glommio = { package = "glommio-ng", version = "0.12" }
+
+mc_protocol = { version = "0.1.0", path = "../mc-protocol" }
+mimalloc = "0.1.52"
+futures-lite = "2.6.1"
+
+[[bin]]
+name = "halcyon"
+path = "src/main.rs"
