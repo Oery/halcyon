@@ -2,7 +2,7 @@ use crate::error::DecodeError;
 
 // TODO: add missing states
 
-#[repr(i32)]
+#[repr(u8)]
 #[derive(Clone, Copy, Debug)]
 pub enum State {
     Handshake,
