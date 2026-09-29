@@ -1,12 +1,13 @@
+use futures_lite::AsyncWrite;
 use serde::{Deserialize, Serialize};
 
+use crate::State;
 use crate::decode::Result as DecodeResult;
 use crate::encode::Result as EncodeResult;
 use crate::packets::PacketWriter;
 use crate::packets::Payload;
 use crate::types::VarInt;
 
-use macros::Payload;
 use macros::packet;
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -52,61 +53,14 @@ pub struct Status<'c> {
     pub enforces_secure_chat: bool,
 }
 
+// TODO: how to handle borrowing here
 #[packet(Status, 0x00, Client)]
 pub struct StatusPacket<'p> {
     #[format = "json"]
     pub json: Status<'p>,
 }
 
-use futures_lite::AsyncWrite;
-
-use crate::State;
-
-impl<'p> Payload<'p> for Status<'p> {
-    const ID: VarInt = VarInt(0x00);
-    const STATE: State = State::HANDSHAKE;
-
-    fn payload_len(&self) -> usize {
-        let json = serde_json::to_string(&self).unwrap();
-        <&str>::body_len(&json.as_str())
-    }
-
-    fn decode_payload(buf: &mut &'p [u8]) -> crate::decode::Result<Self> {
-        let json = <&str>::read(buf)?;
-        let status: Status = serde_json::from_str(json)?;
-
-        Ok(status)
-    }
-
-    async fn write_payload<W: AsyncWrite + Unpin>(&self, w: &mut W) -> crate::encode::Result {
-        let json = serde_json::to_string(&self)?;
-        json.write(w).await?;
-
-        Ok(())
-    }
-}
-
-#[packet(Play, 0x00, Client)]
+#[packet(Play, 0x01, Client)]
 pub struct Ping {
     pub time: i64,
 }
-
-// impl<'p> Payload<'p> for Ping {
-//     const ID: VarInt = VarInt(0x01);
-//     const STATE: State = State::STATUS;
-//
-//     fn payload_len(&self) -> usize {
-//         self.time.body_len()
-//     }
-//
-//     fn decode_payload(buf: &mut &'p [u8]) -> crate::decode::Result<Self> {
-//         let time = i64::read(buf)?;
-//         Ok(Ping { time })
-//     }
-//
-//     async fn write_payload<W: AsyncWrite + Unpin>(&self, w: &mut W) -> crate::encode::Result {
-//         self.time.write(w).await?;
-//
-//         Ok(())
-//     }
-// }

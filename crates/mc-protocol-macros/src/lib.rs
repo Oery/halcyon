@@ -18,7 +18,7 @@ fn get_field_decode_fn(field: &Field) -> proc_macro2::TokenStream {
     let ident = &field.ident;
 
     let Type::Path(type_path) = &field.ty else {
-        panic!();
+        return quote! { let #ident: &str = <&str>::read(buf)?; };
     };
 
     let path = &type_path.path;
@@ -27,25 +27,25 @@ fn get_field_decode_fn(field: &Field) -> proc_macro2::TokenStream {
     let segment = path.segments.last().unwrap();
     let type_ident = &segment.ident;
 
-    match type_ident.to_string().as_ref() {
-        "&str" => return quote! { let #ident: &str = <&str>::read(buf)?; },
-        _ => {}
-    };
-
     match Format::from(&field.attrs) {
         Format::Standard => quote! { let #ident = #type_ident::read(buf)?; },
-        Format::VarInt => quote! { let #ident = VarInt::read()?.0.try_into()?; },
         Format::Json => quote! {
             let json: &str = <&str>::read(buf)?;
             let #ident: #type_ident = serde_json::from_str(json)?;
         },
+        Format::VarInt => match type_ident.to_string().as_str() {
+            "usize" => quote! { let #ident = usize::try_from(VarInt::read(buf)?.0)?; },
+            "i32" => quote! { let #ident = VarInt::read(buf)?.0; },
+            _ => quote! { let #ident = VarInt::read(buf)?.0.try_into()?; },
+        },
     }
 }
 
-// TODO: add support for custom formats
 fn impl_decode_payload(data: &DataStruct) -> proc_macro2::TokenStream {
-    let Fields::Named(fields) = &data.fields else {
-        panic!("Fields should be named");
+    let fields = match &data.fields {
+        Fields::Named(fields) => fields,
+        Fields::Unit => return quote! { Ok(Self) },
+        _ => panic!("decode_payload: Fields should be named"),
     };
 
     let fields_names = fields.named.iter().map(|f| f.ident.as_ref().unwrap());
@@ -57,10 +57,36 @@ fn impl_decode_payload(data: &DataStruct) -> proc_macro2::TokenStream {
     }
 }
 
-// TODO: Support encoding
+fn get_field_write_fn(field: &Field) -> proc_macro2::TokenStream {
+    let ident = &field.ident;
+
+    match Format::from(&field.attrs) {
+        Format::Standard => quote! { self.#ident.write(w).await?; },
+        Format::VarInt => quote! { VarInt(self.#ident as i32).write(w).await?; },
+        Format::Json => quote! {
+            let json = serde_json::to_string(&self.#ident).unwrap();
+            json.write(w).await?;
+        },
+    }
+}
+
+fn impl_write(data: &DataStruct) -> proc_macro2::TokenStream {
+    let fields = match &data.fields {
+        Fields::Named(fields) => fields,
+        Fields::Unit => return quote! {},
+        _ => panic!("write: Fields should be named"),
+    };
+
+    let fields_write = fields.named.iter().map(get_field_write_fn);
+
+    quote! { #( #fields_write )* }
+}
+
 fn impl_payload_len(data: &DataStruct) -> proc_macro2::TokenStream {
-    let Fields::Named(fields) = &data.fields else {
-        panic!("Fields should be named");
+    let fields = match &data.fields {
+        Fields::Named(fields) => fields,
+        Fields::Unit => return quote! {},
+        _ => panic!("payload_len: Fields should be named"),
     };
 
     let field_lengths = fields.named.iter().map(|field| {
@@ -68,7 +94,7 @@ fn impl_payload_len(data: &DataStruct) -> proc_macro2::TokenStream {
 
         let ident = match Format::from(&field.attrs) {
             Format::Standard => quote! { self.#ident },
-            Format::VarInt => quote! { VarInt(self.#ident) },
+            Format::VarInt => quote! { VarInt(self.#ident as i32) },
             Format::Json => quote! {
                 serde_json::to_string(&self.#ident).unwrap().as_str()
             },
@@ -80,6 +106,7 @@ fn impl_payload_len(data: &DataStruct) -> proc_macro2::TokenStream {
     quote! { #( #field_lengths )* }
 }
 
+// FIXME: state field
 #[proc_macro_attribute]
 pub fn packet(attr: TokenStream, input: TokenStream) -> TokenStream {
     let PacketAttributes { id, origin: _ } = parse_macro_input!(attr as PacketAttributes);
@@ -94,6 +121,7 @@ pub fn packet(attr: TokenStream, input: TokenStream) -> TokenStream {
 
     let payload_len = impl_payload_len(data);
     let decode_payload = impl_decode_payload(data);
+    let write = impl_write(data);
 
     TokenStream::from(quote! {
         #[derive(Payload, Debug)]
@@ -117,74 +145,16 @@ pub fn packet(attr: TokenStream, input: TokenStream) -> TokenStream {
             where
                 W: AsyncWrite + Unpin,
             {
-                todo!();
-                // VarInt(self.version).write(w).await?;
-                // self.addr.write(w).await?;
-                // self.port.write(w).await?;
-                // VarInt(self.next_state as i32).write(w).await?;
+                #write
 
+                Ok(())
             }
         }
     })
 }
 
+/// Dummy macro for the attribute helper to resolve
 #[proc_macro_derive(Payload, attributes(format))]
 pub fn derive_payload(_input: TokenStream) -> TokenStream {
     TokenStream::new()
 }
-
-// #[proc_macro_derive(Payload, attributes(format))]
-// pub fn serializable_data(input: TokenStream) -> TokenStream {
-//     let PacketAttributes { id, origin: _ } = parse_macro_input!(attr as PacketAttributes);
-//     let item = parse_macro_input!(input as DeriveInput);
-//     let name = &item.ident;
-//
-//     let (_, ty_generics, _) = &item.generics.split_for_impl();
-//
-//     let Data::Struct(data) = &item.data else {
-//         unreachable!();
-//     };
-//
-//     let payload_len = impl_payload_len(data);
-//     let decode_payload = impl_decode_payload(data);
-//
-//     TokenStream::from(quote! {
-//         #[derive(Debug, Payload)]
-//         #item
-//
-//         impl<'p> Payload<'p> for #name #ty_generics {
-//             const ID: VarInt = VarInt(#id);
-//             const STATE: State = State::HANDSHAKE;
-//
-//             fn payload_len(&self) -> usize {
-//                 let mut length = 0;
-//                 #payload_len
-//                 length
-//             }
-//
-//             fn decode_payload(buf: &mut &'p [u8]) -> DecodeResult<Self> {
-//                 #decode_payload
-//             }
-//
-//             async fn write_payload<W>(&self, w: &mut W) -> EncodeResult
-//             where
-//                 W: AsyncWrite + Unpin,
-//             {
-//                 todo!();
-//                 // VarInt(self.version).write(w).await?;
-//                 // self.addr.write(w).await?;
-//                 // self.port.write(w).await?;
-//                 // VarInt(self.next_state as i32).write(w).await?;
-//
-//                 Ok(())
-//             }
-//         }
-//     })
-//     // let item = parse_macro_input!(input as DeriveInput);
-//     //
-//     // match &item.data {
-//     //     Data::Struct(data) => get_serializable_struct_impl(&item, data),
-//     //     Data::Enum(data) => get_serializable_enum_impl(&item, data),
-//     //     Data::Union(_) => panic!("Unions are not supported"),
-//     // }
-// }

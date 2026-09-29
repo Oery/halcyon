@@ -4,8 +4,6 @@ use crate::decode::take;
 use crate::error::DecodeError;
 use crate::packets::PacketWriter;
 
-// TODO: is a short encoded as little endian or big endian?
-
 impl PacketWriter<'_> for i16 {
     fn read(input: &mut &[u8]) -> Result<Self, DecodeError> {
         let bytes: [u8; 2] = take(input, 2)?.try_into().expect("buffer should contains 2 bytes");

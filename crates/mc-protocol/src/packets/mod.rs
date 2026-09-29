@@ -12,6 +12,8 @@ pub mod server;
 use crate::decode::Result as DecodeResult;
 use crate::encode::Result as EncodeResult;
 
+use macros::{Payload, packet};
+
 // TODO: add compression
 pub struct Context {
     pub state: State,
@@ -74,22 +76,5 @@ pub trait Payload<'p>: Sized {
     }
 }
 
-#[derive(Debug)]
+#[packet(Status, 0x00, Client)]
 pub struct StatusRequest;
-
-impl Payload<'_> for StatusRequest {
-    const ID: VarInt = VarInt(0x00);
-    const STATE: State = State::STATUS;
-
-    fn payload_len(&self) -> usize {
-        0
-    }
-
-    fn decode_payload(_: &mut &[u8]) -> DecodeResult<Self> {
-        Ok(StatusRequest)
-    }
-
-    async fn write_payload<W: AsyncWrite + Unpin>(&self, _: &mut W) -> EncodeResult {
-        Ok(())
-    }
-}
