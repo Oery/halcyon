@@ -8,7 +8,6 @@ use mc_protocol::state::State;
 use mc_protocol::{PacketWriter, VarInt};
 
 use mc_protocol::packets::Context;
-use mc_protocol::packets::Payload;
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -18,7 +17,7 @@ const SIZE: usize = 1_024;
 
 mod states;
 
-use crate::states::status::handle_status;
+use crate::states::handle_packet;
 
 pub struct Client {
     stream: TcpStream,
@@ -29,24 +28,6 @@ impl Client {
     fn new(stream: TcpStream) -> Client {
         Client { stream, ctx: Context { state: State::Handshake } }
     }
-}
-
-use mc_protocol::packets::client::*;
-
-// TODO: send back a status response
-// TODO: reject invalid next states
-async fn handle_packet(pkt: Packets<'_>, client: &mut Client) {
-    dbg!(&pkt);
-
-    match pkt {
-        Packets::ServerListPing(slp) => {
-            client.ctx.state = slp.next_state;
-        }
-        Packets::PingRequest(Ping { time }) => {
-            Ping { time }.write_packet(&mut client.stream).await.unwrap();
-        }
-        Packets::StatusRequest(_) => handle_status(client).await,
-    };
 }
 
 fn try_read_varint(buf: &mut &[u8]) -> Result<Option<usize>, DecodeError> {

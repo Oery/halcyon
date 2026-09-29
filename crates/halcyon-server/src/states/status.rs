@@ -1,5 +1,5 @@
-use mc_protocol::packets::Payload;
 use mc_protocol::packets::client::*;
+use mc_protocol::packets::{Packets, Payload};
 
 use crate::Client;
 
@@ -15,6 +15,16 @@ fn status() -> StatusPacket<'static> {
     }
 }
 
-pub async fn handle_status(client: &mut Client) {
-    status().write_packet(&mut client.stream).await.unwrap();
+pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) {
+    let w = &mut client.stream;
+
+    match pkt {
+        Packets::PingRequest(Ping { time }) => {
+            Ping { time }.write_packet(w).await.unwrap();
+        }
+        Packets::StatusRequest(_) => {
+            status().write_packet(w).await.unwrap();
+        }
+        _ => eprintln!("unhandled packet: {pkt:?}"),
+    };
 }

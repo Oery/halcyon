@@ -60,7 +60,7 @@ pub struct StatusPacket<'p> {
     pub json: Status<'p>,
 }
 
-#[packet(Play, 0x01, Client)]
+#[packet(Status, 0x01, Client)]
 pub struct Ping {
     pub time: i64,
 }
