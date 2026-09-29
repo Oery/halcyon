@@ -12,14 +12,19 @@ pub mod server;
 use crate::decode::Result as DecodeResult;
 use crate::encode::Result as EncodeResult;
 
-use macros::{Payload, packet};
+use macros::{InnerPacket, packet};
 
 // TODO: add compression
 pub struct Context {
     pub state: State,
 }
 
-#[derive(Debug)]
+pub trait InnerPacket {
+    fn id(&self) -> i32;
+    fn state(&self) -> State;
+}
+
+#[derive(InnerPacket, Debug)]
 pub enum Packets<'p> {
     ServerListPing(ServerListPing<'p>),
     PingRequest(Ping),
@@ -31,11 +36,11 @@ impl<'p> Packets<'p> {
         let id = VarInt::read(buf)?.0;
 
         match (id, ctx.state) {
-            (0x00, State::HANDSHAKE) => {
+            (0x00, State::Handshake) => {
                 Ok(Packets::ServerListPing(ServerListPing::decode_payload(buf)?))
             }
-            (0x00, State::STATUS) => Ok(Packets::StatusRequest(StatusRequest)),
-            (0x01, State::STATUS) => Ok(Packets::PingRequest(Ping::decode_payload(buf)?)),
+            (0x00, State::Status) => Ok(Packets::StatusRequest(StatusRequest)),
+            (0x01, State::Status) => Ok(Packets::PingRequest(Ping::decode_payload(buf)?)),
             _ => Err(DecodeError::UnknownPacket),
         }
     }
@@ -75,6 +80,8 @@ pub trait Payload<'p>: Sized {
         Ok(())
     }
 }
+
+use macros::Payload;
 
 #[packet(Status, 0x00, Client)]
 pub struct StatusRequest;

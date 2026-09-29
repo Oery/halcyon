@@ -16,6 +16,10 @@ static ADDR: &str = "127.0.0.1:25565";
 
 const SIZE: usize = 1_024;
 
+mod states;
+
+use crate::states::status::handle_status;
+
 pub struct Client {
     stream: TcpStream,
     ctx: Context,
@@ -23,23 +27,11 @@ pub struct Client {
 
 impl Client {
     fn new(stream: TcpStream) -> Client {
-        Client { stream, ctx: Context { state: State::HANDSHAKE } }
+        Client { stream, ctx: Context { state: State::Handshake } }
     }
 }
 
 use mc_protocol::packets::client::*;
-
-fn status() -> StatusPacket<'static> {
-    StatusPacket {
-        json: Status {
-            version: Version { name: "halcyon-server", protocol: 777 },
-            description: Description { text: "hello world!" },
-            players: Players { max: 20_000, online: 10, sample: vec![] },
-            enforces_secure_chat: false,
-            favicon: None,
-        },
-    }
-}
 
 // TODO: send back a status response
 // TODO: reject invalid next states
@@ -53,9 +45,7 @@ async fn handle_packet(pkt: Packets<'_>, client: &mut Client) {
         Packets::PingRequest(Ping { time }) => {
             Ping { time }.write_packet(&mut client.stream).await.unwrap();
         }
-        Packets::StatusRequest(_) => {
-            status().write_packet(&mut client.stream).await.unwrap();
-        }
+        Packets::StatusRequest(_) => handle_status(client).await,
     };
 }
 

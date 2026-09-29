@@ -5,10 +5,11 @@ use crate::error::DecodeError;
 #[repr(i32)]
 #[derive(Clone, Copy, Debug)]
 pub enum State {
-    HANDSHAKE,
-    STATUS,
-    LOGIN,
-    TRANSFER,
+    Handshake,
+    Status,
+    Login,
+    Config,
+    Play,
 }
 
 impl TryFrom<i32> for State {
@@ -16,10 +17,11 @@ impl TryFrom<i32> for State {
 
     fn try_from(val: i32) -> Result<State, Self::Error> {
         match val {
-            0 => Ok(State::HANDSHAKE),
-            1 => Ok(State::STATUS),
-            2 => Ok(State::LOGIN),
-            3 => Ok(State::TRANSFER),
+            0 => Ok(State::Handshake),
+            1 => Ok(State::Status),
+            2 => Ok(State::Login),
+            3 => Ok(State::Config),
+            4 => Ok(State::Play),
             _ => Err(DecodeError::EnumOutOfRange),
         }
     }

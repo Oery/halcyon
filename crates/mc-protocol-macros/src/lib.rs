@@ -14,6 +14,14 @@ enum Origin {
     Server,
 }
 
+enum State {
+    Handshake,
+    Status,
+    Login,
+    Config,
+    Play,
+}
+
 fn get_field_decode_fn(field: &Field) -> proc_macro2::TokenStream {
     let ident = &field.ident;
 
@@ -109,9 +117,17 @@ fn impl_payload_len(data: &DataStruct) -> proc_macro2::TokenStream {
 // FIXME: state field
 #[proc_macro_attribute]
 pub fn packet(attr: TokenStream, input: TokenStream) -> TokenStream {
-    let PacketAttributes { id, origin: _ } = parse_macro_input!(attr as PacketAttributes);
+    let PacketAttributes { id, origin: _, state } = parse_macro_input!(attr as PacketAttributes);
     let item = parse_macro_input!(input as DeriveInput);
     let name = &item.ident;
+
+    let state = match state {
+        State::Handshake => quote!(Handshake),
+        State::Status => quote!(Status),
+        State::Login => quote!(Login),
+        State::Config => quote!(Config),
+        State::Play => quote!(Play),
+    };
 
     let (_, ty_generics, _) = &item.generics.split_for_impl();
 
@@ -129,7 +145,7 @@ pub fn packet(attr: TokenStream, input: TokenStream) -> TokenStream {
 
         impl<'p> Payload<'p> for #name #ty_generics {
             const ID: VarInt = VarInt(#id);
-            const STATE: State = State::HANDSHAKE;
+            const STATE: State = State::#state;
 
             fn payload_len(&self) -> usize {
                 let mut length = 0;
@@ -157,4 +173,48 @@ pub fn packet(attr: TokenStream, input: TokenStream) -> TokenStream {
 #[proc_macro_derive(Payload, attributes(format))]
 pub fn derive_payload(_input: TokenStream) -> TokenStream {
     TokenStream::new()
+}
+
+#[proc_macro_derive(InnerPacket)]
+pub fn derive_inner_packet(input: TokenStream) -> TokenStream {
+    let item = syn::parse_macro_input!(input as syn::ItemEnum);
+    let ident = &item.ident;
+
+    let variants: Vec<(&proc_macro2::Ident, &syn::Type)> = item
+        .variants
+        .iter()
+        .map(|v| {
+            let Fields::Unnamed(fields) = &v.fields else {
+                panic!("field should be unnamed");
+            };
+            let field = fields.unnamed.first().unwrap();
+            (&v.ident, &field.ty)
+        })
+        .collect();
+
+    let id_cases: Vec<proc_macro2::TokenStream> = variants
+        .iter()
+        .map(|(v, t)| quote! { Packets::#v(_) => <#t as Payload<'p>>::ID.0 })
+        .collect();
+
+    let state_cases: Vec<proc_macro2::TokenStream> = variants
+        .iter()
+        .map(|(v, t)| quote! { Packets::#v(_) => <#t as Payload<'p>>::STATE })
+        .collect();
+
+    TokenStream::from(quote! {
+        impl<'p> InnerPacket for #ident<'p> {
+            fn id(&self) -> i32 {
+                match self {
+                    #( #id_cases ),*
+                }
+            }
+
+            fn state(&self) -> State {
+                match self {
+                    #( #state_cases ),*
+                }
+            }
+        }
+    })
 }
