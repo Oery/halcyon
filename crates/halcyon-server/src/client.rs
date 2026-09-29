@@ -18,10 +18,7 @@ impl Client {
         Client { stream, ctx: Context { state: State::Handshake } }
     }
 
-    // FIXME: we should not crash on unknown packet for now
-    // NOTE: we probably can skip buffer initialization
-    // NOTE: The move should only occur after every packet is processed
-    // right now we only read one packet
+    // FIXME: The move should only occur after every packet is processed
     pub async fn run(&mut self) {
         let mut buf = [0u8; SIZE];
         let mut len = 0;

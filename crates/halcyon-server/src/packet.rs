@@ -36,7 +36,15 @@ pub fn read_packet<'p>(
     }
 
     let mut frame = take(&mut remaining, frame_len)?;
-    let pkt = Packets::read(&mut frame, &c.ctx)?;
+
+    let pkt = match Packets::read(&mut frame, &c.ctx) {
+        Ok(pkt) => pkt,
+        Err(e @ DecodeError::UnknownPacket(_)) => {
+            println!("{e}");
+            return Ok(None);
+        }
+        Err(e) => return Err(e),
+    };
 
     Ok(Some((pkt, buf.len() - remaining.len())))
 }

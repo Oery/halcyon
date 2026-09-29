@@ -23,8 +23,9 @@ pub enum DecodeError {
     #[error("string is not valid utf8")]
     InvalidString(#[from] str::Utf8Error),
 
-    #[error("packet id is unknown")]
-    UnknownPacket,
+    // TODO: also add the state / origin
+    #[error("unknown packet for id: {0:#x}")]
+    UnknownPacket(i32),
 
     #[error("enum variant is out of range")]
     EnumOutOfRange,

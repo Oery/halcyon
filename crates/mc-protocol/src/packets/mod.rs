@@ -41,7 +41,7 @@ impl<'p> Packets<'p> {
             }
             (0x00, State::Status) => Ok(Packets::StatusRequest(StatusRequest)),
             (0x01, State::Status) => Ok(Packets::PingRequest(Ping::decode_payload(buf)?)),
-            _ => Err(DecodeError::UnknownPacket),
+            _ => Err(DecodeError::UnknownPacket(id)),
         }
     }
 }
