@@ -4,11 +4,11 @@ use crate::decode::take;
 use crate::error::DecodeError;
 use crate::packets::PacketWriter;
 
-impl PacketWriter<'_> for i16 {
+impl PacketWriter<'_> for u16 {
     fn read(input: &mut &[u8]) -> Result<Self, DecodeError> {
         let bytes: [u8; 2] = take(input, 2)?.try_into().expect("buffer should contains 2 bytes");
 
-        return Ok(i16::from_be_bytes(bytes));
+        return Ok(u16::from_be_bytes(bytes));
     }
 
     async fn write<W: AsyncWriteExt + Unpin>(&self, w: &mut W) -> crate::encode::Result {

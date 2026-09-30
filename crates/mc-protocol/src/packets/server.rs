@@ -11,13 +11,12 @@ use crate::encode::Result as EncodeResult;
 use macros::{Payload, packet};
 use uuid::Uuid;
 
-// FIXME: port should be u16
 #[packet(Handshake, 0x00, Server)]
 pub struct ServerListPing<'p> {
     #[format = "varint"]
     pub version: i32,
     pub addr: &'p str,
-    pub port: i16,
+    pub port: u16,
     #[format = "varint"]
     pub next_state: State,
 }
