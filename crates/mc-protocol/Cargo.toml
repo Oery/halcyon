@@ -11,6 +11,7 @@ thiserror = "2.0.21"
 futures-lite = "2.6.1"
 
 macros = { version = "0.1.0", path = "../mc-protocol-macros" }
+uuid = "1.26.1"
 
 [lib]
 path = "src/lib.rs"

@@ -9,6 +9,7 @@ use crate::decode::Result as DecodeResult;
 use crate::encode::Result as EncodeResult;
 
 use macros::{Payload, packet};
+use uuid::Uuid;
 
 #[packet(Handshake, 0x00, Server)]
 pub struct ServerListPing<'p> {
@@ -27,3 +28,25 @@ pub struct StatusRequest;
 pub struct PingRequest {
     pub time: i64,
 }
+
+#[packet(Login, 0x00, Server)]
+pub struct LoginStart<'p> {
+    pub name: &'p str,
+    pub uuid: Uuid,
+}
+
+#[packet(Login, 0x01, Server)]
+pub struct EncryptionResponse<'p> {
+    pub shared_secret: &'p [u8],
+    pub verify_token: &'p [u8],
+}
+
+#[packet(Login, 0x02, Server)]
+pub struct LoginPluginResponse<'p> {
+    #[format = "varint"]
+    pub message_id: i32,
+    pub data: &'p [u8],
+}
+
+#[packet(Login, 0x03, Server)]
+pub struct LoginAcknowledge;

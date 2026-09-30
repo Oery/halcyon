@@ -25,11 +25,14 @@ enum State {
 fn get_field_decode_fn(field: &Field) -> proc_macro2::TokenStream {
     let ident = &field.ident;
 
-    let Type::Path(type_path) = &field.ty else {
-        return quote! { let #ident: &str = <&str>::read(buf)?; };
+    let path = match &field.ty {
+        Type::Path(type_path) => &type_path.path,
+        Type::Reference(r) => {
+            let t = &r.elem;
+            return quote! { let #ident: &#t = <&#t>::read(buf)?;};
+        }
+        _ => return quote! {},
     };
-
-    let path = &type_path.path;
 
     // last segment: Vec<T>, Option<T>, String, etc
     let segment = path.segments.last().unwrap();
