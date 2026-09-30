@@ -11,7 +11,7 @@ impl<'p> PacketWriter<'p> for Uuid {
         Ok(Uuid::from_bytes(bytes))
     }
 
-    async fn write<W: AsyncWriteExt + Unpin>(self, w: &mut W) -> crate::encode::Result {
+    async fn write<W: AsyncWriteExt + Unpin>(&self, w: &mut W) -> crate::encode::Result {
         w.write_all(self.as_bytes()).await?;
         Ok(())
     }

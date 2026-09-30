@@ -11,7 +11,7 @@ impl PacketWriter<'_> for i16 {
         return Ok(i16::from_be_bytes(bytes));
     }
 
-    async fn write<W: AsyncWriteExt + Unpin>(self, w: &mut W) -> crate::encode::Result {
+    async fn write<W: AsyncWriteExt + Unpin>(&self, w: &mut W) -> crate::encode::Result {
         let bytes: [u8; 2] = self.to_be_bytes();
         w.write_all(&bytes).await?;
 
@@ -30,12 +30,28 @@ impl PacketWriter<'_> for i64 {
         return Ok(i64::from_be_bytes(bytes));
     }
 
-    async fn write<W: AsyncWriteExt + Unpin>(self, w: &mut W) -> crate::encode::Result {
+    async fn write<W: AsyncWriteExt + Unpin>(&self, w: &mut W) -> crate::encode::Result {
         w.write_all(&self.to_be_bytes()).await?;
         Ok(())
     }
 
     fn body_len(&self) -> usize {
         8
+    }
+}
+
+impl PacketWriter<'_> for bool {
+    fn read(input: &mut &[u8]) -> Result<Self, DecodeError> {
+        let byte = take(input, 1)?;
+        return Ok(byte[0].try_into()?);
+    }
+
+    async fn write<W: AsyncWriteExt + Unpin>(&self, w: &mut W) -> crate::encode::Result {
+        w.write_all(&[*self as u8]).await?;
+        Ok(())
+    }
+
+    fn body_len(&self) -> usize {
+        1
     }
 }

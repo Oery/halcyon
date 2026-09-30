@@ -12,7 +12,7 @@ impl<'p> PacketWriter<'p> for &'p [u8] {
         Ok(bytes)
     }
 
-    async fn write<T: AsyncWriteExt + Unpin>(self, w: &mut T) -> crate::encode::Result {
+    async fn write<T: AsyncWriteExt + Unpin>(&self, w: &mut T) -> crate::encode::Result {
         VarInt(self.len() as i32).write(w).await?;
         w.write_all(self).await?;
 

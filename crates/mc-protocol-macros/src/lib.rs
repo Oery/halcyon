@@ -76,7 +76,7 @@ fn get_field_write_fn(field: &Field) -> proc_macro2::TokenStream {
         Format::VarInt => quote! { VarInt(self.#ident as i32).write(w).await?; },
         Format::Json => quote! {
             let json = serde_json::to_string(&self.#ident).unwrap();
-            json.write(w).await?;
+            json.as_str().write(w).await?;
         },
     }
 }

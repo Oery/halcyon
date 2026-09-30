@@ -50,7 +50,7 @@ impl<'p> Packets<'p> {
 pub trait PacketWriter<'p>: Sized {
     fn read(buf: &mut &'p [u8]) -> DecodeResult<Self>;
 
-    async fn write<T: AsyncWrite + Unpin>(self, w: &mut T) -> EncodeResult;
+    async fn write<T: AsyncWrite + Unpin>(&self, w: &mut T) -> EncodeResult;
 
     fn body_len(&self) -> usize;
 }

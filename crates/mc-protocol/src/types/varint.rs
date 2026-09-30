@@ -25,15 +25,15 @@ impl<'p> PacketWriter<'p> for VarInt {
         Err(DecodeError::InvalidVarInt)
     }
 
-    async fn write<W: AsyncWriteExt + Unpin>(self, w: &mut W) -> crate::encode::Result {
+    async fn write<W: AsyncWriteExt + Unpin>(&self, w: &mut W) -> crate::encode::Result {
         let mut value = self.0 as u32;
 
         while (value & !0x7F) != 0 {
-            u8::write(((value & 0x7F) | 0x80) as u8, w).await?;
+            u8::write(&(((value & 0x7F) | 0x80) as u8), w).await?;
             value >>= 7;
         }
 
-        u8::write(value as u8, w).await?;
+        u8::write(&(value as u8), w).await?;
         Ok(())
     }
 
@@ -56,8 +56,8 @@ impl<'p> PacketWriter<'p> for u8 {
         Ok(byte[0])
     }
 
-    async fn write<W: AsyncWriteExt + Unpin>(self, w: &mut W) -> crate::encode::Result {
-        w.write_all(&[self]).await?;
+    async fn write<W: AsyncWriteExt + Unpin>(&self, w: &mut W) -> crate::encode::Result {
+        w.write_all(&[*self]).await?;
         Ok(())
     }
 

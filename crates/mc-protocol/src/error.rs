@@ -17,6 +17,9 @@ pub enum DecodeError {
     #[error("expected bytes but got eof")]
     UnexpectedEof,
 
+    #[error("bool is not 0/1")]
+    InvalidBool(#[from] std::num::TryFromIntError),
+
     #[error("varint exceeds 32 bits")]
     InvalidVarInt,
 
