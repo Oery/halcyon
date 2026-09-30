@@ -1,8 +1,8 @@
 use futures_lite::AsyncWrite;
 
 use crate::error::DecodeError;
-use crate::packets::client::Ping;
-use crate::packets::server::ServerListPing;
+use crate::packets::client::*;
+use crate::packets::server::*;
 use crate::state::State;
 use crate::types::VarInt;
 
@@ -12,7 +12,7 @@ pub mod server;
 use crate::decode::Result as DecodeResult;
 use crate::encode::Result as EncodeResult;
 
-use macros::{InnerPacket, packet};
+use macros::InnerPacket;
 
 // TODO: add compression
 pub struct Context {
@@ -27,7 +27,8 @@ pub trait InnerPacket {
 #[derive(InnerPacket, Debug)]
 pub enum Packets<'p> {
     ServerListPing(ServerListPing<'p>),
-    PingRequest(Ping),
+    PingRequest(PingRequest),
+    PingResponse(PingResponse),
     StatusRequest(StatusRequest),
 }
 
@@ -40,7 +41,7 @@ impl<'p> Packets<'p> {
                 Ok(Packets::ServerListPing(ServerListPing::decode_payload(buf)?))
             }
             (0x00, State::Status) => Ok(Packets::StatusRequest(StatusRequest)),
-            (0x01, State::Status) => Ok(Packets::PingRequest(Ping::decode_payload(buf)?)),
+            (0x01, State::Status) => Ok(Packets::PingRequest(PingRequest::decode_payload(buf)?)),
             _ => Err(DecodeError::UnknownPacket(id)),
         }
     }
@@ -80,8 +81,3 @@ pub trait Payload<'p>: Sized {
         Ok(())
     }
 }
-
-use macros::Payload;
-
-#[packet(Status, 0x00, Client)]
-pub struct StatusRequest;

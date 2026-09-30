@@ -1,4 +1,5 @@
 use mc_protocol::packets::client::*;
+use mc_protocol::packets::server::*;
 use mc_protocol::packets::{Packets, Payload};
 
 use crate::Client;
@@ -19,8 +20,8 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) {
     let w = &mut client.stream;
 
     match pkt {
-        Packets::PingRequest(Ping { time }) => {
-            Ping { time }.write_packet(w).await.unwrap();
+        Packets::PingRequest(PingRequest { time }) => {
+            PingResponse { time }.write_packet(w).await.unwrap();
         }
         Packets::StatusRequest(_) => {
             status().write_packet(w).await.unwrap();

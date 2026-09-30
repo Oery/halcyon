@@ -8,7 +8,7 @@ use crate::packets::PacketWriter;
 use crate::packets::Payload;
 use crate::types::VarInt;
 
-use macros::packet;
+use macros::{Payload, packet};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Version<'a> {
@@ -61,6 +61,6 @@ pub struct StatusPacket<'p> {
 }
 
 #[packet(Status, 0x01, Client)]
-pub struct Ping {
+pub struct PingResponse {
     pub time: i64,
 }
