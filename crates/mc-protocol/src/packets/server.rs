@@ -50,3 +50,9 @@ pub struct LoginPluginResponse<'p> {
 
 #[packet(Login, 0x03, Server)]
 pub struct LoginAcknowledge;
+
+#[packet(Login, 0x04, Server)]
+pub struct LoginCookieResponse<'p> {
+    pub ident: &'p str,
+    pub data: &'p [u8],
+}
