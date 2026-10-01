@@ -57,3 +57,35 @@ impl<'p, T: PacketWriter<'p>> PacketWriter<'p> for Vec<T> {
         length
     }
 }
+
+impl<'p, T: PacketWriter<'p>> PacketWriter<'p> for Option<T> {
+    fn read(buf: &mut &'p [u8]) -> Result<Self, DecodeError> {
+        let is_some = bool::read(buf)?;
+
+        let data = match is_some {
+            true => Some(T::read(buf)?),
+            false => None,
+        };
+
+        Ok(data)
+    }
+
+    async fn write<W: AsyncWriteExt + Unpin>(&self, w: &mut W) -> crate::encode::Result {
+        self.is_some().write(w).await?;
+
+        if let Some(data) = self {
+            data.write(w).await?;
+        }
+
+        Ok(())
+    }
+
+    fn body_len(&self) -> usize {
+        let payload = match self {
+            Some(data) => data.body_len(),
+            None => 0,
+        };
+
+        payload + 1
+    }
+}
