@@ -18,7 +18,6 @@ impl Client {
         Client { stream, ctx: Context { state: State::Handshake } }
     }
 
-    // FIXME: The move should only occur after every packet is processed
     pub async fn run(&mut self) {
         let mut buf = [0u8; SIZE];
         let mut len = 0;
@@ -32,12 +31,15 @@ impl Client {
 
             len += n;
 
+            let mut total_read = 0;
+
             while let Some((pkt, processed)) = read_packet(&buf[..len], self).unwrap() {
                 handle_packet(pkt, self).await;
-
-                buf.copy_within(processed..len, 0);
-                len -= processed;
+                total_read += processed;
             }
+
+            buf.copy_within(total_read..len, 0);
+            len -= total_read;
         }
     }
 }
