@@ -103,3 +103,102 @@ pub struct LoginPluginRequest<'p> {
 pub struct LoginCookieRequest<'p> {
     pub key: &'p str,
 }
+
+#[packet(Config, 0x00, Client)]
+pub struct ConfigCookieRequest<'p> {
+    pub key: &'p str,
+}
+
+// TODO: data here is not length prefixed
+#[packet(Config, 0x01, Client)]
+pub struct PluginMessage<'p> {
+    pub ident: &'p str,
+    pub data: &'p [u8],
+}
+
+// TODO: packets with same content should be merged
+// TODO: reason should be a text component
+#[packet(Config, 0x02, Client)]
+pub struct ConfigDisconnect<'p> {
+    pub reason: &'p str,
+}
+
+#[packet(Config, 0x04, Client)]
+pub struct ConfigKeepAlive {
+    pub id: i64,
+}
+
+#[packet(Config, 0x06, Client)]
+pub struct ResetChat;
+
+#[packet(Config, 0x14, Client)]
+pub struct CodeOfConduct<'p> {
+    pub coc: &'p str,
+}
+
+// NOTE: unused by vanilla server
+// #[packet(Config, 0x05, Client)]
+// pub struct ConfigPing {
+//     pub id: i32,
+// }
+
+#[packet(Config, 0x08, Client)]
+pub struct RemoveResourcePack {
+    pub uuid: Option<Uuid>,
+}
+
+#[packet(Config, 0x0B, Client)]
+pub struct StoreCookie<'p> {
+    pub key: &'p str,
+    pub payload: &'p [u8],
+}
+
+// TODO: enforce max sizes in parsing
+
+#[packet(Config, 0x0C, Client)]
+pub struct Transfer<'p> {
+    pub host: &'p str,
+    #[format = "varint"]
+    pub port: i32,
+}
+
+#[packet(Config, 0x12, Client)]
+pub struct ClearDialog;
+
+#[packet(Play, 0x00, Client)]
+pub struct BundleDelimiter;
+
+#[packet(Play, 0x04, Client)]
+pub struct AcknowledgeBlockChange {
+    #[format = "varint"]
+    pub sequence_id: i32,
+}
+
+#[packet(Play, 0x0B, Client)]
+pub struct ChunkBatchFinished {
+    #[format = "varint"]
+    pub batch_size: i32,
+}
+
+#[packet(Play, 0x0C, Client)]
+pub struct ChunkBatchStart;
+
+#[packet(Play, 0x0E, Client)]
+pub struct ClearTitles {
+    pub reset: bool,
+}
+
+#[packet(Play, 0x33, Client)]
+pub struct LowDiskSpaceWarning;
+
+#[packet(Play, 0x43, Client)]
+pub struct EndCombat {
+    #[format = "varint"]
+    pub duration: i32,
+}
+
+#[packet(Play, 0x44, Client)]
+pub struct EnterCombat;
+
+#[packet(Play, 0x78, Client)]
+pub struct StartConfiguration;
