@@ -14,9 +14,10 @@ use crate::encode::Result as EncodeResult;
 
 use macros::InnerPacket;
 
-// TODO: add compression
+#[derive(Default, Debug)]
 pub struct Context {
     pub state: State,
+    pub compression: Option<i32>,
 }
 
 pub trait InnerPacket {
@@ -30,6 +31,7 @@ pub enum Packets<'p> {
     PingRequest(PingRequest),
     PingResponse(PingResponse),
     StatusRequest(StatusRequest),
+    SetCompression(SetCompression),
 }
 
 impl<'p> Packets<'p> {
@@ -42,6 +44,9 @@ impl<'p> Packets<'p> {
             }
             (0x00, State::Status) => Ok(Packets::StatusRequest(StatusRequest)),
             (0x01, State::Status) => Ok(Packets::PingRequest(PingRequest::decode_payload(buf)?)),
+            (0x03, State::Login) => {
+                Ok(Packets::SetCompression(SetCompression::decode_payload(buf)?))
+            }
             _ => Err(DecodeError::UnknownPacket(id)),
         }
     }

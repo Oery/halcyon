@@ -1,7 +1,6 @@
 use futures_lite::AsyncReadExt;
 use glommio::net::TcpStream;
 use mc_protocol::packets::Context;
-use mc_protocol::state::State;
 
 use crate::packet::read_packet;
 use crate::states::handle_packet;
@@ -15,7 +14,7 @@ pub struct Client {
 
 impl Client {
     pub fn new(stream: TcpStream) -> Client {
-        Client { stream, ctx: Context { state: State::Handshake } }
+        Client { stream, ctx: Context::default() }
     }
 
     pub async fn run(&mut self) {
