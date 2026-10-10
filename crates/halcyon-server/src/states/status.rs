@@ -1,3 +1,4 @@
+use mc_protocol::data::motd::*;
 use mc_protocol::packets::client::*;
 use mc_protocol::packets::server::*;
 use mc_protocol::packets::{Packets, Payload};
