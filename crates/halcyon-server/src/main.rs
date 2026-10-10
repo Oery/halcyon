@@ -1,10 +1,14 @@
 use futures_lite::stream::StreamExt;
 use glommio::net::TcpListener;
+use std::sync::Arc;
 
 use crate::client::Client;
+use crate::server::Server;
 
 mod client;
+mod encryption;
 mod packet;
+mod server;
 mod states;
 
 #[global_allocator]
@@ -13,6 +17,8 @@ static ADDR: &str = "127.0.0.1:25565";
 
 #[glommio::main(placement = Fixed(0))]
 async fn main() {
+    let server = Arc::new(Server::new());
+
     let listener = TcpListener::bind(ADDR).unwrap();
     let mut incoming = listener.incoming();
 
@@ -21,8 +27,9 @@ async fn main() {
     while let Some(Ok(conn)) = incoming.next().await {
         println!("connection!");
 
+        let handle = Arc::clone(&server);
         glommio::spawn_local(async move {
-            Client::new(conn).run().await;
+            Client::new(conn, handle).run().await;
         })
         .detach();
     }

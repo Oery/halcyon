@@ -18,6 +18,7 @@ use macros::InnerPacket;
 pub struct Context {
     pub state: State,
     pub compression: Option<i32>,
+    pub verify_token: Option<[u8; 4]>,
 }
 
 pub trait InnerPacket {
@@ -32,6 +33,7 @@ pub enum Packets<'p> {
     PingResponse(PingResponse),
     StatusRequest(StatusRequest),
     SetCompression(SetCompression),
+    LoginStart(LoginStart<'p>),
 }
 
 impl<'p> Packets<'p> {
@@ -44,9 +46,11 @@ impl<'p> Packets<'p> {
             }
             (0x00, State::Status) => Ok(Packets::StatusRequest(StatusRequest)),
             (0x01, State::Status) => Ok(Packets::PingRequest(PingRequest::decode_payload(buf)?)),
+            (0x00, State::Login) => Ok(Packets::LoginStart(LoginStart::decode_payload(buf)?)),
             (0x03, State::Login) => {
                 Ok(Packets::SetCompression(SetCompression::decode_payload(buf)?))
             }
+
             _ => Err(DecodeError::UnknownPacket(id)),
         }
     }

@@ -1,8 +1,10 @@
 use futures_lite::AsyncReadExt;
 use glommio::net::TcpStream;
 use mc_protocol::packets::Context;
+use std::sync::Arc;
 
 use crate::packet::read_packet;
+use crate::server::Server;
 use crate::states::handle_packet;
 
 const SIZE: usize = 1_024;
@@ -10,11 +12,12 @@ const SIZE: usize = 1_024;
 pub struct Client {
     pub stream: TcpStream,
     pub ctx: Context,
+    pub server: Arc<Server>,
 }
 
 impl Client {
-    pub fn new(stream: TcpStream) -> Client {
-        Client { stream, ctx: Context::default() }
+    pub fn new(stream: TcpStream, server: Arc<Server>) -> Client {
+        Client { stream, ctx: Context::default(), server }
     }
 
     pub async fn run(&mut self) {
