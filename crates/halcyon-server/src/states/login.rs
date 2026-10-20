@@ -86,6 +86,7 @@ fn parse_profile_id(raw: &str) -> Result<Uuid, DecodeError> {
     hex.push_str(&raw[12..16]);
     hex.push('-');
     hex.push_str(&raw[16..20]);
+    hex.push('-');
     hex.push_str(&raw[20..32]);
 
     Uuid::parse_str(&hex).map_err(|_| DecodeError::InvalidProfileId)
