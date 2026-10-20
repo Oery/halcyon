@@ -211,7 +211,7 @@ pub struct ChunkData<'p> {
     pub heightmaps: Vec<Heightmap>,
     pub data: &'p [u8],
     pub block_entities: Vec<BlockEntity<'p>>,
-    pub light: LightData,
+    pub light: LightData<'p>,
 }
 
 #[packet(Play, 0x0E, Client)]

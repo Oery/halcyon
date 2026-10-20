@@ -63,23 +63,47 @@ impl<'p> PacketWriter<'p> for BlockEntity<'p> {
 }
 
 #[derive(Debug)]
-pub struct LightData {
-    pub sky_mask: Vec<u8>,
-    pub block_mask: Vec<u8>,
-    pub empty_sky_mask: Vec<u8>,
-    pub empty_block_mask: Vec<u8>,
-    pub sky_light: Vec<Vec<u8>>,
-    pub block_light: Vec<Vec<u8>>,
+pub struct LightData<'p> {
+    pub sky_mask: &'p [u8],
+    pub block_mask: &'p [u8],
+    pub empty_sky_mask: &'p [u8],
+    pub empty_block_mask: &'p [u8],
+    pub sky_light: Vec<&'p [u8]>,
+    pub block_light: Vec<&'p [u8]>,
 }
 
-impl PacketWriter<'_> for LightData {
-    fn read(buf: &mut &[u8]) -> DecodeResult<Self> {
-        let sky_mask = <Vec<u8>>::read(buf)?;
-        let block_mask = <Vec<u8>>::read(buf)?;
-        let empty_sky_mask = <Vec<u8>>::read(buf)?;
-        let empty_block_mask = <Vec<u8>>::read(buf)?;
-        let sky_light = <Vec<Vec<u8>>>::read(buf)?;
-        let block_light = <Vec<Vec<u8>>>::read(buf)?;
+/// Sections per column on the wire: 24 world sections plus one below min
+/// and one above max height.
+pub const LIGHT_SECTIONS: usize = 26;
+/// One section of full-bright light: half-byte per block, every nibble 0xF.
+/// Shared by every chunk of every connection; never allocated per send.
+static FULLBRIGHT_SECTION: [u8; 2048] = [0xFF; 2048];
+/// 26 bits set: every section carries explicit light data.
+static FULL_MASK: [u8; 4] = [0xFF, 0xFF, 0xFF, 0x03];
+/// No section is all-zero.
+static EMPTY_MASK: [u8; 4] = [0x00, 0x00, 0x00, 0x00];
+
+impl LightData<'_> {
+    pub fn fullbright() -> LightData<'static> {
+        LightData {
+            sky_mask: &FULL_MASK,
+            block_mask: &FULL_MASK,
+            empty_sky_mask: &EMPTY_MASK,
+            empty_block_mask: &EMPTY_MASK,
+            sky_light: vec![&FULLBRIGHT_SECTION; LIGHT_SECTIONS],
+            block_light: vec![&FULLBRIGHT_SECTION; LIGHT_SECTIONS],
+        }
+    }
+}
+
+impl<'p> PacketWriter<'p> for LightData<'p> {
+    fn read(buf: &mut &'p [u8]) -> DecodeResult<Self> {
+        let sky_mask = <&[u8]>::read(buf)?;
+        let block_mask = <&[u8]>::read(buf)?;
+        let empty_sky_mask = <&[u8]>::read(buf)?;
+        let empty_block_mask = <&[u8]>::read(buf)?;
+        let sky_light = <Vec<&[u8]>>::read(buf)?;
+        let block_light = <Vec<&[u8]>>::read(buf)?;
         Ok(Self { sky_mask, block_mask, empty_sky_mask, empty_block_mask, sky_light, block_light })
     }
 

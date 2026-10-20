@@ -112,16 +112,7 @@ async fn send_chunk(
             }],
             data: &chunk.data,
             block_entities: Vec::new(),
-            light: LightData {
-                sky_mask: Vec::new(),
-                block_mask: Vec::new(),
-                // 26 sections + 2 bits: lowest 4 bytes set, trailing zero
-                // bytes trimmed by toByteArray.
-                empty_sky_mask: vec![0xFF, 0xFF, 0xFF, 0x0F],
-                empty_block_mask: vec![0xFF, 0xFF, 0xFF, 0x0F],
-                sky_light: Vec::new(),
-                block_light: Vec::new(),
-            },
+            light: LightData::fullbright(),
         })
         .await
 }
