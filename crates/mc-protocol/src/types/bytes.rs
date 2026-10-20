@@ -23,3 +23,19 @@ impl<'p> PacketWriter<'p> for &'p [u8] {
         self.len() + VarInt(self.len() as i32).body_len()
     }
 }
+
+impl<'p> PacketWriter<'p> for String {
+    fn read(input: &mut &'p [u8]) -> Result<Self, DecodeError> {
+        Ok(<&str>::read(input)?.to_owned())
+    }
+
+    async fn write<T: AsyncWriteExt + Unpin>(&self, w: &mut T) -> crate::encode::Result {
+        self.as_str().write(w).await?;
+
+        Ok(())
+    }
+
+    fn body_len(&self) -> usize {
+        self.as_str().body_len()
+    }
+}

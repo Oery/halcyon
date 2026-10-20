@@ -39,7 +39,7 @@ impl<'p, T: PacketWriter<'p>> PacketWriter<'p> for Vec<T> {
     }
 
     async fn write<W: AsyncWriteExt + Unpin>(&self, w: &mut W) -> crate::encode::Result {
-        VarInt(self.body_len() as i32).write(w).await?;
+        VarInt(self.len() as i32).write(w).await?;
 
         for e in self {
             e.write(w).await?;

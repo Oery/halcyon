@@ -12,8 +12,10 @@ mc_protocol = { version = "0.1.0", path = "../mc-protocol" }
 mimalloc = "0.1.52"
 futures-lite = "2.6.1"
 openssl = "0.10.81"
-reqwest = { version = "0.13.5", features = ["json"] }
+ureq = { version = "3", default-features = false, features = ["rustls", "json"] }
 serde = { version = "1.0.229", features = ["serde_derive"] }
+serde_json = "1.0.151"
+uuid = { version = "1.26.1", features = ["v4"] }
 
 [[bin]]
 name = "halcyon"

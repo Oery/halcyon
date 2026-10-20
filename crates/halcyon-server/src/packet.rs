@@ -21,10 +21,13 @@ fn try_read_varint(buf: &mut &[u8]) -> Result<Option<usize>, DecodeError> {
 
 type DecodeResult<T> = Result<T, DecodeError>;
 
+/// Returns the packet plus total bytes consumed (length prefix + frame).
+/// `UnknownPacket` still consumes the frame so coalesced packets parse;
+/// callers handle it as `None` without advancing issues.
 pub fn read_packet<'p>(
     buf: &'p [u8],
     c: &mut Client,
-) -> DecodeResult<Option<(Packets<'p>, usize)>> {
+) -> DecodeResult<Option<(Option<Packets<'p>>, usize)>> {
     let mut remaining = buf;
 
     let Some(frame_len) = try_read_varint(&mut remaining)? else {
@@ -36,15 +39,23 @@ pub fn read_packet<'p>(
     }
 
     let mut frame = take(&mut remaining, frame_len)?;
+    let consumed = buf.len() - remaining.len();
 
     let pkt = match Packets::read(&mut frame, &c.ctx) {
-        Ok(pkt) => pkt,
+        Ok(pkt) => Some(pkt),
         Err(e @ DecodeError::UnknownPacket(_)) => {
             println!("{e}");
-            return Ok(None);
+            None
         }
+        // Truncated/partial frames (e.g. short reads mid-packet) are not
+        // fatal: wait for more bytes instead of killing the connection.
+        Err(DecodeError::UnexpectedEof) => return Ok(None),
         Err(e) => return Err(e),
     };
 
-    Ok(Some((pkt, buf.len() - remaining.len())))
+    // Packets with trailing bytes are truncated, not fatal: the frame is
+    // consumed anyway so a coalesced next packet still parses.
+    let _ = frame;
+
+    Ok(Some((pkt, consumed)))
 }

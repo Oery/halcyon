@@ -1,22 +1,23 @@
-use crate::server::Server;
-
 use mc_protocol::auth::Response;
-use mc_protocol::data::motd::Player;
 
-use std::sync::Arc;
-
-const BASE_URL: &'static str = "https://sessionserver.mojang.com/session/minecraft/hasJoined";
+const BASE_URL: &str = "https://sessionserver.mojang.com/session/minecraft/hasJoined";
 
 // NOTE: Vanilla server supports an optional ip component
+// when `prevent-proxy-connections` is enabled; we omit it.
+pub async fn authenticate(username: &str, hash: &str) -> Result<Response, String> {
+    let username = username.to_owned();
+    let hash = hash.to_owned();
 
-async fn authenticate(player: &Player<'_>, server: Arc<Server>) {
-    let username = player.name;
-    let hash = String::new();
-
-    let url = format!("?username={username}&serverId={hash}");
-    let http_client = reqwest::Client::new();
-
-    let res = http_client.get(url).send().await.unwrap();
-    let res = res.error_for_status().unwrap();
-    let v: Response = res.json().await.unwrap();
+    // NOTE: `ureq` is blocking with no runtime, so the whole request runs
+    // inside `spawn_blocking`, off the latency-sensitive executor thread.
+    glommio::executor()
+        .spawn_blocking(move || {
+            ureq::get(format!("{BASE_URL}?username={username}&serverId={hash}"))
+                .call()
+                .map_err(|e| e.to_string())?
+                .body_mut()
+                .read_json::<Response>()
+                .map_err(|e| e.to_string())
+        })
+        .await
 }

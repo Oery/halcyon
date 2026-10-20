@@ -5,5 +5,5 @@ pub mod str;
 pub mod uuid;
 pub mod varint;
 
-pub use game_profile::GameProfile;
+pub use game_profile::{GameProfile, ProfileProperty};
 pub use varint::VarInt;

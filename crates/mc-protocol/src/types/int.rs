@@ -42,8 +42,11 @@ impl PacketWriter<'_> for i64 {
 
 impl PacketWriter<'_> for bool {
     fn read(input: &mut &[u8]) -> Result<Self, DecodeError> {
-        let byte = take(input, 1)?;
-        return Ok(byte[0].try_into()?);
+        match take(input, 1)?[0] {
+            0 => Ok(false),
+            1 => Ok(true),
+            b => Err(DecodeError::InvalidBool(b)),
+        }
     }
 
     async fn write<W: AsyncWriteExt + Unpin>(&self, w: &mut W) -> crate::encode::Result {

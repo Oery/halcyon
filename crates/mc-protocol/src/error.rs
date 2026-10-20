@@ -17,8 +17,8 @@ pub enum DecodeError {
     #[error("expected bytes but got eof")]
     UnexpectedEof,
 
-    #[error("bool is not 0/1")]
-    InvalidBool(#[from] std::num::TryFromIntError),
+    #[error("bool is not 0/1, got {0}")]
+    InvalidBool(u8),
 
     #[error("varint exceeds 32 bits")]
     InvalidVarInt,
@@ -35,4 +35,13 @@ pub enum DecodeError {
 
     #[error("json is not valid")]
     InvalidJSON(#[from] serde_json::Error),
+
+    #[error("rsa decrypt failed")]
+    RsaDecrypt,
+
+    #[error("mojang auth rejected the login")]
+    AuthRejected,
+
+    #[error("mojang profile id is not a valid uuid")]
+    InvalidProfileId,
 }

@@ -5,16 +5,16 @@ use serde::Deserialize;
 // which needs to be changed into format "11111111-2222-3333-4444-555555555555"
 // before sending it back to the client.
 
-#[derive(Deserialize)]
-pub struct Property<'r> {
-    pub name: &'r str,
-    pub value: &'r str,
-    pub signature: &'r str,
+#[derive(Deserialize, Debug)]
+pub struct Property {
+    pub name: String,
+    pub value: String,
+    pub signature: Option<String>,
 }
 
-#[derive(Deserialize)]
-pub struct Response<'r> {
-    pub id: &'r str,
-    pub name: &'r str,
-    pub properties: Vec<Property<'r>>,
+#[derive(Deserialize, Debug)]
+pub struct Response {
+    pub id: String,
+    pub name: String,
+    pub properties: Vec<Property>,
 }

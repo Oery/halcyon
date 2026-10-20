@@ -8,7 +8,7 @@ use crate::error::DecodeError;
 pub struct ProfileProperty<'p> {
     pub name: &'p str,
     pub value: &'p str,
-    pub signature: &'p str,
+    pub signature: Option<&'p str>,
 }
 
 #[derive(Debug)]
@@ -44,7 +44,7 @@ impl<'p> PacketWriter<'p> for ProfileProperty<'p> {
     fn read(buf: &mut &'p [u8]) -> Result<Self, DecodeError> {
         let name: &str = <&str>::read(buf)?;
         let value: &str = <&str>::read(buf)?;
-        let signature: &str = <&str>::read(buf)?;
+        let signature: Option<&str> = <Option<&str>>::read(buf)?;
 
         Ok(ProfileProperty { name, value, signature })
     }
