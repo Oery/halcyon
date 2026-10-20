@@ -102,13 +102,15 @@ impl World {
     }
 
     pub fn load(path: &std::path::Path) -> Result<World, LoadError> {
+        let start = std::time::Instant::now();
         let loaded = load_dir(path)?;
         eprintln!(
-            "world: {} chunks, {} wire bytes, missing={} remapped_biomes={}",
+            "world: {} chunks, {} wire bytes, missing={} remapped_biomes={} in {}ms",
             loaded.chunks.len(),
             loaded.chunks.iter().map(|c| c.wire_bytes).sum::<usize>(),
             loaded.missing_blocks,
             loaded.remapped_biomes,
+            start.elapsed().as_millis(),
         );
         Ok(World::from_loaded(loaded))
     }

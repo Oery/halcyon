@@ -72,6 +72,8 @@ pub fn load_dir(path: &Path) -> Result<LoadedWorld, LoadError> {
 
 fn load_region(path: &Path, out: &mut Vec<LoadedChunk>) -> Result<(usize, usize), LoadError> {
     let label = path.display().to_string();
+    let start = std::time::Instant::now();
+    let before = out.len();
     let mut raw = Vec::new();
     File::open(path).and_then(|mut f| f.read_to_end(&mut raw)).map_err(LoadError::Io)?;
     if raw.len() < 8192 {
@@ -118,7 +120,11 @@ fn load_region(path: &Path, out: &mut Vec<LoadedChunk>) -> Result<(usize, usize)
     if out.is_empty() {
         eprintln!("world: {label}: no chunks loaded");
     } else {
-        eprintln!("world: {label}: {missing_blocks} missing blocks remapped to air");
+        eprintln!(
+            "world: {label}: {} chunks, {missing_blocks} missing blocks remapped to air in {}ms",
+            out.len() - before,
+            start.elapsed().as_millis(),
+        );
     }
     Ok((missing_blocks, remapped_biomes))
 }
