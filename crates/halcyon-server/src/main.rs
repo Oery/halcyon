@@ -5,6 +5,7 @@ use std::sync::Arc;
 use crate::client::Client;
 use crate::server::Server;
 
+mod auth;
 mod client;
 mod encryption;
 mod packet;

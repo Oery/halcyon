@@ -1,3 +1,4 @@
+pub mod auth;
 pub mod data;
 pub mod decode;
 pub mod encode;

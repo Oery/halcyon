@@ -1,7 +1,7 @@
 use openssl::error::ErrorStack;
 use openssl::pkey::Private;
 use openssl::rand::rand_bytes;
-use openssl::rsa::Rsa;
+use openssl::rsa::{Padding, Rsa};
 
 pub struct Keys {
     pub public: Vec<u8>,
@@ -21,4 +21,12 @@ pub fn generate_verify_token() -> Result<[u8; 4], ErrorStack> {
     let mut token = [0u8; 4];
     rand_bytes(&mut token)?;
     Ok(token)
+}
+
+pub fn decrypt_rsa(data: &[u8], private: &Rsa<Private>) -> [u8; 2048] {
+    let mut decrypted = [0; 2048];
+
+    private.private_decrypt(data, &mut decrypted, Padding::PKCS1).unwrap();
+
+    decrypted
 }
