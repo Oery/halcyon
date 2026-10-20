@@ -147,6 +147,35 @@ pub struct PlayKeepAlive {
     pub id: i64,
 }
 
+#[packet(Play, 0x27, Client)]
+pub struct GameEvent {
+    pub event: u8,
+    pub value: f32,
+}
+
+#[packet(Play, 0x41, Client)]
+pub struct PlayerAbilities {
+    pub flags: u8,
+    pub flying_speed: f32,
+    pub fov_modifier: f32,
+}
+
+#[packet(Play, 0x63, Client)]
+pub struct SetDefaultSpawnPosition<'p> {
+    pub dimension_name: &'p str,
+    pub location: i64,
+    pub yaw: f32,
+    pub pitch: f32,
+}
+
+#[packet(Play, 0x6A, Client)]
+pub struct SetHealth {
+    pub health: f32,
+    #[format = "varint"]
+    pub food: i32,
+    pub saturation: f32,
+}
+
 #[packet(Play, 0x60, Client)]
 pub struct SetCenterChunk {
     #[format = "varint"]
@@ -154,7 +183,6 @@ pub struct SetCenterChunk {
     #[format = "varint"]
     pub chunk_z: i32,
 }
-
 #[packet(Play, 0x49, Client)]
 pub struct SyncPlayerPosition {
     #[format = "varint"]

@@ -13,12 +13,30 @@ use crate::states::handle_packet;
 
 const SIZE: usize = 1_024;
 
+pub struct PlayerPosition {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub on_ground: bool,
+}
+
+impl Default for PlayerPosition {
+    fn default() -> Self {
+        Self { x: 8.5, y: 64.0, z: 8.5, yaw: 0.0, pitch: 0.0, on_ground: false }
+    }
+}
+
 pub struct Client {
     pub stream: ClientStream,
     pub ctx: Context,
     pub server: Arc<Server>,
     pub keepalive_id: i64,
     pub last_keepalive: Instant,
+    pub pos: PlayerPosition,
+    pub pending_teleport: Option<i32>,
+    pub next_teleport_id: i32,
 }
 
 pub enum ClientStream {
@@ -118,6 +136,9 @@ impl Client {
             server,
             keepalive_id: 0,
             last_keepalive: Instant::now(),
+            pos: PlayerPosition::default(),
+            pending_teleport: None,
+            next_teleport_id: 0,
         }
     }
 
@@ -146,8 +167,6 @@ impl Client {
         while let Ok(n) = self.stream.read(&mut buf[len..SIZE]).await
             && n > 0
         {
-            println!("Buffer = {:?}", &buf[len..len + n]);
-
             len += n;
 
             let mut total_read = 0;

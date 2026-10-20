@@ -1,31 +1,110 @@
+use futures_lite::AsyncWriteExt;
 use std::time::Instant;
 
 use mc_protocol::packets::Packets;
 use mc_protocol::packets::Payload;
 use mc_protocol::packets::client::{
-    ChunkBatchFinished, ChunkData, PlayKeepAlive, SetCenterChunk, SyncPlayerPosition,
+    ChunkBatchFinished, ChunkData, GameEvent, PlayKeepAlive, PlayerAbilities, SetCenterChunk,
+    SetDefaultSpawnPosition, SetHealth, SyncPlayerPosition,
 };
 use mc_protocol::types::LightData;
 
 use crate::Client;
 
-pub async fn handle_packet(pkt: Packets<'_>, _client: &mut Client) {
+pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) {
     match pkt {
-        Packets::ConfirmTeleportation(_)
-        | Packets::PlayKeepAliveResponse(_)
+        Packets::ConfirmTeleportation(p) => {
+            if client.pending_teleport == Some(p.teleport_id) {
+                client.pending_teleport = None;
+                client.pos.x = p.x;
+                client.pos.y = p.y;
+                client.pos.z = p.z;
+                client.pos.yaw = p.yaw;
+                client.pos.pitch = p.pitch;
+            }
+        }
+        Packets::SetPlayerPosition(p) => {
+            if client.pending_teleport.is_some() {
+                return;
+            }
+            if !p.x.is_finite() || !p.feet_y.is_finite() || !p.z.is_finite() {
+                eprintln!("non-finite SetPlayerPosition coordinates, closing connection");
+                let _ = client.stream.close().await;
+                return;
+            }
+            client.pos.x = p.x.clamp(-30_000_000.0, 30_000_000.0);
+            client.pos.y = p.feet_y.clamp(-20_000_000.0, 20_000_000.0);
+            client.pos.z = p.z.clamp(-30_000_000.0, 30_000_000.0);
+            client.pos.on_ground = p.flags & 0x01 != 0;
+        }
+        Packets::SetPlayerPositionRotation(p) => {
+            if client.pending_teleport.is_some() {
+                return;
+            }
+            if !p.x.is_finite()
+                || !p.feet_y.is_finite()
+                || !p.z.is_finite()
+                || !p.yaw.is_finite()
+                || !p.pitch.is_finite()
+            {
+                eprintln!("non-finite SetPlayerPositionRotation coordinates, closing connection");
+                let _ = client.stream.close().await;
+                return;
+            }
+            client.pos.x = p.x.clamp(-30_000_000.0, 30_000_000.0);
+            client.pos.y = p.feet_y.clamp(-20_000_000.0, 20_000_000.0);
+            client.pos.z = p.z.clamp(-30_000_000.0, 30_000_000.0);
+            client.pos.yaw = p.yaw;
+            client.pos.pitch = p.pitch;
+            client.pos.on_ground = p.flags & 0x01 != 0;
+        }
+        Packets::SetPlayerRotation(p) => {
+            if client.pending_teleport.is_some() {
+                return;
+            }
+            if !p.yaw.is_finite() || !p.pitch.is_finite() {
+                eprintln!("non-finite SetPlayerRotation coordinates, closing connection");
+                let _ = client.stream.close().await;
+                return;
+            }
+            client.pos.yaw = p.yaw;
+            client.pos.pitch = p.pitch;
+            client.pos.on_ground = p.flags & 0x01 != 0;
+        }
+        Packets::PlayKeepAliveResponse(_)
         | Packets::ChunkBatchReceived(_)
-        | Packets::SetPlayerPosition(_)
-        | Packets::SetPlayerPositionRotation(_)
-        | Packets::SetPlayerRotation(_)
         | Packets::ClientTickEnd(_)
         | Packets::PlayerLoaded(_) => {}
         _ => eprintln!("unhandled packet: {pkt:?}"),
     };
 }
 
-/// Burst sent once on Play entry: center chunk, one void chunk, teleport, first keepalive.
+/// Burst sent once on Play entry: player state, center chunk, one void
+/// chunk, teleport, first keepalive.
+fn pack_block_pos(x: i32, y: i32, z: i32) -> i64 {
+    (((x & 0x3FFFFFF) as i64) << 38) | (((z & 0x3FFFFFF) as i64) << 12) | ((y & 0xFFF) as i64)
+}
+
 pub async fn enter_play(client: &mut Client) {
     SetCenterChunk { chunk_x: 0, chunk_z: 0 }.write_packet(&mut client.stream).await.unwrap();
+    GameEvent { event: 13, value: 0.0 }.write_packet(&mut client.stream).await.unwrap();
+    SetDefaultSpawnPosition {
+        dimension_name: "minecraft:overworld",
+        location: pack_block_pos(8, 64, 8),
+        yaw: 0.0,
+        pitch: 0.0,
+    }
+    .write_packet(&mut client.stream)
+    .await
+    .unwrap();
+    PlayerAbilities { flags: 0x00, flying_speed: 0.05, fov_modifier: 0.1 }
+        .write_packet(&mut client.stream)
+        .await
+        .unwrap();
+    SetHealth { health: 20.0, food: 20, saturation: 5.0 }
+        .write_packet(&mut client.stream)
+        .await
+        .unwrap();
     mc_protocol::packets::client::ChunkBatchStart.write_packet(&mut client.stream).await.unwrap();
 
     // 24 sections: overworld dimension_type (min_y -64, height 384).
@@ -74,6 +153,8 @@ pub async fn enter_play(client: &mut Client) {
     .write_packet(&mut client.stream)
     .await
     .unwrap();
+    client.next_teleport_id = 1;
+    client.pending_teleport = Some(1);
 
     PlayKeepAlive { id: 1 }.write_packet(&mut client.stream).await.unwrap();
     client.keepalive_id = 1;

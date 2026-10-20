@@ -11,8 +11,6 @@ use crate::Client;
 
 // TODO: send back a status response
 pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) {
-    dbg!(&pkt);
-
     match pkt.state() {
         State::Config => config::handle_packet(pkt, client).await,
         State::Handshake => handshake::handle_packet(pkt, client).await,
