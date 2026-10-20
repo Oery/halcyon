@@ -45,6 +45,14 @@ pub enum Packets<'p> {
     ConfigPluginMessage(ConfigPluginMessage<'p>),
     AcknowledgeFinish(AcknowledgeFinish),
     ConfigKnownPacks(ConfigKnownPacks<'p>),
+    ConfirmTeleportation(ConfirmTeleportation),
+    PlayKeepAliveResponse(PlayKeepAliveResponse),
+    ChunkBatchReceived(ChunkBatchReceived),
+    SetPlayerPosition(SetPlayerPosition),
+    SetPlayerPositionRotation(SetPlayerPositionRotation),
+    SetPlayerRotation(SetPlayerRotation),
+    ClientTickEnd(ClientTickEnd),
+    PlayerLoaded(PlayerLoaded),
 }
 
 impl<'p> Packets<'p> {
@@ -78,6 +86,26 @@ impl<'p> Packets<'p> {
             (0x07, State::Config) => {
                 Ok(Packets::ConfigKnownPacks(ConfigKnownPacks::decode_payload(buf)?))
             }
+            (0x00, State::Play) => {
+                Ok(Packets::ConfirmTeleportation(ConfirmTeleportation::decode_payload(buf)?))
+            }
+            (0x1C, State::Play) => {
+                Ok(Packets::PlayKeepAliveResponse(PlayKeepAliveResponse::decode_payload(buf)?))
+            }
+            (0x0B, State::Play) => {
+                Ok(Packets::ChunkBatchReceived(ChunkBatchReceived::decode_payload(buf)?))
+            }
+            (0x1E, State::Play) => {
+                Ok(Packets::SetPlayerPosition(SetPlayerPosition::decode_payload(buf)?))
+            }
+            (0x1F, State::Play) => Ok(Packets::SetPlayerPositionRotation(
+                SetPlayerPositionRotation::decode_payload(buf)?,
+            )),
+            (0x20, State::Play) => {
+                Ok(Packets::SetPlayerRotation(SetPlayerRotation::decode_payload(buf)?))
+            }
+            (0x0D, State::Play) => Ok(Packets::ClientTickEnd(ClientTickEnd)),
+            (0x2C, State::Play) => Ok(Packets::PlayerLoaded(PlayerLoaded)),
             _ => Err(DecodeError::UnknownPacket(id)),
         }
     }

@@ -38,6 +38,56 @@ impl PacketWriter<'_> for i32 {
         4
     }
 }
+impl PacketWriter<'_> for i16 {
+    fn read(input: &mut &[u8]) -> Result<Self, DecodeError> {
+        let bytes: [u8; 2] = take(input, 2)?.try_into().expect("buffer should contains 2 bytes");
+
+        return Ok(i16::from_be_bytes(bytes));
+    }
+
+    async fn write<W: AsyncWriteExt + Unpin>(&self, w: &mut W) -> crate::encode::Result {
+        w.write_all(&self.to_be_bytes()).await?;
+        Ok(())
+    }
+
+    fn body_len(&self) -> usize {
+        2
+    }
+}
+
+impl PacketWriter<'_> for f32 {
+    fn read(input: &mut &[u8]) -> Result<Self, DecodeError> {
+        let bytes: [u8; 4] = take(input, 4)?.try_into().expect("buffer should contains 4 bytes");
+
+        return Ok(f32::from_be_bytes(bytes));
+    }
+
+    async fn write<W: AsyncWriteExt + Unpin>(&self, w: &mut W) -> crate::encode::Result {
+        w.write_all(&self.to_be_bytes()).await?;
+        Ok(())
+    }
+
+    fn body_len(&self) -> usize {
+        4
+    }
+}
+
+impl PacketWriter<'_> for f64 {
+    fn read(input: &mut &[u8]) -> Result<Self, DecodeError> {
+        let bytes: [u8; 8] = take(input, 8)?.try_into().expect("buffer should contains 8 bytes");
+
+        return Ok(f64::from_be_bytes(bytes));
+    }
+
+    async fn write<W: AsyncWriteExt + Unpin>(&self, w: &mut W) -> crate::encode::Result {
+        w.write_all(&self.to_be_bytes()).await?;
+        Ok(())
+    }
+
+    fn body_len(&self) -> usize {
+        8
+    }
+}
 
 impl PacketWriter<'_> for i64 {
     fn read(input: &mut &[u8]) -> Result<Self, DecodeError> {

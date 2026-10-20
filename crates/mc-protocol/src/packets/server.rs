@@ -143,3 +143,49 @@ pub struct PlayerLoaded;
 
 #[packet(Play, 0x2E, Server)]
 pub struct Punch;
+
+#[packet(Play, 0x00, Server)]
+pub struct ConfirmTeleportation {
+    #[format = "varint"]
+    pub teleport_id: i32,
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    pub yaw: f32,
+    pub pitch: f32,
+}
+
+#[packet(Play, 0x1C, Server)]
+pub struct PlayKeepAliveResponse {
+    pub id: i64,
+}
+
+#[packet(Play, 0x0B, Server)]
+pub struct ChunkBatchReceived {
+    pub chunks_per_tick: f32,
+}
+
+#[packet(Play, 0x1E, Server)]
+pub struct SetPlayerPosition {
+    pub x: f64,
+    pub feet_y: f64,
+    pub z: f64,
+    pub flags: u8,
+}
+
+#[packet(Play, 0x1F, Server)]
+pub struct SetPlayerPositionRotation {
+    pub x: f64,
+    pub feet_y: f64,
+    pub z: f64,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub flags: u8,
+}
+
+#[packet(Play, 0x20, Server)]
+pub struct SetPlayerRotation {
+    pub yaw: f32,
+    pub pitch: f32,
+    pub flags: u8,
+}

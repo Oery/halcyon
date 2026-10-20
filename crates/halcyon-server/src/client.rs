@@ -1,11 +1,11 @@
-use std::pin::Pin;
-use std::sync::Arc;
-use std::task::{Context as TaskContext, Poll};
-
 use futures_lite::{AsyncRead, AsyncReadExt, AsyncWrite};
 use glommio::net::TcpStream;
 use mc_protocol::packets::Context;
 use openssl::symm::Crypter;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context as TaskContext, Poll};
+use std::time::{Duration, Instant};
 
 use crate::packet::read_packet;
 use crate::server::Server;
@@ -17,6 +17,8 @@ pub struct Client {
     pub stream: ClientStream,
     pub ctx: Context,
     pub server: Arc<Server>,
+    pub keepalive_id: i64,
+    pub last_keepalive: Instant,
 }
 
 pub enum ClientStream {
@@ -110,7 +112,13 @@ impl AsyncWrite for ClientStream {
 
 impl Client {
     pub fn new(stream: TcpStream, server: Arc<Server>) -> Client {
-        Client { stream: ClientStream::Plain(stream), ctx: Context::default(), server }
+        Client {
+            stream: ClientStream::Plain(stream),
+            ctx: Context::default(),
+            server,
+            keepalive_id: 0,
+            last_keepalive: Instant::now(),
+        }
     }
 
     pub fn enable_encryption(&mut self, enc: Crypter, dec: Crypter) {
@@ -162,6 +170,20 @@ impl Client {
 
             buf.copy_within(total_read..len, 0);
             len -= total_read;
+
+            if self.ctx.state == mc_protocol::State::Play
+                && self.last_keepalive.elapsed() >= Duration::from_secs(15)
+            {
+                use mc_protocol::packets::Payload;
+                use mc_protocol::packets::client::PlayKeepAlive;
+
+                self.keepalive_id += 1;
+                PlayKeepAlive { id: self.keepalive_id }
+                    .write_packet(&mut self.stream)
+                    .await
+                    .unwrap();
+                self.last_keepalive = Instant::now();
+            }
         }
     }
 }

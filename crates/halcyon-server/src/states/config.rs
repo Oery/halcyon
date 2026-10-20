@@ -13,6 +13,7 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) {
             // Entity ID 0 is vanilla's unassigned sentinel (Entity.getId
             // throws on 0); the Default uses 1.
             PlayLogin::default().write_packet(&mut client.stream).await.unwrap();
+            super::play::enter_play(client).await;
             client.ctx.state = mc_protocol::State::Play;
         }
         _ => eprintln!("unhandled packet: {pkt:?}"),

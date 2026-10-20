@@ -7,7 +7,8 @@ use crate::encode::Result as EncodeResult;
 use crate::packets::PacketWriter;
 use crate::packets::Payload;
 use crate::types::{
-    GameProfile, KnownPack, RegistryEntry, TaggedRegistry, VarInt, bytes::Remainder,
+    BlockEntity, GameProfile, Heightmap, KnownPack, LightData, RegistryEntry, TaggedRegistry,
+    VarInt, bytes::Remainder,
 };
 
 use macros::{Payload, packet};
@@ -140,6 +141,44 @@ pub struct ChunkBatchFinished {
 
 #[packet(Play, 0x0C, Client)]
 pub struct ChunkBatchStart;
+
+#[packet(Play, 0x2D, Client)]
+pub struct PlayKeepAlive {
+    pub id: i64,
+}
+
+#[packet(Play, 0x60, Client)]
+pub struct SetCenterChunk {
+    #[format = "varint"]
+    pub chunk_x: i32,
+    #[format = "varint"]
+    pub chunk_z: i32,
+}
+
+#[packet(Play, 0x49, Client)]
+pub struct SyncPlayerPosition {
+    #[format = "varint"]
+    pub teleport_id: i32,
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    pub vel_x: f64,
+    pub vel_y: f64,
+    pub vel_z: f64,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub flags: i32,
+}
+
+#[packet(Play, 0x2E, Client)]
+pub struct ChunkData<'p> {
+    pub chunk_x: i32,
+    pub chunk_z: i32,
+    pub heightmaps: Vec<Heightmap>,
+    pub data: Vec<u8>,
+    pub block_entities: Vec<BlockEntity<'p>>,
+    pub light: LightData,
+}
 
 #[packet(Play, 0x0E, Client)]
 pub struct ClearTitles {
