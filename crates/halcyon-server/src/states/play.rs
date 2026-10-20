@@ -127,6 +127,26 @@ async fn send_chunk(
         .await
 }
 
+/// Empty all-air column: lets edge chunks mesh without a lighting engine or
+/// world data. One shared encoding; the heights are all-zero so the client
+/// treats every column as empty.
+static EMPTY_HEIGHTS: [i64; 37] = [0; 37];
+static EMPTY_DATA: [u8; 192] = [0; 192];
+
+/// Send a padding column the world doesn't have.
+async fn send_empty_chunk(client: &mut Client, x: i32, z: i32) -> Result<(), Error> {
+    client
+        .send(&ChunkData {
+            chunk_x: x,
+            chunk_z: z,
+            heightmaps: vec![Heightmap { kind: 4, data: EMPTY_HEIGHTS.to_vec() }],
+            data: &EMPTY_DATA,
+            block_entities: Vec::new(),
+            light: LightData::fullbright(),
+        })
+        .await
+}
+
 /// Desired chunk set: view-distance square around `(cx, cz)`, intersected
 /// with loaded chunks.
 fn wanted_chunks(
@@ -152,14 +172,36 @@ fn wanted_chunks(
 }
 
 /// Reconcile `sent_chunks` with the wanted set around the player's new
-/// chunk: unload far chunks first, then `SetCenterChunk` + one batch for
-/// newly visible chunks.
+/// chunk, plus a 1-wide ring of empty padding so edge chunks have the
+/// neighbors the client needs to mesh them. Unload far chunks first, then
+/// `SetCenterChunk` + one batch for newly visible chunks.
 async fn stream_chunks_around(client: &mut Client, cx: i32, cz: i32) -> Result<(), Error> {
     let wanted = wanted_chunks(&client.server.lobby, cx, cz, client.view_distance);
     let wanted_set: std::collections::HashSet<(i32, i32)> =
         wanted.iter().map(|c| (c.x, c.z)).collect();
+    // Padding ring: neighbors of wanted chunks that aren't wanted (or
+    // loaded) themselves. Sorted nearest-first so the ground under the
+    // player resolves before the horizon.
+    let mut ring: Vec<(i32, i32)> = {
+        let mut ring_set = std::collections::HashSet::new();
+        for &(x, z) in &wanted_set {
+            for dz in -1..=1 {
+                for dx in -1..=1 {
+                    let n = (x + dx, z + dz);
+                    if !wanted_set.contains(&n) {
+                        ring_set.insert(n);
+                    }
+                }
+            }
+        }
+        let mut ring: Vec<(i32, i32)> = ring_set.into_iter().collect();
+        ring.sort_by_key(|&(x, z)| (x - cx) * (x - cx) + (z - cz) * (z - cz));
+        ring
+    };
+    let mut keep: std::collections::HashSet<(i32, i32)> = wanted_set.clone();
+    keep.extend(ring.iter().copied());
 
-    let mut gone: Vec<(i32, i32)> = client.sent_chunks.difference(&wanted_set).copied().collect();
+    let mut gone: Vec<(i32, i32)> = client.sent_chunks.difference(&keep).copied().collect();
     gone.sort_unstable();
     for (x, z) in &gone {
         client.sent_chunks.remove(&(*x, *z));
@@ -168,11 +210,12 @@ async fn stream_chunks_around(client: &mut Client, cx: i32, cz: i32) -> Result<(
 
     let fresh: Vec<_> =
         wanted.into_iter().filter(|c| !client.sent_chunks.contains(&(c.x, c.z))).collect();
-    if fresh.is_empty() && gone.is_empty() {
+    ring.retain(|pos| !client.sent_chunks.contains(pos));
+    if fresh.is_empty() && ring.is_empty() && gone.is_empty() {
         return Ok(());
     }
-    eprintln!("stream: center {cx},{cz}: +{} -{}", fresh.len(), gone.len());
-    if fresh.is_empty() {
+    eprintln!("stream: center {cx},{cz}: +{} +ring{} -{}", fresh.len(), ring.len(), gone.len());
+    if fresh.is_empty() && ring.is_empty() {
         return Ok(());
     }
     client.send(&SetCenterChunk { chunk_x: cx, chunk_z: cz }).await?;
@@ -181,7 +224,11 @@ async fn stream_chunks_around(client: &mut Client, cx: i32, cz: i32) -> Result<(
         send_chunk(client, chunk).await?;
         client.sent_chunks.insert((chunk.x, chunk.z));
     }
-    client.send(&ChunkBatchFinished { batch_size: fresh.len() as i32 }).await?;
+    for &(x, z) in &ring {
+        send_empty_chunk(client, x, z).await?;
+        client.sent_chunks.insert((x, z));
+    }
+    client.send(&ChunkBatchFinished { batch_size: (fresh.len() + ring.len()) as i32 }).await?;
     Ok(())
 }
 
