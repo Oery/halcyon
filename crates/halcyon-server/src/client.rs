@@ -1,12 +1,14 @@
 use futures_lite::{AsyncRead, AsyncReadExt, AsyncWrite};
 use glommio::net::TcpStream;
-use mc_protocol::packets::Context;
+use mc_protocol::packets::{Context, Payload};
 use openssl::symm::Crypter;
+use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context as TaskContext, Poll};
 use std::time::{Duration, Instant};
 
+use crate::error::Error;
 use crate::packet::read_packet;
 use crate::server::Server;
 use crate::states::handle_packet;
@@ -50,7 +52,7 @@ impl AsyncRead for ClientStream {
         self: Pin<&mut Self>,
         cx: &mut TaskContext<'_>,
         buf: &mut [u8],
-    ) -> Poll<std::io::Result<usize>> {
+    ) -> Poll<io::Result<usize>> {
         let this = self.get_mut();
 
         match this {
@@ -62,16 +64,23 @@ impl AsyncRead for ClientStream {
                     Poll::Ready(Ok(0)) => Poll::Ready(Ok(0)),
                     Poll::Ready(Ok(n)) => {
                         let mut plain = vec![0u8; n + 16];
-                        let m =
-                            dec.update(&encrypted[..n], &mut plain).expect("AES decrypt failed");
-                        buf[..m].copy_from_slice(&plain[..m]);
-                        Poll::Ready(Ok(m))
+                        match dec.update(&encrypted[..n], &mut plain) {
+                            Ok(m) => {
+                                buf[..m].copy_from_slice(&plain[..m]);
+                                Poll::Ready(Ok(m))
+                            }
+                            // Crypto failure mid-stream: unrecoverable, drop the
+                            // connection rather than delivering corrupt bytes.
+                            Err(_) => Poll::Ready(Err(io::Error::from(io::ErrorKind::InvalidData))),
+                        }
                     }
                     Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
                     Poll::Pending => Poll::Pending,
                 }
             }
-            ClientStream::Placeholder => unreachable!("polled placeholder stream"),
+            ClientStream::Placeholder => {
+                Poll::Ready(Err(io::Error::from(io::ErrorKind::BrokenPipe)))
+            }
         }
     }
 }
@@ -81,22 +90,23 @@ impl AsyncWrite for ClientStream {
         self: Pin<&mut Self>,
         cx: &mut TaskContext<'_>,
         buf: &[u8],
-    ) -> Poll<std::io::Result<usize>> {
+    ) -> Poll<io::Result<usize>> {
         let this = self.get_mut();
 
         match this {
             ClientStream::Plain(stream) => Pin::new(stream).poll_write(cx, buf),
             ClientStream::Encrypted { stream, enc, .. } => {
                 let mut encrypted = vec![0u8; buf.len() + 16];
-                let n = enc.update(buf, &mut encrypted).expect("AES encrypt failed");
+                let n = match enc.update(buf, &mut encrypted) {
+                    Ok(n) => n,
+                    Err(_) => return Poll::Ready(Err(io::Error::from(io::ErrorKind::InvalidData))),
+                };
                 // NOTE: must loop until all `n` bytes flush; single poll_write may short-write.
                 let mut written = 0;
                 while written < n {
                     match Pin::new(&mut *stream).poll_write(cx, &encrypted[written..n]) {
                         Poll::Ready(Ok(0)) => {
-                            return Poll::Ready(Err(std::io::Error::from(
-                                std::io::ErrorKind::WriteZero,
-                            )));
+                            return Poll::Ready(Err(io::Error::from(io::ErrorKind::WriteZero)));
                         }
                         Poll::Ready(Ok(m)) => written += m,
                         Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
@@ -107,23 +117,29 @@ impl AsyncWrite for ClientStream {
                 }
                 Poll::Ready(Ok(buf.len()))
             }
-            ClientStream::Placeholder => unreachable!("polled placeholder stream"),
+            ClientStream::Placeholder => {
+                Poll::Ready(Err(io::Error::from(io::ErrorKind::BrokenPipe)))
+            }
         }
     }
 
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<std::io::Result<()>> {
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
         match self.get_mut() {
             ClientStream::Plain(stream) => Pin::new(stream).poll_flush(cx),
             ClientStream::Encrypted { stream, .. } => Pin::new(stream).poll_flush(cx),
-            ClientStream::Placeholder => unreachable!("polled placeholder stream"),
+            ClientStream::Placeholder => {
+                Poll::Ready(Err(io::Error::from(io::ErrorKind::BrokenPipe)))
+            }
         }
     }
 
-    fn poll_close(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<std::io::Result<()>> {
+    fn poll_close(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
         match self.get_mut() {
             ClientStream::Plain(stream) => Pin::new(stream).poll_close(cx),
             ClientStream::Encrypted { stream, .. } => Pin::new(stream).poll_close(cx),
-            ClientStream::Placeholder => unreachable!("polled placeholder stream"),
+            ClientStream::Placeholder => {
+                Poll::Ready(Err(io::Error::from(io::ErrorKind::BrokenPipe)))
+            }
         }
     }
 }
@@ -142,10 +158,19 @@ impl Client {
         }
     }
 
+    /// Sends one packet; any write failure ends the connection at the caller.
+    pub async fn send<'p, P: Payload<'p>>(&mut self, pkt: &P) -> Result<(), Error> {
+        Ok(pkt.write_packet(&mut self.stream).await?)
+    }
+
+    /// Enables encryption exactly once (login flow). A second call is a
+    /// server bug: logged, connection kept on the existing stream.
     pub fn enable_encryption(&mut self, enc: Crypter, dec: Crypter) {
         let plain = std::mem::replace(&mut self.stream, ClientStream::Placeholder);
         let ClientStream::Plain(raw) = plain else {
-            unreachable!("encryption enabled twice")
+            eprintln!("encryption enabled twice; keeping existing stream");
+            self.stream = plain;
+            return;
         };
 
         self.stream = ClientStream::Encrypted { stream: raw, enc, dec };
@@ -155,15 +180,15 @@ impl Client {
         let mut buf = [0u8; SIZE];
         let mut len = 0;
 
-        match &self.stream {
-            ClientStream::Plain(stream) => {
-                stream.set_nodelay(true).expect("set_nodelay call failed")
-            }
-            ClientStream::Encrypted { stream, .. } => {
-                stream.set_nodelay(true).expect("set_nodelay call failed")
-            }
-            ClientStream::Placeholder => unreachable!("placeholder at run start"),
+        let nodelay = match &self.stream {
+            ClientStream::Plain(stream) => stream.set_nodelay(true),
+            ClientStream::Encrypted { stream, .. } => stream.set_nodelay(true),
+            ClientStream::Placeholder => return,
         };
+        if let Err(e) = nodelay {
+            eprintln!("set_nodelay failed: {e}");
+            return;
+        }
         while let Ok(n) = self.stream.read(&mut buf[len..SIZE]).await
             && n > 0
         {
@@ -174,8 +199,11 @@ impl Client {
             loop {
                 match read_packet(&buf[total_read..len], self) {
                     Ok(Some((pkt, processed))) => {
-                        if let Some(pkt) = pkt {
-                            handle_packet(pkt, self).await;
+                        if let Some(pkt) = pkt
+                            && let Err(e) = handle_packet(pkt, self).await
+                        {
+                            eprintln!("dropping connection: {e}");
+                            return;
                         }
                         total_read += processed;
                     }
@@ -193,14 +221,13 @@ impl Client {
             if self.ctx.state == mc_protocol::State::Play
                 && self.last_keepalive.elapsed() >= Duration::from_secs(15)
             {
-                use mc_protocol::packets::Payload;
                 use mc_protocol::packets::client::PlayKeepAlive;
 
                 self.keepalive_id += 1;
-                PlayKeepAlive { id: self.keepalive_id }
-                    .write_packet(&mut self.stream)
-                    .await
-                    .unwrap();
+                if let Err(e) = self.send(&PlayKeepAlive { id: self.keepalive_id }).await {
+                    eprintln!("dropping connection: {e}");
+                    return;
+                }
                 self.last_keepalive = Instant::now();
             }
         }

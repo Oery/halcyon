@@ -5,9 +5,7 @@ pub struct Server {
 }
 
 impl Server {
-    pub fn new() -> Server {
-        let keys = Keys::new();
-
-        Server { keys }
+    pub fn new() -> Result<Server, openssl::error::ErrorStack> {
+        Ok(Server { keys: Keys::new()? })
     }
 }

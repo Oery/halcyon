@@ -11,11 +11,11 @@ pub struct Keys {
 }
 
 impl Keys {
-    pub fn new() -> Keys {
-        let private = Rsa::generate(2048).unwrap();
-        let public = private.public_key_to_der().unwrap();
+    pub fn new() -> Result<Keys, ErrorStack> {
+        let private = Rsa::generate(2048)?;
+        let public = private.public_key_to_der()?;
 
-        Keys { public, private }
+        Ok(Keys { public, private })
     }
 }
 
@@ -69,7 +69,8 @@ fn notch_hex(digest: &[u8; 20]) -> String {
                 started = true;
             }
             if started {
-                hex.push(char::from_digit(nibble as u32, 16).unwrap());
+                // Nibble is 0..=15 by masking; `from_digit` is infallible here.
+                hex.push(char::from_digit(nibble as u32, 16).unwrap_or('0'));
             }
         }
     }
@@ -112,7 +113,7 @@ mod tests {
 
     #[test]
     fn rsa_round_trip() {
-        let keys = Keys::new();
+        let keys = Keys::new().expect("test key generation works");
         let secret = *b"0123456789abcdef";
 
         let mut encrypted = vec![0u8; keys.private.size() as usize];

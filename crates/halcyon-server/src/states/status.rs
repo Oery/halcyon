@@ -1,9 +1,10 @@
 use mc_protocol::data::motd::*;
+use mc_protocol::packets::Packets;
 use mc_protocol::packets::client::*;
 use mc_protocol::packets::server::*;
-use mc_protocol::packets::{Packets, Payload};
 
 use crate::Client;
+use crate::error::Error;
 
 fn status() -> StatusPacket<'static> {
     StatusPacket {
@@ -17,16 +18,16 @@ fn status() -> StatusPacket<'static> {
     }
 }
 
-pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) {
-    let w = &mut client.stream;
-
+pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), Error> {
     match pkt {
         Packets::PingRequest(PingRequest { time }) => {
-            PingResponse { time }.write_packet(w).await.unwrap();
+            client.send(&PingResponse { time }).await?;
         }
         Packets::StatusRequest(_) => {
-            status().write_packet(w).await.unwrap();
+            client.send(&status()).await?;
         }
         _ => eprintln!("unhandled packet: {pkt:?}"),
     };
+
+    Ok(())
 }

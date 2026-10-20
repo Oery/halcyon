@@ -1,14 +1,12 @@
 use futures_lite::AsyncWriteExt;
 
-use crate::decode::take;
+use crate::decode::{take, take_array};
 use crate::error::DecodeError;
 use crate::packets::PacketWriter;
 
 impl PacketWriter<'_> for u16 {
     fn read(input: &mut &[u8]) -> Result<Self, DecodeError> {
-        let bytes: [u8; 2] = take(input, 2)?.try_into().expect("buffer should contains 2 bytes");
-
-        return Ok(u16::from_be_bytes(bytes));
+        Ok(u16::from_be_bytes(take_array(input)?))
     }
 
     async fn write<W: AsyncWriteExt + Unpin>(&self, w: &mut W) -> crate::encode::Result {
@@ -24,9 +22,7 @@ impl PacketWriter<'_> for u16 {
 }
 impl PacketWriter<'_> for i32 {
     fn read(input: &mut &[u8]) -> Result<Self, DecodeError> {
-        let bytes: [u8; 4] = take(input, 4)?.try_into().expect("buffer should contains 4 bytes");
-
-        return Ok(i32::from_be_bytes(bytes));
+        Ok(i32::from_be_bytes(take_array(input)?))
     }
 
     async fn write<W: AsyncWriteExt + Unpin>(&self, w: &mut W) -> crate::encode::Result {
@@ -40,9 +36,7 @@ impl PacketWriter<'_> for i32 {
 }
 impl PacketWriter<'_> for i16 {
     fn read(input: &mut &[u8]) -> Result<Self, DecodeError> {
-        let bytes: [u8; 2] = take(input, 2)?.try_into().expect("buffer should contains 2 bytes");
-
-        return Ok(i16::from_be_bytes(bytes));
+        Ok(i16::from_be_bytes(take_array(input)?))
     }
 
     async fn write<W: AsyncWriteExt + Unpin>(&self, w: &mut W) -> crate::encode::Result {
@@ -57,9 +51,7 @@ impl PacketWriter<'_> for i16 {
 
 impl PacketWriter<'_> for f32 {
     fn read(input: &mut &[u8]) -> Result<Self, DecodeError> {
-        let bytes: [u8; 4] = take(input, 4)?.try_into().expect("buffer should contains 4 bytes");
-
-        return Ok(f32::from_be_bytes(bytes));
+        Ok(f32::from_be_bytes(take_array(input)?))
     }
 
     async fn write<W: AsyncWriteExt + Unpin>(&self, w: &mut W) -> crate::encode::Result {
@@ -74,9 +66,7 @@ impl PacketWriter<'_> for f32 {
 
 impl PacketWriter<'_> for f64 {
     fn read(input: &mut &[u8]) -> Result<Self, DecodeError> {
-        let bytes: [u8; 8] = take(input, 8)?.try_into().expect("buffer should contains 8 bytes");
-
-        return Ok(f64::from_be_bytes(bytes));
+        Ok(f64::from_be_bytes(take_array(input)?))
     }
 
     async fn write<W: AsyncWriteExt + Unpin>(&self, w: &mut W) -> crate::encode::Result {
@@ -91,9 +81,7 @@ impl PacketWriter<'_> for f64 {
 
 impl PacketWriter<'_> for i64 {
     fn read(input: &mut &[u8]) -> Result<Self, DecodeError> {
-        let bytes: [u8; 8] = take(input, 8)?.try_into().expect("buffer should contains 4 bytes");
-
-        return Ok(i64::from_be_bytes(bytes));
+        Ok(i64::from_be_bytes(take_array(input)?))
     }
 
     async fn write<W: AsyncWriteExt + Unpin>(&self, w: &mut W) -> crate::encode::Result {

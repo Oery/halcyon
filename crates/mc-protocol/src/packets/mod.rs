@@ -123,7 +123,7 @@ pub trait Payload<'p>: Sized {
     const ID: VarInt;
     const STATE: State;
 
-    fn payload_len(&self) -> usize;
+    fn payload_len(&self) -> EncodeResult<usize>;
 
     fn decode_payload(buf: &mut &'p [u8]) -> DecodeResult<Self>;
 
@@ -135,7 +135,7 @@ pub trait Payload<'p>: Sized {
     where
         W: AsyncWrite + Unpin,
     {
-        let length = Self::ID.body_len() + self.payload_len();
+        let length = Self::ID.body_len() + self.payload_len()?;
         VarInt(length as i32).write(w).await?;
 
         Self::ID.write(w).await?;

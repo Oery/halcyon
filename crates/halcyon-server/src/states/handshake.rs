@@ -1,6 +1,7 @@
 use mc_protocol::packets::Packets;
 
 use crate::Client;
+use crate::error::Error;
 
 // 1 for Status, 2 for Login, 3 for Transfer. Intents 2 and 3 both transition
 // to the Login state, but 3 indicates that the client is connecting due to
@@ -9,9 +10,11 @@ use crate::Client;
 // the connection by replying with a Disconnect (login) packet.
 
 // FIXME: reject invalid next states
-pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) {
+pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), Error> {
     match pkt {
         Packets::ServerListPing(slp) => client.ctx.state = slp.next_state,
         _ => eprintln!("unhandled packet: {pkt:?}"),
     };
+
+    Ok(())
 }

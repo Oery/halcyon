@@ -75,7 +75,7 @@ fn get_field_write_fn(field: &Field) -> proc_macro2::TokenStream {
         Format::Standard => quote! { self.#ident.write(w).await?; },
         Format::VarInt => quote! { VarInt(self.#ident as i32).write(w).await?; },
         Format::Json => quote! {
-            let json = serde_json::to_string(&self.#ident).unwrap();
+            let json = serde_json::to_string(&self.#ident)?;
             json.as_str().write(w).await?;
         },
     }
@@ -107,7 +107,7 @@ fn impl_payload_len(data: &DataStruct) -> proc_macro2::TokenStream {
             Format::Standard => quote! { self.#ident },
             Format::VarInt => quote! { VarInt(self.#ident as i32) },
             Format::Json => quote! {
-                serde_json::to_string(&self.#ident).unwrap().as_str()
+                serde_json::to_string(&self.#ident)?.as_str()
             },
         };
 
@@ -150,10 +150,10 @@ pub fn packet(attr: TokenStream, input: TokenStream) -> TokenStream {
             const ID: VarInt = VarInt(#id);
             const STATE: State = State::#state;
 
-            fn payload_len(&self) -> usize {
+            fn payload_len(&self) -> EncodeResult<usize> {
                 let mut length = 0;
                 #payload_len
-                length
+                Ok(length)
             }
 
             fn decode_payload(buf: &mut &'p [u8]) -> DecodeResult<Self> {

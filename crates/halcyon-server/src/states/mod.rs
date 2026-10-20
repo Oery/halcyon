@@ -8,14 +8,14 @@ use mc_protocol::packets::{InnerPacket, Packets};
 use mc_protocol::state::State;
 
 use crate::Client;
+use crate::error::Error;
 
-// TODO: send back a status response
-pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) {
+pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), Error> {
     match pkt.state() {
         State::Config => config::handle_packet(pkt, client).await,
         State::Handshake => handshake::handle_packet(pkt, client).await,
         State::Login => login::handle_packet(pkt, client).await,
         State::Status => status::handle_packet(pkt, client).await,
         State::Play => play::handle_packet(pkt, client).await,
-    };
+    }
 }

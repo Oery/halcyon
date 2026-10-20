@@ -306,7 +306,7 @@ impl<'p> Payload<'p> for PlayLogin<'p> {
     const ID: VarInt = VarInt(0x32);
     const STATE: State = State::Play;
 
-    fn payload_len(&self) -> usize {
+    fn payload_len(&self) -> EncodeResult<usize> {
         let mut length = 0;
         length += self.entity_id.body_len();
         length += self.hardcore.body_len();
@@ -329,7 +329,7 @@ impl<'p> Payload<'p> for PlayLogin<'p> {
         length += self.sea_level.body_len();
         length += false.body_len();
         length += self.enforces_secure_chat.body_len();
-        length
+        Ok(length)
     }
 
     fn decode_payload(buf: &mut &'p [u8]) -> DecodeResult<Self> {
