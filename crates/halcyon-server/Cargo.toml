@@ -9,6 +9,7 @@ thiserror = "2.0.21"
 glommio = { package = "glommio-ng", version = "0.12" }
 
 mc_protocol = { version = "0.1.0", path = "../mc-protocol" }
+halcyon-world = { version = "0.1.0", path = "../halcyon-world" }
 mimalloc = "0.1.52"
 futures-lite = "2.6.1"
 openssl = "0.10.81"

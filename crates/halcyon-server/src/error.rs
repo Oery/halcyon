@@ -8,6 +8,9 @@ pub enum Error {
     #[error("packet encode failed: {0}")]
     Encode(#[from] EncodeError),
 
+    #[error("world load failed: {0}")]
+    World(#[from] halcyon_world::LoadError),
+
     #[error("crypto operation failed: {0}")]
     Crypto(#[from] openssl::error::ErrorStack),
 

@@ -6,7 +6,7 @@ use mc_protocol::packets::client::{
     ChunkBatchFinished, ChunkData, GameEvent, PlayKeepAlive, PlayerAbilities, SetCenterChunk,
     SetDefaultSpawnPosition, SetHealth, SyncPlayerPosition,
 };
-use mc_protocol::types::LightData;
+use mc_protocol::types::{Heightmap, LightData};
 
 use crate::Client;
 use crate::error::Error;
@@ -88,60 +88,64 @@ fn pack_block_pos(x: i32, y: i32, z: i32) -> i64 {
 }
 
 pub async fn enter_play(client: &mut Client) -> Result<(), Error> {
-    client.send(&SetCenterChunk { chunk_x: 0, chunk_z: 0 }).await?;
+    let (sx, sy, sz, yaw, pitch) = client.server.lobby.spawn;
+    let scx = (sx.floor() as i32) >> 4;
+    let scz = (sz.floor() as i32) >> 4;
+    client.send(&SetCenterChunk { chunk_x: scx, chunk_z: scz }).await?;
     client.send(&GameEvent { event: 13, value: 0.0 }).await?;
     client
         .send(&SetDefaultSpawnPosition {
             dimension_name: "minecraft:overworld",
-            location: pack_block_pos(8, 64, 8),
-            yaw: 0.0,
-            pitch: 0.0,
+            location: pack_block_pos(sx.floor() as i32, sy.floor() as i32, sz.floor() as i32),
+            yaw,
+            pitch,
         })
         .await?;
     client.send(&PlayerAbilities { flags: 0x00, flying_speed: 0.05, fov_modifier: 0.1 }).await?;
     client.send(&SetHealth { health: 20.0, food: 20, saturation: 5.0 }).await?;
-    client.send(&mc_protocol::packets::client::ChunkBatchStart).await?;
-    // 24 sections: overworld dimension_type (min_y -64, height 384).
-    // Each: block_count 0, fluid_count 0, blocks BPE 0 + air id 0,
-    // biomes BPE 0 + plains index 0. 8 bytes per section = 192 bytes.
-    let mut data = Vec::with_capacity(24 * 8);
-    for _ in 0..24 {
-        data.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+
+    // `Arc` clone ends the lobby borrow; per-send borrows hit the `Arc`s.
+    let chunks: Vec<_> =
+        client.server.lobby.chunks_by_distance(scx, scz).into_iter().cloned().collect();
+    let batch_size = chunks.len() as i32;
+    for chunk in &chunks {
+        client
+            .send(&ChunkData {
+                chunk_x: chunk.x,
+                chunk_z: chunk.z,
+                heightmaps: vec![Heightmap {
+                    kind: 4, // MOTION_BLOCKING
+                    data: chunk.heights.to_vec(),
+                }],
+                data: &chunk.data,
+                block_entities: Vec::new(),
+                light: LightData {
+                    sky_mask: Vec::new(),
+                    block_mask: Vec::new(),
+                    // 26 sections + 2 bits: lowest 4 bytes set, trailing zero
+                    // bytes trimmed by toByteArray.
+                    empty_sky_mask: vec![0xFF, 0xFF, 0xFF, 0x0F],
+                    empty_block_mask: vec![0xFF, 0xFF, 0xFF, 0x0F],
+                    sky_light: Vec::new(),
+                    block_light: Vec::new(),
+                },
+            })
+            .await?;
     }
 
-    client
-        .send(&ChunkData {
-            chunk_x: 0,
-            chunk_z: 0,
-            heightmaps: Vec::new(),
-            data,
-            block_entities: Vec::new(),
-            light: LightData {
-                sky_mask: Vec::new(),
-                block_mask: Vec::new(),
-                // 26 sections + 2 bits: lowest 4 bytes set, trailing zero
-                // bytes trimmed by toByteArray.
-                empty_sky_mask: vec![0xFF, 0xFF, 0xFF, 0x0F],
-                empty_block_mask: vec![0xFF, 0xFF, 0xFF, 0x0F],
-                sky_light: Vec::new(),
-                block_light: Vec::new(),
-            },
-        })
-        .await?;
-
-    client.send(&ChunkBatchFinished { batch_size: 1 }).await?;
+    client.send(&ChunkBatchFinished { batch_size }).await?;
 
     client
         .send(&SyncPlayerPosition {
             teleport_id: 1,
-            x: 8.5,
-            y: 64.0,
-            z: 8.5,
+            x: sx,
+            y: sy,
+            z: sz,
             vel_x: 0.0,
             vel_y: 0.0,
             vel_z: 0.0,
-            yaw: 0.0,
-            pitch: 0.0,
+            yaw,
+            pitch,
             flags: 0,
         })
         .await?;

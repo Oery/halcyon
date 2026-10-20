@@ -203,7 +203,7 @@ pub struct ChunkData<'p> {
     pub chunk_x: i32,
     pub chunk_z: i32,
     pub heightmaps: Vec<Heightmap>,
-    pub data: Vec<u8>,
+    pub data: &'p [u8],
     pub block_entities: Vec<BlockEntity<'p>>,
     pub light: LightData,
 }

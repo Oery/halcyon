@@ -19,7 +19,9 @@ static ADDR: &str = "127.0.0.1:25565";
 
 #[glommio::main(placement = Fixed(0))]
 async fn main() -> std::io::Result<()> {
-    let server = Arc::new(Server::new().map_err(std::io::Error::other)?);
+    let lobby = halcyon_world::World::load(std::path::Path::new("worlds/lobby"))
+        .map_err(std::io::Error::other)?;
+    let server = Arc::new(Server::new(lobby).map_err(std::io::Error::other)?);
 
     let listener = TcpListener::bind(ADDR)?;
     let mut incoming = listener.incoming();

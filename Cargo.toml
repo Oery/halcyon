@@ -1,7 +1,8 @@
 [workspace]
 members = [
     "crates/mc-protocol",
-    "crates/halcyon-server"
+    "crates/halcyon-server",
+    "crates/halcyon-world",
 ]
 resolver = "3"
 

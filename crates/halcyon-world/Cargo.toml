@@ -1,0 +1,9 @@
+[package]
+name = "halcyon-world"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror = "2.0.21"
+flate2 = { version = "1", default-features = false, features = ["zlib"] }
