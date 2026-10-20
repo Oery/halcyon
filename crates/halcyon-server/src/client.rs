@@ -161,7 +161,7 @@ impl Client {
             pending_teleport: None,
             next_teleport_id: 0,
             sent_chunks: std::collections::HashSet::new(),
-            view_distance: 4,
+            view_distance: 32,
         }
     }
     /// Sends one packet; any write failure ends the connection at the caller.
