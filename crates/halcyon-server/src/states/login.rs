@@ -17,9 +17,41 @@ use crate::encryption::*;
 
 const SERVER_ID: &str = "";
 
+/// Login failures. Only auth failures justify telling the player why
+/// (vanilla "Failed to verify username!"); protocol violations and
+/// server-side errors close silently, details stay server-side.
+#[derive(Debug)]
+enum LoginError {
+    UnexpectedResponse,
+    MissingStart,
+    DecryptSecret,
+    DecryptToken,
+    TokenMismatch,
+    BadSecretLen,
+    VerifyFailed,
+    NameMismatch,
+    BadProfileId,
+}
+
+impl LoginError {
+    /// Player-facing reason, if the failure justifies a `LoginDisconnect`.
+    fn disconnect_reason(&self) -> Option<&'static str> {
+        match self {
+            LoginError::VerifyFailed | LoginError::NameMismatch => {
+                Some("Failed to verify username!")
+            }
+            _ => None,
+        }
+    }
+}
+
 async fn disconnect(client: &mut Client, reason: &str) {
     let json = serde_json::to_string(&serde_json::json!({ "text": reason })).unwrap();
     let _ = LoginDisconnect { reason: json.as_str() }.write_packet(&mut client.stream).await;
+    close(client).await;
+}
+
+async fn close(client: &mut Client) {
     let _ = futures_lite::AsyncWriteExt::close(&mut client.stream).await;
 }
 
@@ -78,62 +110,46 @@ fn to_game_profile<'p>(
 }
 
 async fn handle_encryption_response(p: EncryptionResponse<'_>, client: &mut Client) {
+    if let Err(e) = login(p, client).await {
+        eprintln!("login failed: {e:?}");
+        match e.disconnect_reason() {
+            Some(reason) => disconnect(client, reason).await,
+            None => close(client).await,
+        }
+    }
+}
+
+async fn login(p: EncryptionResponse<'_>, client: &mut Client) -> Result<(), LoginError> {
     let Some(expected_token) = client.ctx.verify_token else {
-        disconnect(client, "Unexpected encryption response").await;
-        return;
+        Err(LoginError::UnexpectedResponse)?
     };
     let Some(username) = client.ctx.username.clone() else {
-        disconnect(client, "Missing login start").await;
-        return;
+        Err(LoginError::MissingStart)?
     };
 
-    let secret = match decrypt_rsa(p.shared_secret, &client.server.keys.private) {
-        Ok(secret) => secret,
-        Err(_) => {
-            disconnect(client, "Failed to decrypt shared secret").await;
-            return;
-        }
-    };
-    let token = match decrypt_rsa(p.verify_token, &client.server.keys.private) {
-        Ok(token) => token,
-        Err(_) => {
-            disconnect(client, "Failed to decrypt verify token").await;
-            return;
-        }
-    };
+    let secret = decrypt_rsa(p.shared_secret, &client.server.keys.private)
+        .map_err(|_| LoginError::DecryptSecret)?;
+    let token = decrypt_rsa(p.verify_token, &client.server.keys.private)
+        .map_err(|_| LoginError::DecryptToken)?;
 
     if token != expected_token {
-        disconnect(client, "Verify tokens do not match").await;
-        return;
+        Err(LoginError::TokenMismatch)?;
     }
     if secret.len() != 16 {
-        disconnect(client, "Invalid shared secret length").await;
-        return;
+        Err(LoginError::BadSecretLen)?;
     }
     let shared: [u8; 16] = secret[..16].try_into().unwrap();
 
     let hash = server_hash(SERVER_ID, &shared, &client.server.keys.public);
-
-    let profile: Response = match authenticate(&username, &hash).await {
-        Ok(profile) => profile,
-        Err(_) => {
-            disconnect(client, "Failed to verify username!").await;
-            return;
-        }
-    };
+    let profile: Response =
+        authenticate(&username, &hash).await.map_err(|_| LoginError::VerifyFailed)?;
 
     if profile.name != username {
-        disconnect(client, "Username mismatch").await;
-        return;
+        Err(LoginError::NameMismatch)?;
     }
 
-    let game_profile = match to_game_profile(&profile, &username) {
-        Ok(game_profile) => game_profile,
-        Err(_) => {
-            disconnect(client, "Invalid profile id").await;
-            return;
-        }
-    };
+    let game_profile =
+        to_game_profile(&profile, &username).map_err(|_| LoginError::BadProfileId)?;
     // Session ID is a fresh random UUID identifying this login session
     // (Velocity: `UUID.randomUUID()`; BungeeCord: same since MINECRAFT_26_2).
     let session_id = Uuid::new_v4();
@@ -146,6 +162,8 @@ async fn handle_encryption_response(p: EncryptionResponse<'_>, client: &mut Clie
 
     client.ctx.verify_token = None;
     client.ctx.player_uuid = Some(player_uuid);
+
+    Ok(())
 }
 
 async fn handle_login_acknowledge(client: &mut Client) {
