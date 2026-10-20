@@ -1,6 +1,7 @@
 use futures_lite::AsyncWrite;
 use uuid::Uuid;
 
+use crate::auth::Property;
 use crate::error::DecodeError;
 use crate::packets::client::*;
 use crate::packets::server::*;
@@ -22,6 +23,13 @@ pub struct Context {
     pub verify_token: Option<[u8; 4]>,
     pub username: Option<String>,
     pub player_uuid: Option<Uuid>,
+    /// Mojang `textures` property (+ signature) from `hasJoined`, kept for
+    /// the Play-time `PlayerInfoUpdate` that actually renders the skin.
+    pub profile_properties: Vec<Property>,
+    /// `Displayed Skin Parts` bitmask from `Client Information` (sent in
+    /// Config and again on every Play settings change). Echoed back as
+    /// player metadata index 16 so layers/cape render.
+    pub skin_parts: u8,
 }
 
 pub trait InnerPacket {
@@ -53,6 +61,7 @@ pub enum Packets<'p> {
     SetPlayerRotation(SetPlayerRotation),
     ClientTickEnd(ClientTickEnd),
     PlayerLoaded(PlayerLoaded),
+    PlayClientInformation(ClientInformation<'p>),
 }
 
 impl<'p> Packets<'p> {
@@ -105,6 +114,9 @@ impl<'p> Packets<'p> {
                 Ok(Packets::SetPlayerRotation(SetPlayerRotation::decode_payload(buf)?))
             }
             (0x0D, State::Play) => Ok(Packets::ClientTickEnd(ClientTickEnd)),
+            (0x0E, State::Play) => {
+                Ok(Packets::PlayClientInformation(ClientInformation::decode_payload(buf)?))
+            }
             (0x2C, State::Play) => Ok(Packets::PlayerLoaded(PlayerLoaded)),
             _ => Err(DecodeError::UnknownPacket(id)),
         }

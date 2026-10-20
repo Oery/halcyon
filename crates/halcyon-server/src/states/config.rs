@@ -6,9 +6,10 @@ use crate::error::Error;
 
 pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), Error> {
     match pkt {
-        Packets::ClientInformation(_)
-        | Packets::ConfigPluginMessage(_)
-        | Packets::ConfigKnownPacks(_) => {}
+        Packets::ClientInformation(p) => {
+            client.ctx.skin_parts = p.skin_parts.0;
+        }
+        Packets::ConfigPluginMessage(_) | Packets::ConfigKnownPacks(_) => {}
         Packets::AcknowledgeFinish(_) => {
             // Entity ID 0 is vanilla's unassigned sentinel (Entity.getId
             // throws on 0); the Default uses 1.

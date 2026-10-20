@@ -7,8 +7,8 @@ use crate::encode::Result as EncodeResult;
 use crate::packets::PacketWriter;
 use crate::packets::Payload;
 use crate::types::{
-    BlockEntity, GameProfile, Heightmap, KnownPack, LightData, RegistryEntry, TaggedRegistry,
-    VarInt, bytes::Remainder,
+    BlockEntity, GameProfile, Heightmap, KnownPack, LightData, ProfileProperty, RegistryEntry,
+    TaggedRegistry, VarInt, bytes::Remainder,
 };
 
 use macros::{Payload, packet};
@@ -413,6 +413,109 @@ impl<'p> Payload<'p> for PlayLogin<'p> {
         self.sea_level.write(w).await?;
         true.write(w).await?;
         self.enforces_secure_chat.write(w).await?;
+
+        Ok(())
+    }
+}
+
+/// Play `Player Info Update` (`0x47`) with the `Add Player` (`0x01`) and
+/// `Update Listed` (`0x08`) actions. Same properties as `Login Success`;
+/// this is the packet the client renders the skin from.
+#[derive(Debug)]
+pub struct PlayerInfoUpdate<'p> {
+    pub uuid: Uuid,
+    pub username: &'p str,
+    pub properties: Vec<ProfileProperty<'p>>,
+}
+
+impl<'p> Payload<'p> for PlayerInfoUpdate<'p> {
+    const ID: VarInt = VarInt(0x47);
+    const STATE: State = State::Play;
+
+    fn payload_len(&self) -> EncodeResult<usize> {
+        let add = self.username.body_len() + self.properties.body_len();
+        Ok(1 + VarInt(1).body_len() + 16 + add + 1)
+    }
+
+    fn decode_payload(buf: &mut &'p [u8]) -> DecodeResult<Self> {
+        if u8::read(buf)? != 0x09 {
+            return Err(crate::error::DecodeError::EnumOutOfRange);
+        }
+        if VarInt::read(buf)?.0 != 1 {
+            return Err(crate::error::DecodeError::EnumOutOfRange);
+        }
+        let uuid = Uuid::read(buf)?;
+        let username = <&str>::read(buf)?;
+        let properties = <Vec<ProfileProperty>>::read(buf)?;
+        if !bool::read(buf)? {
+            return Err(crate::error::DecodeError::EnumOutOfRange);
+        }
+
+        Ok(Self { uuid, username, properties })
+    }
+
+    async fn write_payload<W>(&self, w: &mut W) -> EncodeResult
+    where
+        W: AsyncWrite + Unpin,
+    {
+        // Add Player | Update Listed.
+        0x09u8.write(w).await?;
+        VarInt(1).write(w).await?;
+        self.uuid.write(w).await?;
+        // Add Player entry: name + properties, no top-level UUID echo.
+        self.username.write(w).await?;
+        self.properties.write(w).await?;
+        // Update Listed: visible on the tab list.
+        true.write(w).await?;
+
+        Ok(())
+    }
+}
+
+/// Play `Set Entity Metadata` (`0x65`) carrying only the Avatar
+/// `Displayed Skin Parts` byte (index 16). The client renders jacket /
+/// sleeves / pants / hat / cape layers from this, not from the
+/// `Client Information` packet itself.
+#[derive(Debug)]
+pub struct SetEntityMetadata {
+    pub entity_id: i32,
+    pub skin_parts: u8,
+}
+
+impl<'p> Payload<'p> for SetEntityMetadata {
+    const ID: VarInt = VarInt(0x65);
+    const STATE: State = State::Play;
+
+    fn payload_len(&self) -> EncodeResult<usize> {
+        Ok(VarInt(self.entity_id).body_len() + 1 + VarInt(0).body_len() + 1 + 1)
+    }
+
+    fn decode_payload(buf: &mut &'p [u8]) -> DecodeResult<Self> {
+        let entity_id = VarInt::read(buf)?.0;
+        if u8::read(buf)? != 16 {
+            return Err(crate::error::DecodeError::EnumOutOfRange);
+        }
+        if VarInt::read(buf)?.0 != 0 {
+            return Err(crate::error::DecodeError::EnumOutOfRange);
+        }
+        let skin_parts = u8::read(buf)?;
+        if u8::read(buf)? != 0xFF {
+            return Err(crate::error::DecodeError::EnumOutOfRange);
+        }
+
+        Ok(Self { entity_id, skin_parts })
+    }
+
+    async fn write_payload<W>(&self, w: &mut W) -> EncodeResult
+    where
+        W: AsyncWrite + Unpin,
+    {
+        VarInt(self.entity_id).write(w).await?;
+        // index 16, type Byte (0), value, terminator.
+        16u8.write(w).await?;
+        VarInt(0).write(w).await?;
+        self.skin_parts.write(w).await?;
+        0xFFu8.write(w).await?;
 
         Ok(())
     }

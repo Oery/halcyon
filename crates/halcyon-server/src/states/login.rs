@@ -152,6 +152,7 @@ async fn login(p: EncryptionResponse<'_>, client: &mut Client) -> Result<(), Err
 
     client.ctx.verify_token = None;
     client.ctx.player_uuid = Some(player_uuid);
+    client.ctx.profile_properties = profile.properties;
 
     Ok(())
 }

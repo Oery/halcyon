@@ -3,10 +3,11 @@ use std::time::Instant;
 
 use mc_protocol::packets::Packets;
 use mc_protocol::packets::client::{
-    ChunkBatchFinished, ChunkData, GameEvent, PlayKeepAlive, PlayerAbilities, SetCenterChunk,
-    SetDefaultSpawnPosition, SetHealth, SyncPlayerPosition, UnloadChunk,
+    ChunkBatchFinished, ChunkData, GameEvent, PlayKeepAlive, PlayLogin, PlayerAbilities,
+    PlayerInfoUpdate, SetCenterChunk, SetDefaultSpawnPosition, SetEntityMetadata, SetHealth,
+    SyncPlayerPosition, UnloadChunk,
 };
-use mc_protocol::types::{Heightmap, LightData};
+use mc_protocol::types::{Heightmap, LightData, ProfileProperty};
 
 use crate::Client;
 use crate::error::Error;
@@ -80,6 +81,15 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
             client.pos.yaw = p.yaw;
             client.pos.pitch = p.pitch;
             client.pos.on_ground = p.flags & 0x01 != 0;
+        }
+        Packets::PlayClientInformation(p) => {
+            client.ctx.skin_parts = p.skin_parts.0;
+            client
+                .send(&SetEntityMetadata {
+                    entity_id: PlayLogin::default().entity_id,
+                    skin_parts: p.skin_parts.0,
+                })
+                .await?;
         }
         Packets::PlayKeepAliveResponse(_)
         | Packets::ChunkBatchReceived(_)
@@ -204,7 +214,42 @@ async fn move_player(
     }
     Ok(())
 }
+/// Sends the two packets the client renders the player's skin from:
+/// `Player Info Update` (Mojang `textures` property verified at login)
+/// and `Set Entity Metadata` (skin-parts bitmask from `Client Information`).
+async fn send_skin(client: &mut Client) -> Result<(), Error> {
+    let (Some(uuid), Some(username)) = (client.ctx.player_uuid, client.ctx.username.clone()) else {
+        return Ok(());
+    };
+
+    // Owned snapshot: the `ProfileProperty` borrows below must not
+    // overlap the `&mut client` sends.
+    let owned: Vec<(String, String, Option<String>)> = client
+        .ctx
+        .profile_properties
+        .iter()
+        .map(|p| (p.name.clone(), p.value.clone(), p.signature.clone()))
+        .collect();
+    let skin_parts = client.ctx.skin_parts;
+
+    let properties: Vec<ProfileProperty> = owned
+        .iter()
+        .map(|(name, value, signature)| ProfileProperty {
+            name: name.as_str(),
+            value: value.as_str(),
+            signature: signature.as_deref(),
+        })
+        .collect();
+    client.send(&PlayerInfoUpdate { uuid, username: username.as_str(), properties }).await?;
+    // Entity ID must match the one sent in `PlayLogin`.
+    client
+        .send(&SetEntityMetadata { entity_id: PlayLogin::default().entity_id, skin_parts })
+        .await?;
+
+    Ok(())
+}
 pub async fn enter_play(client: &mut Client) -> Result<(), Error> {
+    send_skin(client).await?;
     let (sx, sy, sz, yaw, pitch) = client.server.lobby.spawn;
     let scx = (sx.floor() as i32) >> 4;
     let scz = (sz.floor() as i32) >> 4;
