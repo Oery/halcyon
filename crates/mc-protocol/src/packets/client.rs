@@ -142,6 +142,12 @@ pub struct ChunkBatchFinished {
 #[packet(Play, 0x0C, Client)]
 pub struct ChunkBatchStart;
 
+#[packet(Play, 0x26, Client)]
+pub struct UnloadChunk {
+    pub chunk_z: i32,
+    pub chunk_x: i32,
+}
+
 #[packet(Play, 0x2D, Client)]
 pub struct PlayKeepAlive {
     pub id: i64,

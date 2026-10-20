@@ -39,6 +39,11 @@ pub struct Client {
     pub pos: PlayerPosition,
     pub pending_teleport: Option<i32>,
     pub next_teleport_id: i32,
+    /// Chunks the client has loaded: sent in a `ChunkData` batch and not
+    /// yet unloaded. Updated on entry burst and on chunk-border crossings.
+    pub sent_chunks: std::collections::HashSet<(i32, i32)>,
+    /// Chebyshev radius of chunks sent around the player.
+    pub view_distance: i32,
 }
 
 pub enum ClientStream {
@@ -155,9 +160,10 @@ impl Client {
             pos: PlayerPosition::default(),
             pending_teleport: None,
             next_teleport_id: 0,
+            sent_chunks: std::collections::HashSet::new(),
+            view_distance: 4,
         }
     }
-
     /// Sends one packet; any write failure ends the connection at the caller.
     pub async fn send<'p, P: Payload<'p>>(&mut self, pkt: &P) -> Result<(), Error> {
         Ok(pkt.write_packet(&mut self.stream).await?)
