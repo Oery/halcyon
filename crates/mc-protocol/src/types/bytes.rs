@@ -24,6 +24,26 @@ impl<'p> PacketWriter<'p> for &'p [u8] {
     }
 }
 
+#[derive(Debug)]
+pub struct Remainder<'p>(pub &'p [u8]);
+
+impl<'p> PacketWriter<'p> for Remainder<'p> {
+    fn read(input: &mut &'p [u8]) -> Result<Self, DecodeError> {
+        let rest = take(input, input.len())?;
+        Ok(Remainder(rest))
+    }
+
+    async fn write<T: AsyncWriteExt + Unpin>(&self, w: &mut T) -> crate::encode::Result {
+        w.write_all(self.0).await?;
+
+        Ok(())
+    }
+
+    fn body_len(&self) -> usize {
+        self.0.len()
+    }
+}
+
 impl<'p> PacketWriter<'p> for String {
     fn read(input: &mut &'p [u8]) -> Result<Self, DecodeError> {
         Ok(<&str>::read(input)?.to_owned())

@@ -5,6 +5,8 @@ use crate::data::config::*;
 use crate::packets::PacketWriter;
 use crate::packets::Payload;
 use crate::state::State;
+use crate::types::KnownPack;
+use crate::types::bytes::Remainder;
 
 use crate::decode::Result as DecodeResult;
 use crate::encode::Result as EncodeResult;
@@ -80,8 +82,19 @@ pub struct ConfigCookieResponse<'p> {
     pub payload: Option<&'p [u8]>,
 }
 
+#[packet(Config, 0x02, Server)]
+pub struct ConfigPluginMessage<'p> {
+    pub channel: &'p str,
+    pub data: Remainder<'p>,
+}
+
 #[packet(Config, 0x03, Server)]
-pub struct FinishConfig;
+pub struct AcknowledgeFinish;
+
+#[packet(Config, 0x07, Server)]
+pub struct ConfigKnownPacks<'p> {
+    pub packs: Vec<KnownPack<'p>>,
+}
 
 #[packet(Config, 0x04, Server)]
 pub struct ConfigKeepAlive {

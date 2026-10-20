@@ -4,6 +4,7 @@ use crate::decode::take;
 use crate::error::DecodeError;
 use crate::packets::PacketWriter;
 
+#[derive(Debug)]
 pub struct VarInt(pub i32);
 
 impl<'p> PacketWriter<'p> for VarInt {

@@ -168,7 +168,56 @@ async fn login(p: EncryptionResponse<'_>, client: &mut Client) -> Result<(), Log
 }
 
 async fn handle_login_acknowledge(client: &mut Client) {
+    use mc_protocol::data::registries;
+    use mc_protocol::types::{KnownPack, RegistryEntry, Tag, TaggedRegistry};
+
     client.ctx.state = mc_protocol::State::Config;
+
+    KnownPacks { packs: vec![KnownPack { namespace: "minecraft", id: "core", version: "26.3" }] }
+        .write_packet(&mut client.stream)
+        .await
+        .unwrap();
+
+    for (registry, entries) in registries::all() {
+        RegistryData {
+            registry,
+            entries: entries
+                .into_iter()
+                .map(|(id, data)| RegistryEntry { id, data: Some(data) })
+                .collect(),
+        }
+        .write_packet(&mut client.stream)
+        .await
+        .unwrap();
+    }
+
+    FeatureFlags { flags: vec!["minecraft:vanilla"] }
+        .write_packet(&mut client.stream)
+        .await
+        .unwrap();
+
+    let mut tagged: Vec<TaggedRegistry> = registries::all_tags()
+        .into_iter()
+        .map(|(registry, tags)| TaggedRegistry {
+            registry,
+            tags: tags
+                .into_iter()
+                .map(|(name, entries)| Tag {
+                    name,
+                    entries: entries.into_iter().map(mc_protocol::types::VarInt).collect(),
+                })
+                .collect(),
+        })
+        .collect();
+    tagged.extend(registries::builtin_empty_tags().into_iter().map(|(registry, tags)| {
+        TaggedRegistry {
+            registry,
+            tags: tags.into_iter().map(|name| Tag { name, entries: vec![] }).collect(),
+        }
+    }));
+    UpdateTags { registries: tagged }.write_packet(&mut client.stream).await.unwrap();
+
+    FinishConfiguration.write_packet(&mut client.stream).await.unwrap();
 }
 
 pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) {

@@ -41,6 +41,10 @@ pub enum Packets<'p> {
     LoginPluginResponse(LoginPluginResponse<'p>),
     LoginAcknowledge(LoginAcknowledge),
     LoginCookieResponse(LoginCookieResponse<'p>),
+    ClientInformation(ClientInformation<'p>),
+    ConfigPluginMessage(ConfigPluginMessage<'p>),
+    AcknowledgeFinish(AcknowledgeFinish),
+    ConfigKnownPacks(ConfigKnownPacks<'p>),
 }
 
 impl<'p> Packets<'p> {
@@ -63,6 +67,16 @@ impl<'p> Packets<'p> {
             (0x03, State::Login) => Ok(Packets::LoginAcknowledge(LoginAcknowledge)),
             (0x04, State::Login) => {
                 Ok(Packets::LoginCookieResponse(LoginCookieResponse::decode_payload(buf)?))
+            }
+            (0x00, State::Config) => {
+                Ok(Packets::ClientInformation(ClientInformation::decode_payload(buf)?))
+            }
+            (0x02, State::Config) => {
+                Ok(Packets::ConfigPluginMessage(ConfigPluginMessage::decode_payload(buf)?))
+            }
+            (0x03, State::Config) => Ok(Packets::AcknowledgeFinish(AcknowledgeFinish)),
+            (0x07, State::Config) => {
+                Ok(Packets::ConfigKnownPacks(ConfigKnownPacks::decode_payload(buf)?))
             }
             _ => Err(DecodeError::UnknownPacket(id)),
         }

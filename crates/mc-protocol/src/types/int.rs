@@ -22,6 +22,22 @@ impl PacketWriter<'_> for u16 {
         2
     }
 }
+impl PacketWriter<'_> for i32 {
+    fn read(input: &mut &[u8]) -> Result<Self, DecodeError> {
+        let bytes: [u8; 4] = take(input, 4)?.try_into().expect("buffer should contains 4 bytes");
+
+        return Ok(i32::from_be_bytes(bytes));
+    }
+
+    async fn write<W: AsyncWriteExt + Unpin>(&self, w: &mut W) -> crate::encode::Result {
+        w.write_all(&self.to_be_bytes()).await?;
+        Ok(())
+    }
+
+    fn body_len(&self) -> usize {
+        4
+    }
+}
 
 impl PacketWriter<'_> for i64 {
     fn read(input: &mut &[u8]) -> Result<Self, DecodeError> {
