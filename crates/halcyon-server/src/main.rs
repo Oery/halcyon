@@ -12,6 +12,7 @@ mod error;
 mod packet;
 mod server;
 mod states;
+mod transport;
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;

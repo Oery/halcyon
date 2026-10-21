@@ -5,6 +5,9 @@ use thiserror::Error;
 /// connection; only [`Error::disconnect_reason`] justifies a `LoginDisconnect`.
 #[derive(Error, Debug)]
 pub enum Error {
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+
     #[error("packet encode failed: {0}")]
     Encode(#[from] EncodeError),
 

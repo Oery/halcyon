@@ -147,7 +147,7 @@ async fn login(p: EncryptionResponse<'_>, client: &mut Client) -> Result<(), Err
     let success = LoginSuccess { profile: game_profile, session_id };
 
     let (enc, dec) = ciphers(&shared)?;
-    client.enable_encryption(enc, dec);
+    client.enable_encryption(enc, dec)?;
     client.send(&success).await?;
 
     client.ctx.verify_token = None;
