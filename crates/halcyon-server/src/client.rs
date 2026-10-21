@@ -74,6 +74,33 @@ impl Client {
         Ok(())
     }
 
+    pub async fn send_encoded(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        self.stream.write_all(bytes).await?;
+        self.stream.flush().await?;
+        Ok(())
+    }
+
+    pub async fn send_chunk_parts(
+        &mut self,
+        header: &[u8],
+        data: &[u8],
+        suffix: &[u8],
+    ) -> Result<(), Error> {
+        self.stream.write_all(header).await?;
+        self.stream.write_all(data).await?;
+        self.stream.write_all(suffix).await?;
+        self.stream.flush().await?;
+        Ok(())
+    }
+
+    pub async fn send_buffered_chunk(&mut self, data: &[u8], suffix: &[u8]) -> Result<(), Error> {
+        self.stream.write_all(&self.packet_buffer).await?;
+        self.stream.write_all(data).await?;
+        self.stream.write_all(suffix).await?;
+        self.stream.flush().await?;
+        Ok(())
+    }
+
     pub fn enable_encryption(&mut self, enc: Crypter, dec: Crypter) -> Result<(), Error> {
         Ok(self.stream.enable_encryption(enc, dec)?)
     }

@@ -1,0 +1,157 @@
+//! Immutable wire encodings built before accepting connections. Chunk section
+//! bytes and the 104 KiB lighting suffix stay shared, rather than copied into
+//! a complete cached frame for every chunk.
+use crate::error::Error;
+use mc_protocol::data::registries;
+use mc_protocol::packets::Payload;
+use mc_protocol::packets::client::*;
+use mc_protocol::types::{KnownPack, LightData, RegistryEntry, Tag, TaggedRegistry};
+use mc_protocol::{PacketWriter, VarInt};
+use std::collections::HashMap;
+use std::sync::Arc;
+
+pub struct EncodedChunk {
+    pub header: Box<[u8]>,
+    pub data: Arc<[u8]>,
+}
+
+pub struct PacketCache {
+    pub configuration: Vec<Box<[u8]>>,
+    pub chunks: HashMap<(i32, i32), EncodedChunk>,
+    pub empty: EncodedChunk,
+    pub empty_coordinates: usize,
+    pub chunk_suffix: Box<[u8]>,
+}
+
+async fn encode<'p, P: Payload<'p>>(packet: &P) -> Result<Box<[u8]>, Error> {
+    let mut bytes = Vec::new();
+    packet.write_packet(&mut bytes).await?;
+    Ok(bytes.into_boxed_slice())
+}
+
+async fn chunk_header(
+    x: i32,
+    z: i32,
+    heights: &[i64],
+    data_len: usize,
+    suffix_len: usize,
+) -> Result<(Box<[u8]>, usize), Error> {
+    let mut body = Vec::with_capacity(320);
+    x.write(&mut body).await?;
+    z.write(&mut body).await?;
+    VarInt(1).write(&mut body).await?; // one MOTION_BLOCKING heightmap
+    4u8.write(&mut body).await?;
+    VarInt(heights.len() as i32).write(&mut body).await?;
+    for height in heights {
+        height.write(&mut body).await?;
+    }
+    VarInt(data_len as i32).write(&mut body).await?;
+    let length = ChunkData::ID.body_len() + body.len() + data_len + suffix_len;
+    let mut header = Vec::with_capacity(body.len() + 6);
+    VarInt(i32::try_from(length).map_err(|_| mc_protocol::error::EncodeError::InvalidLength)?)
+        .write(&mut header)
+        .await?;
+    ChunkData::ID.write(&mut header).await?;
+    let coordinates = header.len();
+    header.extend_from_slice(&body);
+    Ok((header.into_boxed_slice(), coordinates))
+}
+
+impl PacketCache {
+    pub async fn new(world: &halcyon_world::World) -> Result<Self, Error> {
+        let mut configuration = Vec::new();
+        configuration.push(
+            encode(&KnownPacks {
+                packs: vec![KnownPack { namespace: "minecraft", id: "core", version: "26.3" }],
+            })
+            .await?,
+        );
+        for (registry, entries) in registries::all() {
+            configuration.push(
+                encode(&RegistryData {
+                    registry,
+                    entries: entries
+                        .into_iter()
+                        .map(|(id, data)| RegistryEntry { id, data: Some(data) })
+                        .collect(),
+                })
+                .await?,
+            );
+        }
+        configuration.push(encode(&FeatureFlags { flags: vec!["minecraft:vanilla"] }).await?);
+        let mut tagged: Vec<TaggedRegistry> = registries::all_tags()
+            .into_iter()
+            .map(|(registry, tags)| TaggedRegistry {
+                registry,
+                tags: tags
+                    .into_iter()
+                    .map(|(name, entries)| Tag {
+                        name,
+                        entries: entries.into_iter().map(VarInt).collect(),
+                    })
+                    .collect(),
+            })
+            .collect();
+        tagged.extend(registries::builtin_empty_tags().into_iter().map(|(registry, tags)| {
+            TaggedRegistry {
+                registry,
+                tags: tags.into_iter().map(|name| Tag { name, entries: vec![] }).collect(),
+            }
+        }));
+        configuration.push(encode(&UpdateTags { registries: tagged }).await?);
+        configuration.push(encode(&FinishConfiguration).await?);
+
+        let mut suffix = Vec::new();
+        VarInt(0).write(&mut suffix).await?; // no block entities
+        LightData::fullbright().write(&mut suffix).await?;
+        let mut chunks = HashMap::with_capacity(world.chunk_count());
+        for chunk in world.iter() {
+            let (header, _) =
+                chunk_header(chunk.x, chunk.z, &chunk.heights[..], chunk.data.len(), suffix.len())
+                    .await?;
+            chunks
+                .insert((chunk.x, chunk.z), EncodedChunk { header, data: Arc::clone(&chunk.data) });
+        }
+        let data: Arc<[u8]> = Arc::from([0; 192]);
+        let (header, empty_coordinates) =
+            chunk_header(0, 0, &[0; 37], data.len(), suffix.len()).await?;
+        Ok(Self {
+            configuration,
+            chunks,
+            empty: EncodedChunk { header, data },
+            empty_coordinates,
+            chunk_suffix: suffix.into_boxed_slice(),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mc_protocol::types::Heightmap;
+
+    #[test]
+    fn shared_chunk_parts_match_the_packet_codec() {
+        futures_lite::future::block_on(async {
+            let data = [1, 2, 3];
+            let heights = [5; 37];
+            let packet = ChunkData {
+                chunk_x: -10,
+                chunk_z: 20,
+                heightmaps: vec![Heightmap { kind: 4, data: heights.to_vec() }],
+                data: &data,
+                block_entities: vec![],
+                light: LightData::fullbright(),
+            };
+            let expected = encode(&packet).await.unwrap();
+            let mut suffix = Vec::new();
+            VarInt(0).write(&mut suffix).await.unwrap();
+            packet.light.write(&mut suffix).await.unwrap();
+            let (header, offset) =
+                chunk_header(-10, 20, &heights, data.len(), suffix.len()).await.unwrap();
+            assert_eq!(&header[offset..offset + 4], &(-10i32).to_be_bytes());
+            let actual = [header.as_ref(), &data, &suffix].concat();
+            assert_eq!(actual, expected.as_ref());
+        });
+    }
+}

@@ -258,6 +258,8 @@ pub struct UpdateTags<'p> {
 #[packet(Config, 0x03, Client)]
 pub struct FinishConfiguration;
 
+pub const PLAYER_ENTITY_ID: i32 = 1;
+
 pub struct PlayLogin<'p> {
     pub entity_id: i32,
     pub hardcore: bool,
@@ -284,7 +286,7 @@ pub struct PlayLogin<'p> {
 impl Default for PlayLogin<'_> {
     fn default() -> Self {
         Self {
-            entity_id: 1,
+            entity_id: PLAYER_ENTITY_ID,
             hardcore: false,
             dimension_names: vec!["minecraft:overworld"],
             max_players: 20,

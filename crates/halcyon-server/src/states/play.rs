@@ -1,13 +1,13 @@
 use futures_lite::AsyncWriteExt;
 use std::time::Instant;
 
-use mc_protocol::packets::Packets;
 use mc_protocol::packets::client::{
-    ChunkBatchFinished, ChunkData, GameEvent, PlayKeepAlive, PlayLogin, PlayerAbilities,
+    ChunkBatchFinished, GameEvent, PLAYER_ENTITY_ID, PlayKeepAlive, PlayerAbilities,
     PlayerInfoUpdate, SetCenterChunk, SetDefaultSpawnPosition, SetEntityMetadata, SetHealth,
     SyncPlayerPosition, UnloadChunk,
 };
-use mc_protocol::types::{Heightmap, LightData, ProfileProperty};
+use mc_protocol::packets::{Packets, Payload};
+use mc_protocol::types::ProfileProperty;
 
 use crate::Client;
 use crate::error::Error;
@@ -86,7 +86,7 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
             client.ctx.skin_parts = p.skin_parts.0;
             client
                 .send(&SetEntityMetadata {
-                    entity_id: PlayLogin::default().entity_id,
+                    entity_id: PLAYER_ENTITY_ID,
                     skin_parts: p.skin_parts.0,
                 })
                 .await?;
@@ -107,44 +107,28 @@ fn pack_block_pos(x: i32, y: i32, z: i32) -> i64 {
     (((x & 0x3FFFFFF) as i64) << 38) | (((z & 0x3FFFFFF) as i64) << 12) | ((y & 0xFFF) as i64)
 }
 
-/// Send one pre-encoded chunk column.
 async fn send_chunk(
     client: &mut Client,
     chunk: &std::sync::Arc<halcyon_world::Chunk>,
 ) -> Result<(), Error> {
-    client
-        .send(&ChunkData {
-            chunk_x: chunk.x,
-            chunk_z: chunk.z,
-            heightmaps: vec![Heightmap {
-                kind: 4, // MOTION_BLOCKING
-                data: chunk.heights.to_vec(),
-            }],
-            data: &chunk.data,
-            block_entities: Vec::new(),
-            light: LightData::fullbright(),
-        })
-        .await
+    let server = std::sync::Arc::clone(&client.server);
+    let frame = server
+        .packets
+        .chunks
+        .get(&(chunk.x, chunk.z))
+        .ok_or_else(|| std::io::Error::other("missing cached chunk"))?;
+    client.send_chunk_parts(&frame.header, &frame.data, &server.packets.chunk_suffix).await
 }
 
-/// Empty all-air column: lets edge chunks mesh without a lighting engine or
-/// world data. One shared encoding; the heights are all-zero so the client
-/// treats every column as empty.
-static EMPTY_HEIGHTS: [i64; 37] = [0; 37];
-static EMPTY_DATA: [u8; 192] = [0; 192];
-
-/// Send a padding column the world doesn't have.
 async fn send_empty_chunk(client: &mut Client, x: i32, z: i32) -> Result<(), Error> {
-    client
-        .send(&ChunkData {
-            chunk_x: x,
-            chunk_z: z,
-            heightmaps: vec![Heightmap { kind: 4, data: EMPTY_HEIGHTS.to_vec() }],
-            data: &EMPTY_DATA,
-            block_entities: Vec::new(),
-            light: LightData::fullbright(),
-        })
-        .await
+    let server = std::sync::Arc::clone(&client.server);
+    let cache = &server.packets;
+    client.packet_buffer.clear();
+    client.packet_buffer.extend_from_slice(&cache.empty.header);
+    let offset = cache.empty_coordinates;
+    client.packet_buffer[offset..offset + 4].copy_from_slice(&x.to_be_bytes());
+    client.packet_buffer[offset + 4..offset + 8].copy_from_slice(&z.to_be_bytes());
+    client.send_buffered_chunk(&cache.empty.data, &cache.chunk_suffix).await
 }
 
 /// Desired chunk set: view-distance square around `(cx, cz)`, intersected
@@ -265,33 +249,28 @@ async fn move_player(
 /// `Player Info Update` (Mojang `textures` property verified at login)
 /// and `Set Entity Metadata` (skin-parts bitmask from `Client Information`).
 async fn send_skin(client: &mut Client) -> Result<(), Error> {
-    let (Some(uuid), Some(username)) = (client.ctx.player_uuid, client.ctx.username.clone()) else {
+    let (Some(uuid), Some(username)) = (client.ctx.player_uuid, client.ctx.username.as_deref())
+    else {
         return Ok(());
     };
 
-    // Owned snapshot: the `ProfileProperty` borrows below must not
-    // overlap the `&mut client` sends.
-    let owned: Vec<(String, String, Option<String>)> = client
+    let skin_parts = client.ctx.skin_parts;
+    let properties: Vec<ProfileProperty> = client
         .ctx
         .profile_properties
         .iter()
-        .map(|p| (p.name.clone(), p.value.clone(), p.signature.clone()))
-        .collect();
-    let skin_parts = client.ctx.skin_parts;
-
-    let properties: Vec<ProfileProperty> = owned
-        .iter()
-        .map(|(name, value, signature)| ProfileProperty {
-            name: name.as_str(),
-            value: value.as_str(),
-            signature: signature.as_deref(),
+        .map(|property| ProfileProperty {
+            name: property.name.as_str(),
+            value: property.value.as_str(),
+            signature: property.signature.as_deref(),
         })
         .collect();
-    client.send(&PlayerInfoUpdate { uuid, username: username.as_str(), properties }).await?;
+    // Borrow profile data while encoding, then release it before sending.
+    client.packet_buffer.clear();
+    PlayerInfoUpdate { uuid, username, properties }.write_packet(&mut client.packet_buffer).await?;
+    client.send_encoded_buffer().await?;
     // Entity ID must match the one sent in `PlayLogin`.
-    client
-        .send(&SetEntityMetadata { entity_id: PlayLogin::default().entity_id, skin_parts })
-        .await?;
+    client.send(&SetEntityMetadata { entity_id: PLAYER_ENTITY_ID, skin_parts }).await?;
 
     Ok(())
 }

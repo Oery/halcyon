@@ -47,6 +47,9 @@ pub struct Chunk {
 }
 
 impl World {
+    pub fn iter(&self) -> impl Iterator<Item = &Arc<Chunk>> {
+        self.chunks.iter().filter_map(Option::as_ref)
+    }
     pub fn from_loaded(loaded: LoadedWorld) -> World {
         let min_x = loaded.chunks.iter().map(|c| c.x).min().unwrap_or(0);
         let max_x = loaded.chunks.iter().map(|c| c.x).max().unwrap_or(0);
