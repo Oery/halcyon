@@ -251,6 +251,23 @@ impl Registry {
         registry
     }
 
+    #[cfg(test)]
+    pub(crate) fn publish_transforms(
+        &mut self,
+        transforms: impl IntoIterator<Item = (i32, Transform)>,
+    ) {
+        for (id, transform) in transforms {
+            if let Some(player) = self.players.get(&id)
+                && transform.is_finite()
+            {
+                player.input.transform.set(Some(transform));
+            }
+        }
+        if self.publish() {
+            self.revision = self.revision.wrapping_add(1);
+        }
+    }
+
     pub fn players(&self) -> impl Iterator<Item = &PlayerSnapshot> {
         self.players.values().filter(|player| player.active).map(|player| &player.snapshot)
     }
@@ -677,6 +694,18 @@ mod tests {
         let fixture = Registry::from_snapshots(registry.players().cloned().collect(), 2);
         assert_eq!(fixture.publication(), 2);
         assert_eq!(fixture.candidates(&HashSet::from([(-1, 0)])).len(), 1);
+        let mut fixture = fixture;
+        fixture.publish_transforms([(
+            session.entity_id(),
+            Transform { x: -0.6, ..Transform::default() },
+        )]);
+        assert_eq!(fixture.publication(), 3);
+        assert_eq!(fixture.revision(), 3);
+        assert_eq!(fixture.spatial_revision(), 2);
+        assert_eq!(fixture.roster_revision(), 2);
+        fixture.publish_transforms([]);
+        assert_eq!(fixture.publication(), 4);
+        assert_eq!(fixture.revision(), 3);
     }
 
     #[test]
