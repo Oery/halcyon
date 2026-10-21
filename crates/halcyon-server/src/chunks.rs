@@ -212,7 +212,14 @@ mod tests {
     fn world() -> World {
         World::from_loaded(LoadedWorld {
             chunks: (-4..=4)
-                .map(|x| LoadedChunk { x, z: 0, data: vec![], heights: [0; 37], wire_bytes: 0 })
+                .map(|x| LoadedChunk {
+                    x,
+                    z: 0,
+                    data: vec![],
+                    heights: [0; 37],
+                    wire_bytes: 0,
+                    sections: Box::new(std::array::from_fn(|_| halcyon_world::Section::default())),
+                })
                 .collect(),
             spawn: (0.0, 64.0, 0.0, 0.0, 0.0),
             missing_blocks: 0,

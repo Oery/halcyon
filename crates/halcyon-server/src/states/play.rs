@@ -1,13 +1,13 @@
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use mc_protocol::packets::Packets;
 use mc_protocol::packets::client::{
     GameEvent, PlayerAbilities, SetDefaultSpawnPosition, SetEntityMetadata, SetHealth,
-    SyncPlayerPosition,
 };
 
 use crate::Client;
 use crate::error::Error;
+use crate::inventory::InventoryAction;
 
 pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), Error> {
     match pkt {
@@ -25,11 +25,15 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
                 client.teleport_deadline = None;
                 // Confirmation acknowledges the server's spawn, rather than
                 // providing a second client-selected initial position.
-                client.session.as_ref().ok_or(Error::UnexpectedResponse)?.activate();
+                client
+                    .session
+                    .as_ref()
+                    .ok_or(Error::UnexpectedResponse)?
+                    .confirm_teleport(p.teleport_id);
             }
         }
         Packets::SetPlayerPosition(p) => {
-            if client.pending_teleport.is_some() {
+            if !client.session.as_ref().is_some_and(|session| session.ready()) {
                 return Ok(());
             }
             if !p.x.is_finite() || !p.feet_y.is_finite() || !p.z.is_finite() {
@@ -43,11 +47,10 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
                 None,
                 None,
                 p.flags & 0x01 != 0,
-            )
-            .await?;
+            );
         }
         Packets::SetPlayerPositionRotation(p) => {
-            if client.pending_teleport.is_some() {
+            if !client.session.as_ref().is_some_and(|session| session.ready()) {
                 return Ok(());
             }
             if !p.x.is_finite()
@@ -66,25 +69,78 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
                 Some(p.yaw),
                 Some(p.pitch),
                 p.flags & 0x01 != 0,
-            )
-            .await?;
+            );
         }
         Packets::SetPlayerRotation(p) => {
-            if client.pending_teleport.is_some() {
+            if !client.session.as_ref().is_some_and(|session| session.ready()) {
                 return Ok(());
             }
             if !p.yaw.is_finite() || !p.pitch.is_finite() {
                 return Err(Error::InvalidPlayerData);
             }
-            client.pos.yaw = p.yaw;
-            client.pos.pitch = p.pitch;
-            client.pos.on_ground = p.flags & 0x01 != 0;
-            client.publish_position();
+            client.proposed.yaw = p.yaw;
+            client.proposed.pitch = p.pitch;
+            client.proposed.on_ground = p.flags & 0x01 != 0;
+            client.propose_position();
         }
         Packets::SetPlayerMovementFlags(p) => {
-            if client.pending_teleport.is_none() {
-                client.pos.on_ground = p.flags & 0x01 != 0;
-                client.publish_position();
+            if client.session.as_ref().is_some_and(|session| session.ready()) {
+                client.proposed.on_ground = p.flags & 0x01 != 0;
+                client.propose_position();
+            }
+        }
+        Packets::PlayerInput(p) => {
+            let sneaking = p.flags & 0x20 != 0;
+            if client.sneaking != sneaking {
+                client.sneaking = sneaking;
+                client.propose_position();
+            }
+        }
+        Packets::PlayerCommand(p) => {
+            if p.entity_id != client.entity_id()? {
+                return Ok(());
+            }
+            if p.action == 1 || p.action == 2 {
+                client.sprinting = p.action == 1;
+                client.propose_position();
+            }
+        }
+        Packets::ClickContainer(p) => {
+            if let Some(session) = &client.session {
+                session.inventory(InventoryAction::Click {
+                    window_id: p.window_id,
+                    state_id: p.state_id,
+                    slot: p.slot,
+                    button: p.button,
+                    mode: p.mode,
+                    predicted_slots: p.predicted_slots,
+                });
+            }
+        }
+        Packets::CloseContainer(p) => {
+            if let Some(session) = &client.session {
+                session.inventory(InventoryAction::Close { window_id: p.window_id });
+            }
+        }
+        Packets::SetHeldItem(p) => {
+            if let Some(session) = &client.session {
+                session.inventory(InventoryAction::Select { slot: p.slot });
+            }
+        }
+        Packets::PlayerAction(p) => {
+            if let Some(session) = &client.session {
+                match p.action {
+                    3 | 4 => session.inventory(InventoryAction::RejectDrop),
+                    6 => session.inventory(InventoryAction::SwapHands),
+                    _ => {}
+                }
+            }
+        }
+        Packets::ClientCommand(p) => {
+            if p.action == 0
+                && let Some(session) = &client.session
+            {
+                session.respawn();
             }
         }
         Packets::PlayClientInformation(p) => {
@@ -117,8 +173,8 @@ fn pack_block_pos(x: i32, y: i32, z: i32) -> i64 {
     (((x & 0x3FFFFFF) as i64) << 38) | (((z & 0x3FFFFFF) as i64) << 12) | ((y & 0xFFF) as i64)
 }
 
-/// Apply a validated move; queue chunks when the chunk column changes.
-async fn move_player(
+/// Preserve packet order; only the world owner can accept a movement proposal.
+fn move_player(
     client: &mut Client,
     x: f64,
     y: f64,
@@ -126,26 +182,18 @@ async fn move_player(
     yaw: Option<f32>,
     pitch: Option<f32>,
     on_ground: bool,
-) -> Result<(), Error> {
-    let old_cx = (client.pos.x.floor() as i32) >> 4;
-    let old_cz = (client.pos.z.floor() as i32) >> 4;
-    client.pos.x = x;
-    client.pos.y = y;
-    client.pos.z = z;
+) {
+    client.proposed.x = x;
+    client.proposed.y = y;
+    client.proposed.z = z;
     if let Some(yaw) = yaw {
-        client.pos.yaw = yaw;
+        client.proposed.yaw = yaw;
     }
     if let Some(pitch) = pitch {
-        client.pos.pitch = pitch;
+        client.proposed.pitch = pitch;
     }
-    client.pos.on_ground = on_ground;
-    let cx = (x.floor() as i32) >> 4;
-    let cz = (z.floor() as i32) >> 4;
-    if (cx, cz) != (old_cx, old_cz) {
-        client.chunks.reconcile(&client.server.lobby, (cx, cz));
-    }
-    client.publish_position();
-    Ok(())
+    client.proposed.on_ground = on_ground;
+    client.propose_position();
 }
 /// Sends the two packets the client renders the player's skin from:
 /// `Player Info Update` (Mojang `textures` property verified at login)
@@ -177,30 +225,10 @@ pub async fn enter_play(client: &mut Client) -> Result<(), Error> {
     client.send(&PlayerAbilities { flags: 0x00, flying_speed: 0.05, fov_modifier: 0.1 }).await?;
     client.send(&SetHealth { health: 20.0, food: 20, saturation: 5.0 }).await?;
 
-    client.pos.x = sx;
-    client.pos.y = sy;
-    client.pos.z = sz;
-    client.pos.yaw = yaw;
-    client.pos.pitch = pitch;
     client.chunks.reconcile(&client.server.lobby, (scx, scz));
-
-    client
-        .send(&SyncPlayerPosition {
-            teleport_id: 1,
-            x: sx,
-            y: sy,
-            z: sz,
-            vel_x: 0.0,
-            vel_y: 0.0,
-            vel_z: 0.0,
-            yaw,
-            pitch,
-            flags: 0,
-        })
-        .await?;
-    client.next_teleport_id = 1;
-    client.pending_teleport = Some(1);
-    client.teleport_deadline = Some(Instant::now() + Duration::from_secs(30));
+    let session = client.session.as_ref().ok_or(Error::UnexpectedResponse)?;
+    session.teleport(client.pos);
+    session.inventory(InventoryAction::Resync);
 
     Ok(())
 }

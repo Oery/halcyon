@@ -1,18 +1,25 @@
-//! Human lobby state, published by one executor-local owner every 50 ms.
-//! Connections publish replaceable input; dropping a session never needs queue space.
+//! One executor-local gameplay owner: 120 Hz actions, independent 20 Hz publication.
+//! Dropping a session never needs queue space.
 use glommio::channels::{local_channel, oneshot};
-use glommio::timer::{MissedTickBehavior, interval};
+use glommio::timer::Timer;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
+use crate::inventory::InventoryAction;
+use crate::lifecycle::{Damage, PlayerRules};
+use crate::movement::{MovementProposal, ProposalQueue};
+use crate::player::{ActionQueue, PlayerAction, PlayerState, PlayerUpdate};
+use crate::simulation::SimulationClock;
+use mc_protocol::types::ItemStack;
+
 pub const MAX_PLAYERS: usize = 1_024;
 const REGISTRATION_CAPACITY: usize = 256;
 const REGISTRATIONS_PER_SLICE: usize = 64;
-const TICK_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Transform {
@@ -29,7 +36,7 @@ impl Transform {
         ((self.x.floor() as i32) >> 4, (self.z.floor() as i32) >> 4)
     }
 
-    fn is_finite(self) -> bool {
+    pub(crate) fn is_finite(self) -> bool {
         self.x.is_finite()
             && self.y.is_finite()
             && self.z.is_finite()
@@ -52,6 +59,12 @@ pub struct PlayerSnapshot {
     pub profile: Rc<Profile>,
     pub transform: Transform,
     pub skin_parts: u8,
+    pub sneaking: bool,
+    pub sprinting: bool,
+    pub health: f32,
+    pub equipment: Rc<[ItemStack; 6]>,
+    pub life_generation: u64,
+    pub visible: bool,
     pub revision: u64,
 }
 
@@ -129,6 +142,14 @@ struct Input {
     closed: Cell<bool>,
     activate: Cell<bool>,
     transform: Cell<Option<Transform>>,
+    proposals: RefCell<ProposalQueue>,
+    actions: RefCell<ActionQueue>,
+    accepted: Cell<Transform>,
+    generation: Cell<u64>,
+    ready: Cell<bool>,
+    teleport_confirmation: Cell<Option<i32>>,
+    respawn_requested: Cell<bool>,
+    update: RefCell<PlayerUpdate>,
     skin_parts: Cell<Option<u8>>,
     changed: Signal,
     owner: Rc<Signal>,
@@ -142,6 +163,14 @@ impl Input {
             closed: Cell::new(false),
             activate: Cell::new(false),
             transform: Cell::new(None),
+            proposals: RefCell::new(ProposalQueue::default()),
+            actions: RefCell::new(ActionQueue::default()),
+            accepted: Cell::new(Transform::default()),
+            generation: Cell::new(0),
+            ready: Cell::new(false),
+            teleport_confirmation: Cell::new(None),
+            respawn_requested: Cell::new(false),
+            update: RefCell::new(PlayerUpdate::default()),
             skin_parts: Cell::new(None),
             changed: Signal::default(),
             owner,
@@ -163,15 +192,92 @@ impl Session {
     }
 
     /// Called after confirming the initial teleport. Visibility begins next tick.
+    #[cfg(test)]
     pub fn activate(&self) {
         self.input.activate.set(true);
     }
 
+    #[cfg(test)]
     pub fn publish_transform(&self, transform: Transform) {
         // Network handlers validate before publishing; this also protects future callers.
         if transform.is_finite() && self.input.transform.replace(Some(transform)).is_some() {
             self.input.coalesced.set(self.input.coalesced.get().saturating_add(1));
         }
+    }
+
+    pub fn propose_movement(&self, proposal: MovementProposal) {
+        if self.input.ready.get() {
+            self.input.proposals.borrow_mut().push(proposal);
+        }
+    }
+
+    pub fn accepted_transform(&self) -> Transform {
+        self.input.accepted.get()
+    }
+
+    pub fn ready(&self) -> bool {
+        self.input.ready.get()
+    }
+
+    /// Acknowledgements cannot compete with inventory actions for queue space.
+    pub fn confirm_teleport(&self, id: i32) {
+        self.input.teleport_confirmation.set(Some(id));
+    }
+
+    pub fn take_update(&self) -> PlayerUpdate {
+        std::mem::take(&mut *self.input.update.borrow_mut())
+    }
+
+    pub fn submit(&self, action: PlayerAction) -> bool {
+        self.input.actions.borrow_mut().push(self.input.generation.get(), action)
+    }
+
+    pub fn inventory(&self, action: InventoryAction) {
+        self.submit(PlayerAction::Inventory(action));
+    }
+
+    // Arena APIs are intentionally available before a concrete minigame consumes them.
+    #[allow(dead_code)]
+    pub fn teleport(&self, transform: Transform) -> bool {
+        self.submit(PlayerAction::Teleport(transform))
+    }
+
+    #[allow(dead_code)]
+    pub fn damage(&self, damage: Damage) -> bool {
+        self.submit(PlayerAction::Damage(damage))
+    }
+
+    #[allow(dead_code)]
+    pub fn heal(&self, amount: f32) -> bool {
+        self.submit(PlayerAction::Heal(amount))
+    }
+
+    #[allow(dead_code)]
+    pub fn set_rules(&self, rules: PlayerRules) -> bool {
+        self.submit(PlayerAction::Rules(rules))
+    }
+
+    pub fn respawn(&self) {
+        self.input.respawn_requested.set(true);
+    }
+
+    #[allow(dead_code)]
+    pub fn reset(&self) -> bool {
+        self.submit(PlayerAction::Reset)
+    }
+
+    /// An error performs no inventory edit. Give returns the unplaced remainder.
+    #[allow(dead_code)]
+    pub async fn edit_inventory(
+        &self,
+        edit: crate::player::InventoryEdit,
+    ) -> Result<ItemStack, crate::player::InventoryEditError> {
+        use crate::player::InventoryEditError;
+        let (reply, response) = oneshot::oneshot();
+        if !self.submit(PlayerAction::EditInventory { edit, reply }) {
+            return Err(InventoryEditError::QueueFull);
+        }
+        response.await.map_err(|_| InventoryEditError::Closed)?
     }
 
     pub fn publish_skin_parts(&self, skin_parts: u8) {
@@ -203,6 +309,7 @@ struct Player {
     snapshot: PlayerSnapshot,
     active: bool,
     input: Rc<Input>,
+    state: PlayerState,
 }
 
 type ColumnMove = (i32, Option<(i32, i32)>, (i32, i32));
@@ -244,7 +351,12 @@ impl Registry {
                 .insert(snapshot.entity_id);
             registry.players.insert(
                 snapshot.entity_id,
-                Player { snapshot, active: true, input: Rc::new(Input::new(Rc::default())) },
+                Player {
+                    state: PlayerState::new(snapshot.transform),
+                    snapshot,
+                    active: true,
+                    input: Rc::new(Input::new(Rc::default())),
+                },
             );
         }
         registry.active_count = registry.players.len();
@@ -290,6 +402,10 @@ impl Registry {
                 .map(|player| {
                     std::mem::size_of::<Input>()
                         + std::mem::size_of::<Profile>()
+                        + player.state.movement.capacity_payload_bytes()
+                        + player.input.proposals.borrow().capacity_payload_bytes()
+                        + player.input.actions.borrow().capacity_payload_bytes()
+                        + std::mem::size_of::<[ItemStack; 6]>()
                         + player.snapshot.profile.username.capacity()
                         + player.snapshot.profile.info.len()
                 })
@@ -308,7 +424,12 @@ impl Registry {
         let mut result = Vec::new();
         for column in columns {
             if let Some(ids) = self.columns.get(column) {
-                result.extend(ids.iter().filter_map(|id| self.get(*id)).cloned());
+                result.extend(
+                    ids.iter()
+                        .filter_map(|id| self.get(*id))
+                        .filter(|player| player.visible)
+                        .cloned(),
+                );
             }
         }
         result.sort_unstable_by_key(|player| player.entity_id);
@@ -364,12 +485,26 @@ impl Registry {
         let entity_id = self.last_entity_id.checked_add(1).ok_or(AdmissionError::IdExhausted)?;
         self.last_entity_id = entity_id;
         self.uuids.insert(profile.uuid);
+        input.accepted.set(transform);
         self.players.insert(
             entity_id,
             Player {
-                snapshot: PlayerSnapshot { entity_id, profile, transform, skin_parts, revision: 0 },
+                snapshot: PlayerSnapshot {
+                    entity_id,
+                    profile,
+                    transform,
+                    skin_parts,
+                    revision: 0,
+                    sneaking: false,
+                    sprinting: false,
+                    health: 20.0,
+                    equipment: Rc::new(std::array::from_fn(|_| ItemStack::default())),
+                    life_generation: 0,
+                    visible: true,
+                },
                 active: false,
                 input,
+                state: PlayerState::new(transform),
             },
         );
         Ok(entity_id)
@@ -411,7 +546,59 @@ impl Registry {
         changed
     }
 
+    /// Gameplay mutates authority here; publication consumes only the latest result.
+    fn simulate(
+        &mut self,
+        world: &halcyon_world::World,
+        now: Instant,
+        notices: &mut Vec<Rc<Input>>,
+    ) -> StepMetrics {
+        let mut metrics = StepMetrics::default();
+        for player in self.players.values_mut() {
+            let input = &player.input;
+            let had_teleport = player.state.life.pending_teleport().is_some();
+            if let Some(id) = input.teleport_confirmation.take() {
+                player.state.life.confirm(id);
+            }
+            let (update, movement) = player.state.advance(
+                world,
+                &mut input.proposals.borrow_mut(),
+                &mut input.actions.borrow_mut(),
+                now,
+                input.respawn_requested.replace(false),
+            );
+            let accepted = player.state.movement.transform();
+            let old = input.accepted.replace(accepted);
+            input.generation.set(player.state.life.generation);
+            if had_teleport && player.state.life.pending_teleport().is_none() {
+                input.activate.set(true);
+            }
+            input.ready.set(
+                player.state.life.alive()
+                    && player.state.life.pending_teleport().is_none()
+                    && (player.active || input.activate.get()),
+            );
+            if old != accepted {
+                input.transform.set(Some(accepted));
+            }
+            if let Some(movement) = movement {
+                metrics.proposals += movement.processed as u64;
+                metrics.collision_cells += movement.collision_cells as u64;
+                metrics.corrections += u64::from(movement.correction);
+            }
+            if update.changed() || old.chunk() != accepted.chunk() {
+                input.update.borrow_mut().merge(update);
+                notices.push(input.clone());
+            }
+        }
+        metrics
+    }
+
     fn publish(&mut self) -> bool {
+        self.publish_at(Instant::now())
+    }
+
+    fn publish_at(&mut self, now: Instant) -> bool {
         self.publication = self.publication.wrapping_add(1);
         let mut changed = false;
         // Apply all latest input once, rather than scheduling one task per packet.
@@ -419,6 +606,31 @@ impl Registry {
             self.coalesced = self.coalesced.saturating_add(player.input.coalesced.replace(0));
             let old_column = player.snapshot.transform.chunk();
             let mut player_changed = false;
+            let sneaking = player.state.movement.sneaking();
+            let sprinting = player.state.movement.sprinting();
+            let health = player.state.life.health();
+            let visible = player.state.life.visible(now);
+            let generation = player.state.life.generation;
+            if player.snapshot.sneaking != sneaking
+                || player.snapshot.sprinting != sprinting
+                || player.snapshot.health != health
+                || player.snapshot.visible != visible
+                || player.snapshot.life_generation != generation
+                || !Rc::ptr_eq(&player.snapshot.equipment, &player.state.equipment)
+            {
+                if player.snapshot.visible != visible
+                    || player.snapshot.life_generation != generation
+                {
+                    self.spatial_revision = self.spatial_revision.wrapping_add(1);
+                }
+                player.snapshot.sneaking = sneaking;
+                player.snapshot.sprinting = sprinting;
+                player.snapshot.health = health;
+                player.snapshot.visible = visible;
+                player.snapshot.life_generation = generation;
+                player.snapshot.equipment = player.state.equipment.clone();
+                player_changed = true;
+            }
             if let Some(transform) = player.input.transform.take()
                 && transform != player.snapshot.transform
             {
@@ -468,6 +680,13 @@ struct Metrics {
     registration_peak: Cell<usize>,
 }
 
+#[derive(Default)]
+struct StepMetrics {
+    proposals: u64,
+    collision_cells: u64,
+    corrections: u64,
+}
+
 struct Registration {
     profile: Rc<Profile>,
     transform: Transform,
@@ -485,7 +704,7 @@ pub struct Lobby {
 }
 
 impl Lobby {
-    pub fn spawn(diagnostics: bool) -> Self {
+    pub fn spawn(world: Arc<halcyon_world::World>, diagnostics: bool) -> Self {
         let registry = Rc::new(RefCell::new(Registry::default()));
         let (sender, receiver) = local_channel::new_bounded(REGISTRATION_CAPACITY);
         let owner = Rc::new(Signal::default());
@@ -496,6 +715,7 @@ impl Lobby {
             owner.clone(),
             metrics.clone(),
             diagnostics,
+            world,
         ))
         .detach();
         Self { registry, registrations: Rc::new(sender), owner, metrics }
@@ -575,15 +795,22 @@ async fn run_owner(
     owner: Rc<Signal>,
     metrics: Rc<Metrics>,
     diagnostics: bool,
+    world: Arc<halcyon_world::World>,
 ) {
-    let mut ticker = interval(TICK_INTERVAL);
-    ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut clock = SimulationClock::new(Instant::now());
     let mut report_at = Instant::now() + Duration::from_secs(5);
     let mut ticks = 0u64;
     let mut overruns = 0u64;
     let mut max_tick = Duration::ZERO;
     let mut registration_peak = 0usize;
     let mut observer_scratch = Vec::new();
+    let mut self_notices = Vec::new();
+    let mut cpu_samples = TimingSamples::default();
+    let mut late_samples = TimingSamples::default();
+    let mut skipped_steps = 0;
+    let mut proposals = 0;
+    let mut collision_cells = 0;
+    let mut corrections = 0;
     enum Wake {
         Registration(Option<Registration>),
         Cleanup,
@@ -594,10 +821,10 @@ async fn run_owner(
         if cleanup_changed {
             notify(&registry, true, &mut observer_scratch);
         }
-        // Timer precedence prevents a continuous registration flood starving publication.
+        // Timer precedence prevents a registration flood starving simulation.
         let wake = futures_lite::future::or(
             async {
-                ticker.tick().await;
+                Timer::new(clock.next_deadline().saturating_duration_since(Instant::now())).await;
                 Wake::Tick
             },
             futures_lite::future::or(
@@ -631,28 +858,54 @@ async fn run_owner(
             Wake::Registration(None) => break,
             Wake::Cleanup => {}
             Wake::Tick => {
-                let start = Instant::now();
-                let changed = registry.borrow_mut().publish();
-                // Wake once per tick so bounded visibility admission can continue even
-                // when no player has moved. Notifications coalesce in each session.
-                notify(&registry, changed, &mut observer_scratch);
-                let elapsed = start.elapsed();
-                ticks += 1;
-                max_tick = max_tick.max(elapsed);
-                overruns += u64::from(elapsed > TICK_INTERVAL);
+                let due = clock.poll(Instant::now());
+                skipped_steps += due.skipped_steps;
+                late_samples.record(due.lateness);
+                for _ in 0..due.steps {
+                    let start = Instant::now();
+                    let step = registry.borrow_mut().simulate(&world, start, &mut self_notices);
+                    for notice in self_notices.drain(..) {
+                        notice.changed.notify();
+                    }
+                    let elapsed = start.elapsed();
+                    cpu_samples.record(elapsed);
+                    ticks += 1;
+                    max_tick = max_tick.max(elapsed);
+                    overruns += u64::from(elapsed.as_nanos() > 1_000_000_000 / 120);
+                    proposals += step.proposals;
+                    collision_cells += step.collision_cells;
+                    corrections += step.corrections;
+                    glommio::executor().yield_now().await;
+                }
+                if due.publication {
+                    let changed = registry.borrow_mut().publish();
+                    // Only publication wakes all observers; immediate self updates
+                    // above wake the affected connection without global fanout.
+                    notify(&registry, changed, &mut observer_scratch);
+                }
                 if diagnostics && Instant::now() >= report_at {
                     let registry = registry.borrow();
+                    let (cpu_p95, cpu_p99) = cpu_samples.percentiles();
+                    let (late_p95, late_p99) = late_samples.percentiles();
                     let mut observers = ObserverMetrics::default();
                     for player in registry.players.values().filter(|player| player.active) {
                         observers.accumulate(player.input.observer_metrics.get());
                     }
                     eprintln!(
-                        "lobby: players={} reserved={} ticks={} max_tick_us={} overruns={} registration_slice_peak={} registration_queue={} registration_queue_peak={} coalesced={} sent_bytes={} slow_clients={} visible_edges={} roster_entries={} queued_bytes={} queued_frames={} observer_high_water_bytes={} observer_coalesced={} observer_sent_bytes={}",
+                        "lobby: players={} reserved={} ticks={} max_tick_us={} cpu_p95_us={} cpu_p99_us={} lateness_p95_us={} lateness_p99_us={} overruns={} skipped_steps={} proposals={} collision_cells={} corrections={} registration_slice_peak={} registration_queue={} registration_queue_peak={} coalesced={} sent_bytes={} slow_clients={} visible_edges={} roster_entries={} queued_bytes={} queued_frames={} observer_high_water_bytes={} observer_coalesced={} observer_sent_bytes={}",
                         registry.active_count(),
                         registry.players.len(),
                         ticks,
                         max_tick.as_micros(),
+                        cpu_p95,
+                        cpu_p99,
+                        late_p95,
+                        late_p99,
                         overruns,
+                        skipped_steps,
+                        proposals,
+                        collision_cells,
+                        corrections,
                         registration_peak,
                         metrics.pending_registrations.get(),
                         metrics.registration_peak.replace(0),
@@ -672,12 +925,55 @@ async fn run_owner(
                     overruns = 0;
                     max_tick = Duration::ZERO;
                     registration_peak = 0;
+                    skipped_steps = 0;
+                    proposals = 0;
+                    collision_cells = 0;
+                    corrections = 0;
+                    cpu_samples.clear();
+                    late_samples.clear();
                 }
                 glommio::executor().yield_now().await;
             }
         }
     }
 }
+
+struct TimingSamples {
+    values: [u64; 1024],
+    count: usize,
+}
+
+impl Default for TimingSamples {
+    fn default() -> Self {
+        Self { values: [0; 1024], count: 0 }
+    }
+}
+
+impl TimingSamples {
+    fn record(&mut self, elapsed: Duration) {
+        self.values[self.count % self.values.len()] =
+            elapsed.as_micros().min(u64::MAX as u128) as u64;
+        self.count += 1;
+    }
+
+    fn percentiles(&self) -> (u64, u64) {
+        let count = self.count.min(self.values.len());
+        if count == 0 {
+            return (0, 0);
+        }
+        let mut values = self.values;
+        values[..count].sort_unstable();
+        (values[(count * 95 / 100).min(count - 1)], values[(count * 99 / 100).min(count - 1)])
+    }
+
+    fn clear(&mut self) {
+        self.count = 0;
+    }
+}
+
+#[cfg(test)]
+#[path = "bench/gameplay.rs"]
+mod gameplay_benchmarks;
 
 #[cfg(test)]
 mod tests {
@@ -695,6 +991,30 @@ mod tests {
         let input = Rc::new(Input::new(Rc::default()));
         let id = registry.reserve(profile(uuid), Transform::default(), 0, input.clone()).unwrap();
         Session { entity_id: id, input }
+    }
+
+    #[test]
+    fn teleport_confirmation_survives_a_full_action_queue() {
+        let world = gameplay_benchmarks::terrain(false, false);
+        let mut registry = Registry::default();
+        let input = Rc::new(Input::new(Rc::default()));
+        let spawn = Transform { x: 8.5, y: 64.0, z: 8.5, ..Default::default() };
+        let id = registry.reserve(profile(1), spawn, 0, input.clone()).unwrap();
+        let session = Session { entity_id: id, input };
+        session.teleport(spawn);
+        let mut notices = Vec::new();
+        registry.simulate(&world, Instant::now(), &mut notices);
+        let teleport = session.take_update().teleport.unwrap();
+        for _ in 0..32 {
+            assert!(session.submit(PlayerAction::Inventory(InventoryAction::Resync)));
+        }
+        assert!(!session.submit(PlayerAction::Inventory(InventoryAction::Resync)));
+        session.confirm_teleport(teleport.id);
+        registry.simulate(&world, Instant::now(), &mut notices);
+        assert!(session.ready());
+        registry.publish();
+        assert_eq!(registry.active_count(), 1);
+        assert_eq!(session.accepted_transform(), registry.get(id).unwrap().transform);
     }
 
     #[test]

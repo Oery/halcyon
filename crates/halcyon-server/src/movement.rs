@@ -59,6 +59,11 @@ impl ProposalQueue {
     pub fn is_empty(&self) -> bool {
         self.pending.is_empty() && !self.overflowed
     }
+
+    #[cfg(test)]
+    pub(crate) fn capacity_payload_bytes(&self) -> usize {
+        self.pending.capacity() * std::mem::size_of::<MovementProposal>()
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -87,6 +92,11 @@ pub struct MovementState {
 }
 
 impl MovementState {
+    #[cfg(test)]
+    pub(crate) fn capacity_payload_bytes(&self) -> usize {
+        self.colliders.capacity() * std::mem::size_of::<Aabb>()
+            + self.step_heights.capacity() * std::mem::size_of::<f64>()
+    }
     pub fn new(transform: Transform) -> Self {
         Self {
             transform,

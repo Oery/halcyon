@@ -7,9 +7,9 @@ use futures_lite::future::block_on;
 use mc_protocol::error::EncodeError;
 use mc_protocol::packets::Payload;
 use mc_protocol::packets::client::{
-    EntityPositionSync, MoveEntityPosition, MoveEntityPositionRotation, MoveEntityRotation,
-    PlayerInfoRemove, RemoveEntities, SetEntityMetadata, SetHeadRotation, SpawnPlayer,
-    encode_angle,
+    EntityPositionSync, EntityStatus, MoveEntityPosition, MoveEntityPositionRotation,
+    MoveEntityRotation, PlayerInfoRemove, PlayerStateMetadata, RemoveEntities, SetEquipment,
+    SetHeadRotation, SpawnPlayer, encode_angle,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -37,6 +37,11 @@ struct Rendered {
     transform: Transform,
     skin_parts: u8,
     revision: u64,
+    sneaking: bool,
+    sprinting: bool,
+    health: f32,
+    equipment: Rc<[mc_protocol::types::ItemStack; 6]>,
+    life_generation: u64,
 }
 
 enum Delivery {
@@ -138,7 +143,7 @@ impl Observer {
             self.cancel_where(|frame| {
                 matches!(&frame.delivery, Delivery::Spawn(player)
                     if registry.get(player.entity_id).is_none_or(|current|
-                        current.entity_id == self_id || !resident.contains(&current.transform.chunk())))
+                        current.entity_id == self_id || !current.visible || !resident.contains(&current.transform.chunk())))
             });
             self.latest.retain(|id, _| self.desired.contains(id));
             let removals: Vec<i32> =
@@ -211,6 +216,10 @@ impl Observer {
                     continue;
                 }
                 if let Some(rendered) = self.rendered.get(&id) {
+                    if rendered.life_generation != player.life_generation {
+                        self.queue_remove(id, false)?;
+                        continue;
+                    }
                     if rendered.revision != player.revision {
                         self.remember_latest(player.clone());
                     }
@@ -327,6 +336,11 @@ impl Observer {
             let Some(previous) = self.rendered.get(&id) else {
                 continue;
             };
+            if previous.life_generation != player.life_generation {
+                self.queue_remove(id, false)?;
+                self.active = self.priority.pop_front().or_else(|| self.reliable.pop_front());
+                continue;
+            }
             let frame = movement_frame(player.clone(), previous)?;
             if let Some(frame) = frame {
                 self.reserve(frame.bytes.len(), frame.frames)?;
@@ -400,6 +414,19 @@ impl Observer {
 
     pub fn sent_bytes(&self) -> u64 {
         self.sent_bytes
+    }
+
+    #[cfg(test)]
+    pub(crate) fn delivery_lag(&self, registry: &Registry) -> (usize, u64) {
+        let lag = self
+            .rendered
+            .iter()
+            .filter_map(|(id, rendered)| {
+                registry.get(*id).map(|player| player.revision.saturating_sub(rendered.revision))
+            })
+            .max()
+            .unwrap_or(0);
+        (self.latest.len(), lag)
     }
 
     #[cfg(test)]
@@ -579,6 +606,11 @@ fn rendered(player: &PlayerSnapshot) -> Rendered {
         transform: player.transform,
         skin_parts: player.skin_parts,
         revision: player.revision,
+        sneaking: player.sneaking,
+        sprinting: player.sprinting,
+        health: player.health,
+        equipment: player.equipment.clone(),
+        life_generation: player.life_generation,
     }
 }
 
@@ -608,14 +640,19 @@ fn spawn_frame(player: PlayerSnapshot) -> Result<Frame, EncodeError> {
         },
         &mut bytes,
     )?;
-    append(
-        &SetEntityMetadata { entity_id: player.entity_id, skin_parts: player.skin_parts },
-        &mut bytes,
-    )?;
+    append(&metadata(&player), &mut bytes)?;
     append(&SetHeadRotation { entity_id: player.entity_id, yaw: p.yaw }, &mut bytes)?;
+    let mut frames = 3;
+    if player.equipment.iter().any(|stack| !stack.is_empty()) {
+        append(
+            &SetEquipment { entity_id: player.entity_id, slots: &player.equipment },
+            &mut bytes,
+        )?;
+        frames += 1;
+    }
     Ok(Frame {
         bytes: Rc::from(bytes),
-        frames: 3,
+        frames,
         delivery: Delivery::Spawn(player),
         unload_barrier: false,
     })
@@ -691,8 +728,21 @@ fn movement_frame(
         append(&SetHeadRotation { entity_id: id, yaw: p.yaw }, &mut bytes)?;
         frames += 1;
     }
-    if player.skin_parts != previous.skin_parts {
-        append(&SetEntityMetadata { entity_id: id, skin_parts: player.skin_parts }, &mut bytes)?;
+    if player.skin_parts != previous.skin_parts
+        || player.sneaking != previous.sneaking
+        || player.sprinting != previous.sprinting
+        || player.health != previous.health
+    {
+        append(&metadata(&player), &mut bytes)?;
+        frames += 1;
+    }
+    if player.health <= 0.0 && previous.health > 0.0 {
+        append(&EntityStatus { entity_id: id, status: 3 }, &mut bytes)?;
+        frames += 1;
+    }
+    if !Rc::ptr_eq(&player.equipment, &previous.equipment) && player.equipment != previous.equipment
+    {
+        append(&SetEquipment { entity_id: id, slots: &player.equipment }, &mut bytes)?;
         frames += 1;
     }
     Ok((frames != 0).then(|| Frame {
@@ -701,6 +751,16 @@ fn movement_frame(
         delivery: Delivery::Move(player),
         unload_barrier: false,
     }))
+}
+
+fn metadata(player: &PlayerSnapshot) -> PlayerStateMetadata {
+    PlayerStateMetadata {
+        entity_id: player.entity_id,
+        skin_parts: player.skin_parts,
+        sneaking: player.sneaking,
+        sprinting: player.sprinting,
+        health: player.health,
+    }
 }
 
 fn quantize_position(value: f64) -> f64 {
@@ -726,6 +786,12 @@ mod tests {
             profile: Rc::new(Profile { uuid, username, info }),
             transform: Transform { x, y: 64.0, z: 1.0, ..Transform::default() },
             skin_parts: 0x7f,
+            sneaking: false,
+            sprinting: false,
+            health: 20.0,
+            equipment: Rc::new(std::array::from_fn(|_| mc_protocol::types::ItemStack::default())),
+            life_generation: 0,
+            visible: true,
             revision,
         }
     }
@@ -783,6 +849,64 @@ mod tests {
         observer.reconcile(&departed, 0, &HashSet::new()).unwrap();
         let delivered = drain(&mut observer);
         assert_eq!(delivered.iter().filter(|(id, _)| *id == PlayerInfoRemove::ID.0).count(), 1);
+        assert_eq!(observer.roster_count(), 2);
+    }
+
+    #[test]
+    fn equipment_uses_delivered_baselines_and_respawn_recreates_the_entity() {
+        use mc_protocol::types::ItemStack;
+        let local = player(0, 1.0, 1);
+        let mut near = player(1, 2.0, 1);
+        near.equipment = Rc::new(std::array::from_fn(|slot| {
+            if slot == 0 {
+                ItemStack::plain(1, 1).unwrap()
+            } else {
+                ItemStack::default()
+            }
+        }));
+        let terrain = HashSet::from([(0, 0)]);
+        let mut observer = Observer::default();
+        observer
+            .reconcile(&Registry::from_snapshots(vec![local.clone(), near.clone()], 1), 0, &terrain)
+            .unwrap();
+        assert!(drain(&mut observer).iter().any(|(id, _)| *id == SetEquipment::ID.0));
+        near.equipment = Rc::new(std::array::from_fn(|slot| {
+            if slot == 0 {
+                ItemStack::plain(2, 1).unwrap()
+            } else {
+                ItemStack::default()
+            }
+        }));
+        near.revision = 2;
+        observer
+            .reconcile(&Registry::from_snapshots(vec![local.clone(), near.clone()], 2), 0, &terrain)
+            .unwrap();
+        let selected = observer.next_frame().unwrap().unwrap();
+        near.equipment = Rc::new(std::array::from_fn(|slot| {
+            if slot == 0 {
+                ItemStack::plain(3, 1).unwrap()
+            } else {
+                ItemStack::default()
+            }
+        }));
+        near.revision = 3;
+        observer
+            .reconcile(&Registry::from_snapshots(vec![local.clone(), near.clone()], 3), 0, &terrain)
+            .unwrap();
+        assert_eq!(observer.next_frame().unwrap().unwrap(), selected);
+        observer.frame_sent();
+        assert!(drain(&mut observer).iter().any(|(id, _)| *id == SetEquipment::ID.0));
+        assert_eq!(observer.rendered[&1].equipment, near.equipment);
+        near.life_generation = 1;
+        near.revision = 4;
+        observer
+            .reconcile(&Registry::from_snapshots(vec![local.clone(), near.clone()], 4), 0, &terrain)
+            .unwrap();
+        assert!(drain(&mut observer).iter().any(|(id, _)| *id == RemoveEntities::ID.0));
+        observer.reconcile(&Registry::from_snapshots(vec![local, near], 5), 0, &terrain).unwrap();
+        let packets = drain(&mut observer);
+        assert!(packets.iter().any(|(id, _)| *id == SpawnPlayer::ID.0));
+        assert!(!packets.iter().any(|(id, _)| *id == PlayerInfoRemove::ID.0));
         assert_eq!(observer.roster_count(), 2);
     }
 

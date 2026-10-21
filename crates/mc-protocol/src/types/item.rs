@@ -57,6 +57,7 @@ impl ItemStack {
             || components.lore.len() > MAX_LORE_LINES
             || components.lore.iter().any(|line| line.len() > MAX_TEXT_BYTES)
             || components.dye.is_some_and(|rgb| rgb > 0x00ff_ffff)
+            || components.body_len() > 4096
         {
             return Err(ItemError::InvalidComponents);
         }

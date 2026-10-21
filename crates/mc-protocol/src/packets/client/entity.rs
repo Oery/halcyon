@@ -14,6 +14,61 @@ use crate::types::VarInt;
 /// The player entry in the Minecraft Java 26.3 entity-type registry.
 pub const PLAYER_ENTITY_TYPE: i32 = 159;
 
+/// Protocol 777 Entity/LivingEntity/Avatar metadata, checked against the target
+/// client's accessors: flags 0, pose 6, health 9, displayed skin parts 16.
+#[derive(Debug)]
+pub struct PlayerStateMetadata {
+    pub entity_id: i32,
+    pub skin_parts: u8,
+    pub sneaking: bool,
+    pub sprinting: bool,
+    pub health: f32,
+}
+
+impl<'p> Payload<'p> for PlayerStateMetadata {
+    const ID: VarInt = VarInt(0x65);
+    const STATE: State = State::Play;
+
+    fn payload_len(&self) -> EncodeResult<usize> {
+        Ok(VarInt(self.entity_id).body_len() + 16)
+    }
+
+    fn decode_payload(_buf: &mut &'p [u8]) -> DecodeResult<Self> {
+        Err(DecodeError::EnumOutOfRange)
+    }
+
+    async fn write_payload<W: AsyncWrite + Unpin>(&self, w: &mut W) -> EncodeResult {
+        VarInt(self.entity_id).write(w).await?;
+        0u8.write(w).await?;
+        VarInt(0).write(w).await?;
+        ((u8::from(self.sneaking) << 1) | (u8::from(self.sprinting) << 3)).write(w).await?;
+        6u8.write(w).await?;
+        VarInt(20).write(w).await?;
+        VarInt(if self.health <= 0.0 {
+            7
+        } else if self.sneaking {
+            5
+        } else {
+            0
+        })
+        .write(w)
+        .await?;
+        9u8.write(w).await?;
+        VarInt(3).write(w).await?;
+        self.health.write(w).await?;
+        16u8.write(w).await?;
+        VarInt(0).write(w).await?;
+        self.skin_parts.write(w).await?;
+        0xffu8.write(w).await
+    }
+}
+
+#[packet(Play, 0x22, Client)]
+pub struct EntityStatus {
+    pub entity_id: i32,
+    pub status: u8,
+}
+
 /// Convert degrees to the protocol's unsigned, wrapping 1/256-turn angle.
 pub fn encode_angle(degrees: f32) -> u8 {
     ((f64::from(degrees).rem_euclid(360.0) * 256.0 / 360.0).floor() as u16) as u8
@@ -383,6 +438,23 @@ impl<'p> Payload<'p> for PlayerInfoRemove<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn player_metadata_uses_the_target_clients_serializer_ids() {
+        futures_lite::future::block_on(async {
+            let packet = PlayerStateMetadata {
+                entity_id: 1,
+                skin_parts: 0x7f,
+                sneaking: true,
+                sprinting: true,
+                health: 20.0,
+            };
+            let mut bytes = Vec::new();
+            packet.write_payload(&mut bytes).await.unwrap();
+            assert_eq!(bytes.len(), packet.payload_len().unwrap());
+            assert_eq!(bytes, [1, 0, 0, 0x0a, 6, 20, 5, 9, 3, 0x41, 0xa0, 0, 0, 16, 0, 0x7f, 0xff]);
+        });
+    }
 
     fn frame<P: Payload<'static>>(packet: &P) -> Vec<u8> {
         futures_lite::future::block_on(async {
