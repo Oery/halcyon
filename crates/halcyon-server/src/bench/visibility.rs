@@ -3,6 +3,7 @@
 use super::*;
 use crate::encryption::ciphers;
 use crate::transport::ClientStream;
+use futures_lite::future::block_on;
 use futures_lite::{AsyncWrite, AsyncWriteExt};
 use serde_json::{Value, json};
 use std::io;

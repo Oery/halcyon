@@ -3,18 +3,17 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 
-use futures_lite::future::block_on;
 use mc_protocol::error::EncodeError;
-use mc_protocol::packets::Payload;
-use mc_protocol::packets::client::{
-    EntityPositionSync, EntityStatus, MoveEntityPosition, MoveEntityPositionRotation,
-    MoveEntityRotation, PlayerInfoRemove, PlayerStateMetadata, RemoveEntities, SetEquipment,
-    SetHeadRotation, SpawnPlayer, encode_angle,
-};
+use mc_protocol::packets::client::PlayerInfoRemove;
 use thiserror::Error;
 use uuid::Uuid;
 
 use crate::lobby::{PlayerSnapshot, Registry, Transform};
+
+mod delivery;
+mod frame;
+
+use frame::{encode, spawn_frame};
 
 type Column = (i32, i32);
 
@@ -316,71 +315,6 @@ impl Observer {
         Ok(())
     }
 
-    /// Calling this again retries the same frame without advancing its baseline.
-    /// Reconciliation/unload may cancel an admission that has not been written;
-    /// callers must not reconcile while a transport write is in progress.
-    pub fn next_frame(&mut self) -> Result<Option<Rc<[u8]>>, VisibilityError> {
-        if let Some(frame) = &self.active {
-            return Ok(Some(Rc::clone(&frame.bytes)));
-        }
-        self.active = self.priority.pop_front().or_else(|| self.reliable.pop_front());
-        while self.active.is_none() {
-            let Some(id) = self.motion_waiting.pop_front() else {
-                return Ok(None);
-            };
-            let Some(player) = self.latest.remove(&id) else {
-                continue;
-            };
-            if self.removal_pending(id) {
-                continue;
-            }
-            let Some(previous) = self.rendered.get(&id) else {
-                continue;
-            };
-            if previous.life_generation != player.life_generation {
-                self.queue_remove(id, false)?;
-                self.active = self.priority.pop_front().or_else(|| self.reliable.pop_front());
-                continue;
-            }
-            let frame = movement_frame(player.clone(), previous)?;
-            if let Some(frame) = frame {
-                self.reserve(frame.bytes.len(), frame.frames)?;
-                self.active = Some(frame);
-            } else {
-                // A revision can change without changing a quantized wire value.
-                self.rendered.insert(id, rendered(&player));
-            }
-        }
-        Ok(self.active.as_ref().map(|frame| Rc::clone(&frame.bytes)))
-    }
-
-    /// Commit only after the entire returned buffer was written and flushed.
-    pub fn frame_sent(&mut self) {
-        let Some(frame) = self.active.take() else { return };
-        self.queued_bytes -= frame.bytes.len();
-        self.queued_frames -= frame.frames;
-        self.sent_bytes += frame.bytes.len() as u64;
-        self.forget_pending(&frame.delivery);
-        match frame.delivery {
-            Delivery::RosterAdd { entity_id, uuid } => {
-                self.roster.insert(entity_id, uuid);
-            }
-            Delivery::RosterRemove(id) => {
-                self.roster.remove(&id);
-            }
-            Delivery::Spawn(player) | Delivery::Move(player) => {
-                self.rendered.insert(player.entity_id, rendered(&player));
-            }
-            Delivery::Remove(id) => {
-                self.rendered.remove(&id);
-                self.latest.remove(&id);
-                if self.desired.contains(&id) && !self.spawn_waiting.contains(&id) {
-                    self.spawn_waiting.push_back(id);
-                }
-            }
-        }
-    }
-
     pub fn has_unload_barrier(&self) -> bool {
         !self.priority.is_empty() || self.active.as_ref().is_some_and(|frame| frame.unload_barrier)
     }
@@ -489,287 +423,6 @@ impl Observer {
     fn removal_pending(&self, id: i32) -> bool {
         self.pending_removals.contains(&id)
     }
-
-    fn reserve(&mut self, bytes: usize, frames: usize) -> Result<(), VisibilityError> {
-        if bytes > MAX_BYTES - self.queued_bytes || frames > MAX_FRAMES - self.queued_frames {
-            return Err(VisibilityError::Overflow);
-        }
-        self.queued_bytes += bytes;
-        self.queued_frames += frames;
-        self.high_water_bytes = self.high_water_bytes.max(self.queued_bytes);
-        Ok(())
-    }
-
-    fn push(&mut self, frame: Frame) -> Result<(), VisibilityError> {
-        self.reserve(frame.bytes.len(), frame.frames)?;
-        let id = frame.delivery.id();
-        match frame.delivery {
-            Delivery::RosterAdd { .. } => {
-                self.pending_roster.insert(id);
-            }
-            Delivery::RosterRemove(_) => {
-                self.pending_departures.insert(id);
-            }
-            Delivery::Spawn(_) => {
-                self.pending_spawns.insert(id);
-            }
-            Delivery::Remove(_) => {
-                self.pending_removals.insert(id);
-            }
-            Delivery::Move(_) => {}
-        }
-        if frame.unload_barrier {
-            self.priority.push_back(frame);
-        } else {
-            self.reliable.push_back(frame);
-        }
-        Ok(())
-    }
-
-    fn replace(&mut self, index: usize, frame: Frame) -> Result<(), VisibilityError> {
-        let previous = &self.reliable[index];
-        let bytes = self.queued_bytes - previous.bytes.len();
-        let frames = self.queued_frames - previous.frames;
-        if frame.bytes.len() > MAX_BYTES - bytes || frame.frames > MAX_FRAMES - frames {
-            return Err(VisibilityError::Overflow);
-        }
-        self.queued_bytes = bytes + frame.bytes.len();
-        self.queued_frames = frames + frame.frames;
-        self.high_water_bytes = self.high_water_bytes.max(self.queued_bytes);
-        self.reliable[index] = frame;
-        Ok(())
-    }
-
-    fn cancel_where(&mut self, predicate: impl Fn(&Frame) -> bool) {
-        if self.active.as_ref().is_some_and(&predicate) {
-            let frame = self.active.take().expect("active frame exists");
-            self.queued_bytes -= frame.bytes.len();
-            self.queued_frames -= frame.frames;
-            self.forget_pending(&frame.delivery);
-        }
-        let mut index = 0;
-        while index < self.reliable.len() {
-            if predicate(&self.reliable[index]) {
-                let frame = self.reliable.remove(index).expect("queued frame exists");
-                self.queued_bytes -= frame.bytes.len();
-                self.queued_frames -= frame.frames;
-                self.forget_pending(&frame.delivery);
-            } else {
-                index += 1;
-            }
-        }
-    }
-
-    fn forget_pending(&mut self, delivery: &Delivery) {
-        let id = delivery.id();
-        match delivery {
-            Delivery::RosterAdd { .. } => {
-                self.pending_roster.remove(&id);
-            }
-            Delivery::RosterRemove(_) => {
-                self.pending_departures.remove(&id);
-            }
-            Delivery::Spawn(_) => {
-                self.pending_spawns.remove(&id);
-            }
-            Delivery::Remove(_) => {
-                self.pending_removals.remove(&id);
-            }
-            Delivery::Move(_) => {}
-        }
-    }
-
-    fn queue_remove(&mut self, id: i32, barrier: bool) -> Result<(), VisibilityError> {
-        self.latest.remove(&id);
-        if self.removal_pending(id) {
-            if barrier
-                && let Some(index) = self.reliable.iter().position(
-                    |frame| matches!(frame.delivery, Delivery::Remove(other) if other == id),
-                )
-            {
-                let mut frame = self.reliable.remove(index).expect("queued removal exists");
-                frame.unload_barrier = true;
-                self.priority.push_back(frame);
-            }
-            return Ok(());
-        }
-        self.push(Frame {
-            bytes: encode(&RemoveEntities { entity_ids: &[id] })?,
-            frames: 1,
-            delivery: Delivery::Remove(id),
-            unload_barrier: barrier,
-        })
-    }
-}
-
-fn rendered(player: &PlayerSnapshot) -> Rendered {
-    Rendered {
-        transform: player.transform,
-        skin_parts: player.skin_parts,
-        revision: player.revision,
-        sneaking: player.sneaking,
-        crouching: player.crouching,
-        sprinting: player.sprinting,
-        health: player.health,
-        equipment: player.equipment.clone(),
-        life_generation: player.life_generation,
-    }
-}
-
-fn encode<'p>(packet: &impl Payload<'p>) -> Result<Rc<[u8]>, EncodeError> {
-    let mut bytes = Vec::new();
-    append(packet, &mut bytes)?;
-    Ok(Rc::from(bytes))
-}
-
-fn append<'p>(packet: &impl Payload<'p>, bytes: &mut Vec<u8>) -> Result<(), EncodeError> {
-    // Vec's AsyncWrite is immediately ready; this cannot suspend an executor.
-    block_on(packet.write_packet(bytes))
-}
-
-fn spawn_frame(player: PlayerSnapshot) -> Result<Frame, EncodeError> {
-    let p = player.transform;
-    let mut bytes = Vec::with_capacity(96);
-    append(
-        &SpawnPlayer {
-            entity_id: player.entity_id,
-            uuid: player.profile.uuid,
-            x: p.x,
-            y: p.y,
-            z: p.z,
-            yaw: p.yaw,
-            pitch: p.pitch,
-        },
-        &mut bytes,
-    )?;
-    append(&metadata(&player), &mut bytes)?;
-    append(&SetHeadRotation { entity_id: player.entity_id, yaw: p.yaw }, &mut bytes)?;
-    let mut frames = 3;
-    if player.equipment.iter().any(|stack| !stack.is_empty()) {
-        append(
-            &SetEquipment { entity_id: player.entity_id, slots: &player.equipment },
-            &mut bytes,
-        )?;
-        frames += 1;
-    }
-    Ok(Frame {
-        bytes: Rc::from(bytes),
-        frames,
-        delivery: Delivery::Spawn(player),
-        unload_barrier: false,
-    })
-}
-
-fn movement_frame(
-    player: PlayerSnapshot,
-    previous: &Rendered,
-) -> Result<Option<Frame>, EncodeError> {
-    let id = player.entity_id;
-    let p = player.transform;
-    let old = previous.transform;
-    let changed_position = p.x != old.x || p.y != old.y || p.z != old.z;
-    let changed_rotation = encode_angle(p.yaw) != encode_angle(old.yaw)
-        || encode_angle(p.pitch) != encode_angle(old.pitch);
-    let mut bytes = Vec::with_capacity(96);
-    let mut frames = 0;
-    if changed_position {
-        let deltas = [
-            quantize_position(p.x) - quantize_position(old.x),
-            quantize_position(p.y) - quantize_position(old.y),
-            quantize_position(p.z) - quantize_position(old.z),
-        ];
-        if deltas.iter().all(|delta| *delta >= i16::MIN as f64 && *delta <= i16::MAX as f64) {
-            let [dx, dy, dz] = [deltas[0] as i16, deltas[1] as i16, deltas[2] as i16];
-            if changed_rotation {
-                append(
-                    &MoveEntityPositionRotation {
-                        entity_id: id,
-                        dx,
-                        dy,
-                        dz,
-                        yaw: p.yaw,
-                        pitch: p.pitch,
-                        on_ground: p.on_ground,
-                    },
-                    &mut bytes,
-                )?;
-            } else {
-                append(
-                    &MoveEntityPosition { entity_id: id, dx, dy, dz, on_ground: p.on_ground },
-                    &mut bytes,
-                )?;
-            }
-        } else {
-            append(
-                &EntityPositionSync {
-                    entity_id: id,
-                    x: p.x,
-                    y: p.y,
-                    z: p.z,
-                    yaw: p.yaw,
-                    pitch: p.pitch,
-                    on_ground: p.on_ground,
-                },
-                &mut bytes,
-            )?;
-        }
-        frames += 1;
-    } else if changed_rotation || p.on_ground != old.on_ground {
-        append(
-            &MoveEntityRotation {
-                entity_id: id,
-                yaw: p.yaw,
-                pitch: p.pitch,
-                on_ground: p.on_ground,
-            },
-            &mut bytes,
-        )?;
-        frames += 1;
-    }
-    if encode_angle(p.yaw) != encode_angle(old.yaw) {
-        append(&SetHeadRotation { entity_id: id, yaw: p.yaw }, &mut bytes)?;
-        frames += 1;
-    }
-    if player.skin_parts != previous.skin_parts
-        || player.sneaking != previous.sneaking
-        || player.crouching != previous.crouching
-        || player.sprinting != previous.sprinting
-        || player.health != previous.health
-    {
-        append(&metadata(&player), &mut bytes)?;
-        frames += 1;
-    }
-    if player.health <= 0.0 && previous.health > 0.0 {
-        append(&EntityStatus { entity_id: id, status: 3 }, &mut bytes)?;
-        frames += 1;
-    }
-    if !Rc::ptr_eq(&player.equipment, &previous.equipment) && player.equipment != previous.equipment
-    {
-        append(&SetEquipment { entity_id: id, slots: &player.equipment }, &mut bytes)?;
-        frames += 1;
-    }
-    Ok((frames != 0).then(|| Frame {
-        bytes: Rc::from(bytes),
-        frames,
-        delivery: Delivery::Move(player),
-        unload_barrier: false,
-    }))
-}
-
-fn metadata(player: &PlayerSnapshot) -> PlayerStateMetadata {
-    PlayerStateMetadata {
-        entity_id: player.entity_id,
-        skin_parts: player.skin_parts,
-        sneaking: player.sneaking,
-        crouching: player.crouching,
-        sprinting: player.sprinting,
-        health: player.health,
-    }
-}
-
-fn quantize_position(value: f64) -> f64 {
-    // VecDeltaCodec uses Java Math.round, whose negative ties round upward.
-    (value * 4096.0 + 0.5).floor()
 }
 
 #[cfg(test)]
@@ -778,3 +431,7 @@ mod tests;
 #[cfg(test)]
 #[path = "bench/visibility.rs"]
 mod benchmarks;
+
+#[cfg(test)]
+#[path = "bench/synthetic.rs"]
+mod synthetic_benchmarks;
