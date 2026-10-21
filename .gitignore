@@ -9,6 +9,10 @@
 !/rustfmt.toml
 !/AGENTS.md
 
+# Documentation
+!/docs/vanilla-server-features.md
+!/docs/halcyon-server-features.md
+
 # Crates
 !/crates/*/Cargo.toml
 !*.rs
