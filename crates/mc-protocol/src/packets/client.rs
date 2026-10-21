@@ -16,6 +16,8 @@ use uuid::Uuid;
 
 mod entity;
 pub use entity::*;
+mod gameplay;
+pub use gameplay::*;
 
 // TODO: how to handle borrowing here
 #[packet(Status, 0x00, Client)]

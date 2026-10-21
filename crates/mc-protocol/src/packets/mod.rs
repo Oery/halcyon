@@ -63,6 +63,13 @@ pub enum Packets<'p> {
     ClientTickEnd(ClientTickEnd),
     PlayerLoaded(PlayerLoaded),
     PlayClientInformation(ClientInformation<'p>),
+    ClientCommand(ClientCommand),
+    ClickContainer(ClickContainer),
+    CloseContainer(CloseContainer),
+    SetHeldItem(SetHeldItem),
+    PlayerAction(PlayerAction),
+    PlayerCommand(PlayerCommand),
+    PlayerInput(PlayerInput),
 }
 
 impl<'p> Packets<'p> {
@@ -70,6 +77,17 @@ impl<'p> Packets<'p> {
         let id = VarInt::read(buf)?.0;
 
         match (id, ctx.state) {
+            (0x0C, State::Play) => Ok(Packets::ClientCommand(ClientCommand::decode_payload(buf)?)),
+            (0x12, State::Play) => {
+                Ok(Packets::ClickContainer(ClickContainer::decode_payload(buf)?))
+            }
+            (0x13, State::Play) => {
+                Ok(Packets::CloseContainer(CloseContainer::decode_payload(buf)?))
+            }
+            (0x36, State::Play) => Ok(Packets::SetHeldItem(SetHeldItem::decode_payload(buf)?)),
+            (0x29, State::Play) => Ok(Packets::PlayerAction(PlayerAction::decode_payload(buf)?)),
+            (0x2A, State::Play) => Ok(Packets::PlayerCommand(PlayerCommand::decode_payload(buf)?)),
+            (0x2B, State::Play) => Ok(Packets::PlayerInput(PlayerInput::decode_payload(buf)?)),
             (0x00, State::Handshake) => {
                 Ok(Packets::ServerListPing(ServerListPing::decode_payload(buf)?))
             }
