@@ -3,7 +3,7 @@
 //! Reads `<dir>/region/r.<rx>.<rz>.mca` files once at startup and
 //! pre-encodes every chunk column into the exact wire bytes `ChunkData`
 //! sends. All allocation, NBT parsing, and palette mapping happens here;
-//! the hot path only borrows the resulting byte slices.
+//! the hot path borrows immutable wire bytes or queries retained state arrays.
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -12,14 +12,13 @@ use std::path::Path;
 
 use flate2::read::ZlibDecoder;
 
-use crate::LoadError;
 use crate::blockstates::{block_state_id, canonical_key};
 use crate::disk_nbt::DiskNbt;
+use crate::{BlockStateId, LoadError, MIN_BLOCK_Y, SECTION_COUNT, Section};
 
 /// Overworld shape from the synced `dimension_type` entry: 24 sections,
 /// `Y` in `-4..20`.
-const SECTION_COUNT: usize = 24;
-const MIN_Y_SECTION: i8 = -4;
+const MIN_Y_SECTION: i8 = (MIN_BLOCK_Y / 16) as i8;
 /// Packed heightmap longs per chunk column: 256 columns, 9 bits each.
 const HEIGHTS_LEN: usize = 37;
 /// Spawn fallback when `level.dat` is missing: today's hardcoded position.
@@ -31,6 +30,7 @@ pub struct LoadedChunk {
     pub data: Vec<u8>,
     pub heights: [i64; HEIGHTS_LEN],
     pub wire_bytes: usize,
+    pub sections: Box<[Section; SECTION_COUNT]>,
 }
 
 pub struct LoadedWorld {
@@ -112,6 +112,7 @@ fn load_region(path: &Path, out: &mut Vec<LoadedChunk>) -> Result<(usize, usize)
                 out.push(chunk.chunk);
             }
             Ok(None) => {}
+            Err(e @ LoadError::UnknownBlockState { .. }) => return Err(e),
             Err(e) => {
                 eprintln!("world: skipping chunk {name}: {e}");
             }
@@ -121,7 +122,7 @@ fn load_region(path: &Path, out: &mut Vec<LoadedChunk>) -> Result<(usize, usize)
         eprintln!("world: {label}: no chunks loaded");
     } else {
         eprintln!(
-            "world: {label}: {} chunks, {missing_blocks} missing blocks remapped to air in {}ms",
+            "world: {label}: {} chunks loaded in {}ms",
             out.len() - before,
             start.elapsed().as_millis(),
         );
@@ -163,9 +164,10 @@ fn decode_chunk_payload(
         reason: "missing zPos".to_owned(),
     })?;
 
-    let mut missing = 0usize;
+    let missing = 0usize;
     let mut remapped = 0usize;
     let mut data = Vec::with_capacity(SECTION_COUNT * 512);
+    let mut terrain_sections = Box::new(std::array::from_fn(|_| Section::default()));
     let heights = load_heights(name, &root)?;
 
     // Index Anvil sections by Y so absent ones encode as air.
@@ -177,30 +179,45 @@ fn decode_chunk_payload(
             }
         }
     }
-    for idx in 0..SECTION_COUNT {
+    for (idx, terrain_section) in terrain_sections.iter_mut().enumerate() {
         let y = MIN_Y_SECTION + idx as i8;
         match by_y.get(&y) {
             Some(section) => {
-                encode_section(section, &mut data, &mut missing, &mut remapped);
+                *terrain_section = encode_section(name, section, &mut data, &mut remapped)?;
             }
             None => encode_air_section(&mut data),
         }
     }
 
     let wire_bytes = data.len();
-    Ok(Some(Decoded { chunk: LoadedChunk { x, z, data, heights, wire_bytes }, missing, remapped }))
+    Ok(Some(Decoded {
+        chunk: LoadedChunk { x, z, data, heights, wire_bytes, sections: terrain_sections },
+        missing,
+        remapped,
+    }))
 }
 
 /// Encode one Anvil section into wire `Chunk Section` bytes and append.
-fn encode_section(section: &DiskNbt, out: &mut Vec<u8>, missing: &mut usize, remapped: &mut usize) {
+fn encode_section(
+    chunk: &str,
+    section: &DiskNbt,
+    out: &mut Vec<u8>,
+    remapped: &mut usize,
+) -> Result<Section, LoadError> {
     let Some(block_states) = section.get("block_states") else {
         encode_air_section(out);
-        return;
+        return Ok(Section::default());
     };
     let Some(palette) = block_states.get("palette").and_then(|v| v.as_list()) else {
         encode_air_section(out);
-        return;
+        return Ok(Section::default());
     };
+    if palette.is_empty() {
+        return Err(LoadError::BadNbt {
+            chunk: chunk.to_owned(),
+            reason: "empty block palette".to_owned(),
+        });
+    }
 
     // Map the Anvil string palette to global IDs. 26.x entries are
     // `{id, properties}` (lowercase); older maps use `{Name, Properties}`.
@@ -225,8 +242,7 @@ fn encode_section(section: &DiskNbt, out: &mut Vec<u8>, missing: &mut usize, rem
         match block_state_id(&key) {
             Some(id) => ids.push(id),
             None => {
-                *missing += 1;
-                ids.push(0);
+                return Err(LoadError::UnknownBlockState { chunk: chunk.to_owned(), state: key });
             }
         }
     }
@@ -235,13 +251,43 @@ fn encode_section(section: &DiskNbt, out: &mut Vec<u8>, missing: &mut usize, rem
     // because the synced `worldgen/biome` registry only contains plains.
     *remapped += 1;
 
-    if let Some(data) = block_states.get("data").and_then(|v| v.as_long_array()) {
+    let terrain = if let Some(data) = block_states.get("data").and_then(|v| v.as_long_array()) {
+        let bpe = bits_for_palette(ids.len());
+        let required = if bpe == 0 {
+            0
+        } else {
+            4096_usize.div_ceil(64 / bpe as usize)
+        };
+        if data.len() < required {
+            return Err(LoadError::BadNbt {
+                chunk: chunk.to_owned(),
+                reason: "truncated packed block states".to_owned(),
+            });
+        }
+        let mut states = Box::new([0; 4096]);
+        for (i, state) in states.iter_mut().enumerate() {
+            let index = read_packed(data, bpe, i) as usize;
+            let id = ids.get(index).ok_or_else(|| LoadError::BadNbt {
+                chunk: chunk.to_owned(),
+                reason: format!("block palette index {index} outside {} entries", ids.len()),
+            })?;
+            *state = *id as BlockStateId;
+        }
         encode_indirect_section(&ids, data, out);
+        Section::from_states(states)
     } else {
+        if ids.len() != 1 {
+            return Err(LoadError::BadNbt {
+                chunk: chunk.to_owned(),
+                reason: "multi-entry block palette has no data".to_owned(),
+            });
+        }
         encode_single_valued(&ids, out);
-    }
+        Section::Uniform(ids[0] as BlockStateId)
+    };
     // Biome container: always single plains (BPE 0 + id 0 = 2 bytes).
     out.extend_from_slice(&[0x00, 0x00]);
+    Ok(terrain)
 }
 
 /// Indirect container: re-emit Anvil indices at wire BPE
@@ -400,6 +446,64 @@ fn load_spawn(path: &Path) -> (f64, f64, f64, f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_section(names: &[&str], data: Option<Vec<i64>>) -> DiskNbt {
+        let mut fields = vec![(
+            "palette".to_owned(),
+            DiskNbt::List(
+                10,
+                names
+                    .iter()
+                    .map(|name| {
+                        DiskNbt::Compound(vec![(
+                            "Name".to_owned(),
+                            DiskNbt::Str((*name).to_owned()),
+                        )])
+                    })
+                    .collect(),
+            ),
+        )];
+        if let Some(data) = data {
+            fields.push(("data".to_owned(), DiskNbt::LongArray(data)));
+        }
+        DiskNbt::Compound(vec![("block_states".to_owned(), DiskNbt::Compound(fields))])
+    }
+
+    #[test]
+    fn retained_states_match_the_encoded_palette_and_indices() {
+        let packed = vec![0x1010_1010_1010_1010i64; 256];
+        let section = test_section(&["minecraft:air", "minecraft:stone"], Some(packed.clone()));
+        let mut wire = Vec::new();
+        let terrain = encode_section("test", &section, &mut wire, &mut 0).unwrap();
+        assert_eq!(&wire[..8], &[0x08, 0, 0, 0, 4, 2, 0, 1]);
+        assert_eq!(
+            &wire[8..wire.len() - 2],
+            packed.iter().flat_map(|word| word.to_be_bytes()).collect::<Vec<_>>()
+        );
+        for i in 0..4096 {
+            assert_eq!(terrain.block_at(i & 15, i >> 8, (i >> 4) & 15), (i & 1) as u16);
+        }
+    }
+
+    #[test]
+    fn unknown_or_malformed_palettes_do_not_become_gameplay_air() {
+        let unknown = test_section(&["minecraft:not_a_block"], None);
+        assert!(matches!(
+            encode_section("test", &unknown, &mut vec![], &mut 0),
+            Err(LoadError::UnknownBlockState { .. })
+        ));
+        for section in [
+            test_section(&[], None),
+            test_section(&["minecraft:air", "minecraft:stone"], None),
+            test_section(&["minecraft:air", "minecraft:stone"], Some(vec![0; 255])),
+            test_section(&["minecraft:air", "minecraft:stone"], Some(vec![2; 256])),
+        ] {
+            assert!(matches!(
+                encode_section("test", &section, &mut vec![], &mut 0),
+                Err(LoadError::BadNbt { .. })
+            ));
+        }
+    }
 
     #[test]
     fn varint_roundtrip_boundaries() {
