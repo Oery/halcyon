@@ -1,6 +1,21 @@
 # Repository Guidelines
 
-## Project Overview
+## Project Vision
+
+Halcyon is a Minecraft Java-edition minigame server built from scratch in Rust. Players should be able to enjoy a variety of minigames even when few human players are online, with humanlike bots filling games and providing engaging opponents and teammates.
+
+Supporting very large bot populations is a core design requirement. The server must be highly efficient and scale vertically, making effective use of the CPU cores and memory available on a single machine.
+
+Halcyon does not aim for full feature parity with the official Minecraft server. Implement only the Minecraft features required by Halcyon's minigames, bots, and player experience. Design each feature around those needs rather than reproducing vanilla internals.
+
+Implementation principles:
+
+- Evaluate designs against their CPU, memory, and scheduling costs as player and bot populations grow.
+- Prefer shared immutable data, reuse, batching, and bounded work where appropriate; substantiate performance claims with measurements.
+- Preserve required client protocol compatibility while tailoring server behavior to Halcyon's needs.
+- Treat the documented architecture as the current implementation, not a permanent constraint on vertical scaling.
+
+## Current Implementation
 
 Early-stage Minecraft Java-edition server in Rust. TCP accept on `127.0.0.1:25565` → per-connection packet loop. Implements status, authenticated encrypted login, configuration, and basic Play with a read-only lobby world and chunk streaming. Registry/block-state data targets 26.3. No packet compression, lighting engine, or mutable world simulation yet.
 
