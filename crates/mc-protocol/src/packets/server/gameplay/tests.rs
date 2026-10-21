@@ -1,0 +1,17 @@
+use super::*;
+
+#[test]
+fn hashed_predictions_are_bounded_and_never_become_items() {
+    // window/state/slot/button/mode/count, slot36 -> stone x64/no overrides, cursor empty
+    let bytes = [0, 0, 0, 36, 0, 0, 1, 0, 36, 1, 1, 64, 0, 0, 0];
+    let mut input = bytes.as_slice();
+    let click = ClickContainer::decode_payload(&mut input).unwrap();
+    assert_eq!(click.predicted_slots, 1 << 36);
+    assert!(input.is_empty());
+    assert!(ClickContainer::decode_payload(&mut &bytes[..bytes.len() - 1]).is_err());
+    let excessive = [0, 0, 0, 36, 0, 0, 0x81, 1];
+    assert!(ClickContainer::decode_payload(&mut excessive.as_slice()).is_err());
+    let mut unknown = bytes;
+    unknown[10] = 0;
+    assert!(ClickContainer::decode_payload(&mut unknown.as_slice()).is_err());
+}
