@@ -268,6 +268,34 @@ impl Registry {
         }
     }
 
+    /// Estimated owned container payload capacity and live input/profile payloads.
+    /// Shared profiles are counted once per player, never once per observer.
+    /// Excludes Registry itself, Rc headers, hash controls, allocator overhead,
+    /// owner-task storage and sockets; this is neither RSS nor total memory.
+    #[cfg(test)]
+    pub(crate) fn capacity_payload_bytes(&self) -> usize {
+        self.players.capacity() * std::mem::size_of::<(i32, Player)>()
+            + self.uuids.capacity() * std::mem::size_of::<Uuid>()
+            + self.columns.capacity() * std::mem::size_of::<((i32, i32), HashSet<i32>)>()
+            + self
+                .columns
+                .values()
+                .map(|ids| ids.capacity() * std::mem::size_of::<i32>())
+                .sum::<usize>()
+            + self.closed_scratch.capacity() * std::mem::size_of::<i32>()
+            + self.moved_scratch.capacity() * std::mem::size_of::<ColumnMove>()
+            + self
+                .players
+                .values()
+                .map(|player| {
+                    std::mem::size_of::<Input>()
+                        + std::mem::size_of::<Profile>()
+                        + player.snapshot.profile.username.capacity()
+                        + player.snapshot.profile.info.len()
+                })
+                .sum::<usize>()
+    }
+
     pub fn players(&self) -> impl Iterator<Item = &PlayerSnapshot> {
         self.players.values().filter(|player| player.active).map(|player| &player.snapshot)
     }
@@ -740,6 +768,7 @@ mod tests {
         let mut registry = Registry::default();
         let sessions: Vec<_> =
             (1..=MAX_PLAYERS).map(|uuid| reserve(&mut registry, uuid as u128)).collect();
+        assert!(registry.capacity_payload_bytes() >= MAX_PLAYERS * std::mem::size_of::<Player>());
         let input = Rc::new(Input::new(Rc::default()));
         assert_eq!(
             registry.reserve(profile(2_000), Transform::default(), 0, input),
@@ -808,34 +837,5 @@ mod tests {
         assert_eq!(registry.active_count(), 0);
         assert!(registry.players.is_empty());
         assert!(sender.is_full());
-    }
-
-    #[test]
-    #[ignore = "opt-in synthetic state-publication measurement; no sockets or visibility fan-out"]
-    fn measure_state_publication() {
-        for population in [128, MAX_PLAYERS] {
-            let mut registry = Registry::default();
-            let sessions: Vec<_> =
-                (1..=population).map(|id| reserve(&mut registry, id as u128)).collect();
-            for session in &sessions {
-                session.activate();
-            }
-            registry.publish();
-            let start = Instant::now();
-            for tick in 0..200 {
-                for (index, session) in sessions.iter().enumerate() {
-                    session.publish_transform(Transform {
-                        x: index as f64 + tick as f64 * 0.1,
-                        ..Transform::default()
-                    });
-                }
-                registry.publish();
-            }
-            eprintln!(
-                "state population={population} moving_ticks=200 mean_tick_us={:.1} player_struct_bytes={} (excludes allocations, profiles, observers and sockets)",
-                start.elapsed().as_secs_f64() * 1_000_000.0 / 200.0,
-                std::mem::size_of::<Player>()
-            );
-        }
     }
 }
