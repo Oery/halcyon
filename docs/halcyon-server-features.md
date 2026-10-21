@@ -2,6 +2,8 @@
 
 This document evaluates every entry in the [vanilla feature inventory](vanilla-server-features.md), preserving its 295 feature names, ordering, and 17 categories. Sections 18–22 add capabilities specific to Halcyon. The baseline is Java Edition **26.3**. These are proposed product and engineering choices, not a list of completed features or a commitment to implement everything marked Include immediately.
 
+For current implementation status, see the concise [feature progress tracker](feature-progress.md).
+
 The intended platform supports combat, building, movement, and party games, including games populated by humanlike bots. Maps are imported; game logic is written in Rust. Running existing vanilla command-block or data-pack minigames is not a compatibility goal. The performance target is 120 TPS for worlds with up to 100 players, counting humans and bots together. No particular minigame lineup or total server population target has been selected.
 
 **Redstone is explicitly out of scope and will not be reimplemented.** This excludes power generation and propagation, circuit components, powered block behavior, pistons, and vanilla redstone/automation machinery. Rust game handlers may react directly to player interactions or control arena state. Manual block interactions, audio, and non-redstone TNT mechanics are assessed separately; supporting them does not imply circuit support.
@@ -242,7 +244,7 @@ These workstation features are not prerequisites for obtaining the same finished
 
 | Feature | Recommendation | Code size | Use case / rationale |
 | --- | --- | --- | --- |
-| Block states | Include | Medium | Existing IDs support imported terrain; mutable state access and metadata are needed for collision and interactions. |
+| Block states | Include | Medium | Imported block-state and collision-shape queries exist; mutable states and interaction updates remain future work. |
 | Block placement | Include | Large | Essential for building games; exact supported blocks need placement, shape, permission, and inventory rules. |
 | Block breaking | Include | Large | Required for editable arenas; tool suitability, mining progress, permissions, and resulting changes interact. |
 | Break feedback | Include | Small | A useful observer packet/update path once authoritative breaking and entity audiences exist. |
