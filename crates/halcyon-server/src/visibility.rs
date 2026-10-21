@@ -304,8 +304,9 @@ impl Observer {
         Ok(())
     }
 
-    /// The returned reference-counted buffer stays unchanged until `frame_sent`.
     /// Calling this again retries the same frame without advancing its baseline.
+    /// Reconciliation/unload may cancel an admission that has not been written;
+    /// callers must not reconcile while a transport write is in progress.
     pub fn next_frame(&mut self) -> Result<Option<Rc<[u8]>>, VisibilityError> {
         if let Some(frame) = &self.active {
             return Ok(Some(Rc::clone(&frame.bytes)));
@@ -510,6 +511,12 @@ impl Observer {
     }
 
     fn cancel_where(&mut self, predicate: impl Fn(&Frame) -> bool) {
+        if self.active.as_ref().is_some_and(&predicate) {
+            let frame = self.active.take().expect("active frame exists");
+            self.queued_bytes -= frame.bytes.len();
+            self.queued_frames -= frame.frames;
+            self.forget_pending(&frame.delivery);
+        }
         let mut index = 0;
         while index < self.reliable.len() {
             if predicate(&self.reliable[index]) {
@@ -897,6 +904,28 @@ mod tests {
         let delivered = drain(&mut observer);
         assert_eq!(delivered.len(), 1);
         assert_eq!(delivered[0].0, RemoveEntities::ID.0);
+
+        let mut selected = Observer::default();
+        selected
+            .reconcile(
+                &Registry::from_snapshots(vec![player(0, 1.0, 1), player(1, 2.0, 1)], 1),
+                0,
+                &terrain,
+            )
+            .unwrap();
+        loop {
+            selected.next_frame().unwrap().unwrap();
+            if matches!(selected.active.as_ref().unwrap().delivery, Delivery::Spawn(_)) {
+                break;
+            }
+            selected.frame_sent();
+        }
+        selected
+            .reconcile(&Registry::from_snapshots(vec![player(0, 1.0, 1)], 2), 0, &terrain)
+            .unwrap();
+        assert!(drain(&mut selected).iter().all(|(id, _)| *id != SpawnPlayer::ID.0));
+        assert_eq!(selected.visible_count(), 0);
+        assert_eq!(selected.roster_count(), 1);
     }
 
     #[test]
