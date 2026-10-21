@@ -14,6 +14,9 @@ use crate::types::{
 use macros::{Payload, packet};
 use uuid::Uuid;
 
+mod entity;
+pub use entity::*;
+
 // TODO: how to handle borrowing here
 #[packet(Status, 0x00, Client)]
 pub struct StatusPacket<'p> {
