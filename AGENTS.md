@@ -39,11 +39,13 @@ Add a packet: define `#[packet(State, 0xNN, Client|Server)] struct` in `crates/m
 ## Key Directories
 
 - `crates/halcyon-server/src/`: runtime — `main.rs`, `server.rs`, `client.rs`, `transport.rs`, `packet.rs`, `lifecycle.rs`, `player.rs`, `movement.rs`, `movement/physics.rs`, `simulation.rs`, `inventory.rs`, `arena.rs`, `world_sync.rs`, `lobby.rs`, `visibility.rs`, `cache.rs`, `chunks.rs`, `states/`, `auth/`, `encryption/`.
-- `crates/halcyon-world/src/`: startup world loading — `loader.rs`, `disk_nbt.rs`, `blockstates.rs`, `terrain.rs`, generated `collision_data.rs`, immutable world grid in `lib.rs`.
+- `crates/halcyon-world/src/`: startup world loading — `loader.rs`, section palette encoding in `loader/section.rs`, `disk_nbt.rs`, `blockstates.rs`, `terrain.rs`, generated `collision_data.rs`, immutable world grid in `lib.rs`.
 - `crates/mc-protocol/src/`: codec — `encode.rs`, `decode.rs`, `error.rs`, `state.rs`, `packets/{mod,client,server}.rs`, `types/{varint,int,str,bytes,uuid,game_profile}.rs`, `data/{motd,config/*}`, `auth/`.
 - `crates/mc-protocol-macros/src/`: `lib.rs`, `attrs.rs`, `format.rs` — `#[packet]` / `Payload` / `InnerPacket` codegen.
 - `docs/`: vanilla feature inventory, Halcyon feature assessment, and `feature-progress.md` implementation tracker. Keep the tracker current when feature support changes; describe what is available, not implementation details. No `scripts/`, `tools/`, standalone `tests/`, `benches/`, `examples/`, `.github/`, or `Dockerfile`.
 - `crates/halcyon-server/src/bench/`: opt-in component benchmarks, compiled only for tests.
+
+Server implementation modules use sibling directories to separate responsibilities: `client/` owns gameplay delivery, publication and writing; `lobby/` owns sessions, registry management and scheduling; `movement/` owns collision, terrain contact and physics; `visibility/` owns frame encoding and delivery; `inventory/click.rs` owns menu operations. Player login/profile packet codecs live in `mc-protocol/src/packets/client/player.rs`. Handwritten unit tests live in adjacent `tests.rs` modules behind `#[cfg(test)]`; keep generated data tables intact.
 
 ## Development Commands
 
