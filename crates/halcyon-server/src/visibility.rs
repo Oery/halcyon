@@ -1,0 +1,831 @@
+//! Per-connection lobby presentation. Registry borrows end before transport I/O.
+
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::rc::Rc;
+
+use futures_lite::future::block_on;
+use mc_protocol::error::EncodeError;
+use mc_protocol::packets::Payload;
+use mc_protocol::packets::client::{
+    EntityPositionSync, MoveEntityPosition, MoveEntityPositionRotation, MoveEntityRotation,
+    PlayerInfoRemove, RemoveEntities, SetEntityMetadata, SetHeadRotation, SpawnPlayer,
+    encode_angle,
+};
+use thiserror::Error;
+use uuid::Uuid;
+
+use crate::lobby::{PlayerSnapshot, Registry, Transform};
+
+type Column = (i32, i32);
+
+const MAX_BYTES: usize = 256 * 1024;
+const MAX_FRAMES: usize = 2048;
+const ADMISSIONS_PER_PUBLICATION: usize = 16;
+
+#[derive(Debug, Error)]
+pub enum VisibilityError {
+    #[error("observer output exceeded its bounded capacity")]
+    Overflow,
+    #[error(transparent)]
+    Encode(#[from] EncodeError),
+}
+
+#[derive(Clone)]
+struct Rendered {
+    transform: Transform,
+    skin_parts: u8,
+    revision: u64,
+}
+
+enum Delivery {
+    RosterAdd { entity_id: i32, uuid: Uuid },
+    RosterRemove(i32),
+    Spawn(PlayerSnapshot),
+    Remove(i32),
+    Move(PlayerSnapshot),
+}
+
+impl Delivery {
+    fn id(&self) -> i32 {
+        match self {
+            Self::RosterAdd { entity_id, .. }
+            | Self::RosterRemove(entity_id)
+            | Self::Remove(entity_id) => *entity_id,
+            Self::Spawn(player) | Self::Move(player) => player.entity_id,
+        }
+    }
+}
+
+struct Frame {
+    bytes: Rc<[u8]>,
+    frames: usize,
+    delivery: Delivery,
+    unload_barrier: bool,
+}
+
+#[derive(Default)]
+pub struct Observer {
+    roster: HashMap<i32, Uuid>,
+    rendered: HashMap<i32, Rendered>,
+    latest: HashMap<i32, PlayerSnapshot>,
+    resident: HashSet<Column>,
+    reliable: VecDeque<Frame>,
+    priority: VecDeque<Frame>,
+    active: Option<Frame>,
+    pending_roster: HashSet<i32>,
+    pending_spawns: HashSet<i32>,
+    pending_removals: HashSet<i32>,
+    pending_departures: HashSet<i32>,
+    publication: Option<u64>,
+    content_revision: Option<u64>,
+    spatial_revision: Option<u64>,
+    roster_revision: Option<u64>,
+    desired: HashSet<i32>,
+    candidate_ids: Vec<i32>,
+    roster_waiting: VecDeque<i32>,
+    spawn_waiting: VecDeque<i32>,
+    admitted: HashSet<i32>,
+    queued_bytes: usize,
+    queued_frames: usize,
+    high_water_bytes: usize,
+    coalesced: u64,
+    sent_bytes: u64,
+}
+
+impl Observer {
+    pub fn reconcile(
+        &mut self,
+        registry: &Registry,
+        self_id: i32,
+        resident: &HashSet<Column>,
+    ) -> Result<(), VisibilityError> {
+        let new_publication = self.publication != Some(registry.publication());
+        if new_publication {
+            self.publication = Some(registry.publication());
+            self.admitted.clear();
+        }
+        let terrain_changed = self.resident != *resident;
+        let content_changed = self.content_revision != Some(registry.revision());
+        let spatial_changed =
+            terrain_changed || self.spatial_revision != Some(registry.spatial_revision());
+        let roster_changed = self.roster_revision != Some(registry.roster_revision());
+        if !content_changed
+            && !spatial_changed
+            && !roster_changed
+            && (!new_publication
+                || (self.roster_waiting.is_empty() && self.spawn_waiting.is_empty()))
+        {
+            return Ok(());
+        }
+        self.content_revision = Some(registry.revision());
+        self.spatial_revision = Some(registry.spatial_revision());
+        self.roster_revision = Some(registry.roster_revision());
+        if terrain_changed {
+            self.resident.clone_from(resident);
+        }
+
+        if spatial_changed {
+            self.candidate_ids = registry
+                .candidates(resident)
+                .into_iter()
+                .filter(|player| player.entity_id != self_id)
+                .map(|player| player.entity_id)
+                .collect();
+            self.desired = self.candidate_ids.iter().copied().collect();
+            self.cancel_where(|frame| {
+                matches!(&frame.delivery, Delivery::Spawn(player)
+                    if registry.get(player.entity_id).is_none_or(|current|
+                        current.entity_id == self_id || !resident.contains(&current.transform.chunk())))
+            });
+            self.latest.retain(|id, _| self.desired.contains(id));
+            let removals: Vec<i32> =
+                self.rendered.keys().copied().filter(|id| !self.desired.contains(id)).collect();
+            for id in removals {
+                self.queue_remove(id, false)?;
+            }
+            self.spawn_waiting = self
+                .candidate_ids
+                .iter()
+                .copied()
+                .filter(|id| !self.rendered.contains_key(id) && !self.pending_spawns.contains(id))
+                .collect();
+        }
+        if roster_changed {
+            self.cancel_where(|frame| {
+                matches!(&frame.delivery, Delivery::RosterAdd { entity_id, .. }
+                    if registry.get(*entity_id).is_none())
+            });
+            let departures: Vec<(i32, Uuid)> = self
+                .roster
+                .iter()
+                .filter(|(id, _)| registry.get(**id).is_none())
+                .map(|(id, uuid)| (*id, *uuid))
+                .collect();
+            for (id, uuid) in departures {
+                if !self.pending_departures.contains(&id) {
+                    self.push(Frame {
+                        bytes: encode(&PlayerInfoRemove { uuids: &[uuid] })?,
+                        frames: 1,
+                        delivery: Delivery::RosterRemove(id),
+                        unload_barrier: false,
+                    })?;
+                }
+            }
+            let mut waiting: Vec<i32> = registry
+                .players()
+                .map(|player| player.entity_id)
+                .filter(|id| !self.roster.contains_key(id) && !self.pending_roster.contains(id))
+                .collect();
+            waiting.sort_unstable();
+            self.roster_waiting = waiting.into();
+        }
+
+        // Tab membership is independent of terrain and includes the local player.
+        while let Some(&id) = self.roster_waiting.front() {
+            let Some(player) = registry.get(id) else {
+                self.roster_waiting.pop_front();
+                continue;
+            };
+            if !self.admit(id) {
+                break;
+            }
+            self.roster_waiting.pop_front();
+            self.push(Frame {
+                bytes: Rc::clone(&player.profile.info),
+                frames: 1,
+                delivery: Delivery::RosterAdd { entity_id: id, uuid: player.profile.uuid },
+                unload_barrier: false,
+            })?;
+        }
+
+        // Ordinary movement looks up only the cached nearby identities. It does
+        // not rebuild the full lobby roster or search spatial cells again.
+        if content_changed {
+            for index in 0..self.candidate_ids.len() {
+                let id = self.candidate_ids[index];
+                let Some(player) = registry.get(id) else { continue };
+                if self.removal_pending(id) {
+                    continue;
+                }
+                if let Some(rendered) = self.rendered.get(&id) {
+                    if rendered.revision != player.revision {
+                        if let Some(previous) = self.latest.insert(id, player.clone())
+                            && previous.revision != player.revision
+                        {
+                            self.coalesced += 1;
+                        }
+                    }
+                    continue;
+                }
+                // Refresh a pending spawn rather than queueing motion against an
+                // entity the transport has not delivered yet.
+                if self.pending_spawns.contains(&id) {
+                    if let Some(index) = self.reliable.iter().position(|frame| {
+                    matches!(&frame.delivery, Delivery::Spawn(pending) if pending.entity_id == id)
+                }) {
+                    let pending = &self.reliable[index];
+                    if let Delivery::Spawn(previous) = &pending.delivery
+                        && previous.revision != player.revision
+                    {
+                    let frame = spawn_frame(player.clone())?;
+                        self.replace(index, frame)?;
+                        self.coalesced += 1;
+                    }
+                }
+                    continue;
+                }
+            }
+        }
+        while let Some(&id) = self.spawn_waiting.front() {
+            let Some(player) = registry.get(id) else {
+                self.spawn_waiting.pop_front();
+                continue;
+            };
+            if !self.desired.contains(&id)
+                || self.rendered.contains_key(&id)
+                || self.pending_spawns.contains(&id)
+            {
+                self.spawn_waiting.pop_front();
+                continue;
+            }
+            if self.removal_pending(id) {
+                break;
+            }
+            let profile_ready = self.roster.contains_key(&id) || self.pending_roster.contains(&id);
+            if !profile_ready || !self.admit(id) {
+                break;
+            }
+            self.spawn_waiting.pop_front();
+            self.push(spawn_frame(player.clone())?)?;
+        }
+        Ok(())
+    }
+
+    /// Cancel unsent work in this column and prioritize removal of delivered
+    /// entities. Drain `has_unload_barrier()` before writing the chunk unload.
+    pub fn before_unload(&mut self, column: Column) -> Result<(), VisibilityError> {
+        self.resident.remove(&column);
+        self.spatial_revision = None;
+        self.cancel_where(|frame| {
+            matches!(&frame.delivery, Delivery::Spawn(player) if player.transform.chunk() == column)
+        });
+        let removals: Vec<i32> = self
+            .rendered
+            .iter()
+            .filter(|(id, rendered)| {
+                rendered.transform.chunk() == column
+                    || self.latest.get(id).is_some_and(|player| player.transform.chunk() == column)
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        if self.active.as_ref().is_some_and(|frame| {
+            matches!(&frame.delivery, Delivery::Spawn(player) | Delivery::Move(player)
+                if player.transform.chunk() == column || removals.contains(&player.entity_id))
+        }) {
+            let frame = self.active.take().expect("active frame exists");
+            self.queued_bytes -= frame.bytes.len();
+            self.queued_frames -= frame.frames;
+            self.forget_pending(&frame.delivery);
+        }
+        self.latest.retain(|_, player| player.transform.chunk() != column);
+        for id in removals {
+            self.queue_remove(id, true)?;
+        }
+        Ok(())
+    }
+
+    /// The returned reference-counted buffer stays unchanged until `frame_sent`.
+    /// Calling this again retries the same frame without advancing its baseline.
+    pub fn next_frame(&mut self) -> Result<Option<Rc<[u8]>>, VisibilityError> {
+        if let Some(frame) = &self.active {
+            return Ok(Some(Rc::clone(&frame.bytes)));
+        }
+        self.active = self.priority.pop_front().or_else(|| self.reliable.pop_front());
+        while self.active.is_none() {
+            let Some((&id, _)) = self.latest.iter().next() else {
+                return Ok(None);
+            };
+            let player = self.latest.remove(&id).expect("latest entry exists");
+            if self.removal_pending(id) {
+                continue;
+            }
+            let Some(previous) = self.rendered.get(&id) else {
+                continue;
+            };
+            let frame = movement_frame(player.clone(), previous)?;
+            if let Some(frame) = frame {
+                self.reserve(frame.bytes.len(), frame.frames)?;
+                self.active = Some(frame);
+            } else {
+                // A revision can change without changing a quantized wire value.
+                self.rendered.insert(id, rendered(&player));
+            }
+        }
+        Ok(self.active.as_ref().map(|frame| Rc::clone(&frame.bytes)))
+    }
+
+    /// Commit only after the entire returned buffer was written and flushed.
+    pub fn frame_sent(&mut self) {
+        let Some(frame) = self.active.take() else { return };
+        self.queued_bytes -= frame.bytes.len();
+        self.queued_frames -= frame.frames;
+        self.sent_bytes += frame.bytes.len() as u64;
+        self.forget_pending(&frame.delivery);
+        match frame.delivery {
+            Delivery::RosterAdd { entity_id, uuid } => {
+                self.roster.insert(entity_id, uuid);
+            }
+            Delivery::RosterRemove(id) => {
+                self.roster.remove(&id);
+            }
+            Delivery::Spawn(player) | Delivery::Move(player) => {
+                self.rendered.insert(player.entity_id, rendered(&player));
+            }
+            Delivery::Remove(id) => {
+                self.rendered.remove(&id);
+                self.latest.remove(&id);
+                if self.desired.contains(&id) && !self.spawn_waiting.contains(&id) {
+                    self.spawn_waiting.push_back(id);
+                }
+            }
+        }
+    }
+
+    pub fn has_unload_barrier(&self) -> bool {
+        !self.priority.is_empty() || self.active.as_ref().is_some_and(|frame| frame.unload_barrier)
+    }
+
+    pub fn queued_bytes(&self) -> usize {
+        self.queued_bytes
+    }
+
+    pub fn queued_frames(&self) -> usize {
+        self.queued_frames
+    }
+
+    pub fn next_frame_count(&self) -> usize {
+        self.active.as_ref().map_or(0, |frame| frame.frames)
+    }
+
+    pub fn visible_count(&self) -> usize {
+        self.rendered.len()
+    }
+
+    pub fn roster_count(&self) -> usize {
+        self.roster.len()
+    }
+
+    pub fn high_water_bytes(&self) -> usize {
+        self.high_water_bytes
+    }
+
+    pub fn coalesced_updates(&self) -> u64 {
+        self.coalesced
+    }
+
+    pub fn sent_bytes(&self) -> u64 {
+        self.sent_bytes
+    }
+
+    fn admit(&mut self, id: i32) -> bool {
+        self.admitted.contains(&id)
+            || (self.admitted.len() < ADMISSIONS_PER_PUBLICATION && self.admitted.insert(id))
+    }
+
+    fn removal_pending(&self, id: i32) -> bool {
+        self.pending_removals.contains(&id)
+    }
+
+    fn reserve(&mut self, bytes: usize, frames: usize) -> Result<(), VisibilityError> {
+        if bytes > MAX_BYTES - self.queued_bytes || frames > MAX_FRAMES - self.queued_frames {
+            return Err(VisibilityError::Overflow);
+        }
+        self.queued_bytes += bytes;
+        self.queued_frames += frames;
+        self.high_water_bytes = self.high_water_bytes.max(self.queued_bytes);
+        Ok(())
+    }
+
+    fn push(&mut self, frame: Frame) -> Result<(), VisibilityError> {
+        self.reserve(frame.bytes.len(), frame.frames)?;
+        let id = frame.delivery.id();
+        match frame.delivery {
+            Delivery::RosterAdd { .. } => {
+                self.pending_roster.insert(id);
+            }
+            Delivery::RosterRemove(_) => {
+                self.pending_departures.insert(id);
+            }
+            Delivery::Spawn(_) => {
+                self.pending_spawns.insert(id);
+            }
+            Delivery::Remove(_) => {
+                self.pending_removals.insert(id);
+            }
+            Delivery::Move(_) => {}
+        }
+        if frame.unload_barrier {
+            self.priority.push_back(frame);
+        } else {
+            self.reliable.push_back(frame);
+        }
+        Ok(())
+    }
+
+    fn replace(&mut self, index: usize, frame: Frame) -> Result<(), VisibilityError> {
+        let previous = &self.reliable[index];
+        let bytes = self.queued_bytes - previous.bytes.len();
+        let frames = self.queued_frames - previous.frames;
+        if frame.bytes.len() > MAX_BYTES - bytes || frame.frames > MAX_FRAMES - frames {
+            return Err(VisibilityError::Overflow);
+        }
+        self.queued_bytes = bytes + frame.bytes.len();
+        self.queued_frames = frames + frame.frames;
+        self.high_water_bytes = self.high_water_bytes.max(self.queued_bytes);
+        self.reliable[index] = frame;
+        Ok(())
+    }
+
+    fn cancel_where(&mut self, predicate: impl Fn(&Frame) -> bool) {
+        let mut index = 0;
+        while index < self.reliable.len() {
+            if predicate(&self.reliable[index]) {
+                let frame = self.reliable.remove(index).expect("queued frame exists");
+                self.queued_bytes -= frame.bytes.len();
+                self.queued_frames -= frame.frames;
+                self.forget_pending(&frame.delivery);
+            } else {
+                index += 1;
+            }
+        }
+    }
+
+    fn forget_pending(&mut self, delivery: &Delivery) {
+        let id = delivery.id();
+        match delivery {
+            Delivery::RosterAdd { .. } => {
+                self.pending_roster.remove(&id);
+            }
+            Delivery::RosterRemove(_) => {
+                self.pending_departures.remove(&id);
+            }
+            Delivery::Spawn(_) => {
+                self.pending_spawns.remove(&id);
+            }
+            Delivery::Remove(_) => {
+                self.pending_removals.remove(&id);
+            }
+            Delivery::Move(_) => {}
+        }
+    }
+
+    fn queue_remove(&mut self, id: i32, barrier: bool) -> Result<(), VisibilityError> {
+        self.latest.remove(&id);
+        if self.removal_pending(id) {
+            if barrier
+                && let Some(index) = self.reliable.iter().position(
+                    |frame| matches!(frame.delivery, Delivery::Remove(other) if other == id),
+                )
+            {
+                let mut frame = self.reliable.remove(index).expect("queued removal exists");
+                frame.unload_barrier = true;
+                self.priority.push_back(frame);
+            }
+            return Ok(());
+        }
+        self.push(Frame {
+            bytes: encode(&RemoveEntities { entity_ids: &[id] })?,
+            frames: 1,
+            delivery: Delivery::Remove(id),
+            unload_barrier: barrier,
+        })
+    }
+}
+
+fn rendered(player: &PlayerSnapshot) -> Rendered {
+    Rendered {
+        transform: player.transform,
+        skin_parts: player.skin_parts,
+        revision: player.revision,
+    }
+}
+
+fn encode<'p>(packet: &impl Payload<'p>) -> Result<Rc<[u8]>, EncodeError> {
+    let mut bytes = Vec::new();
+    append(packet, &mut bytes)?;
+    Ok(Rc::from(bytes))
+}
+
+fn append<'p>(packet: &impl Payload<'p>, bytes: &mut Vec<u8>) -> Result<(), EncodeError> {
+    // Vec's AsyncWrite is immediately ready; this cannot suspend an executor.
+    block_on(packet.write_packet(bytes))
+}
+
+fn spawn_frame(player: PlayerSnapshot) -> Result<Frame, EncodeError> {
+    let p = player.transform;
+    let mut bytes = Vec::with_capacity(96);
+    append(
+        &SpawnPlayer {
+            entity_id: player.entity_id,
+            uuid: player.profile.uuid,
+            x: p.x,
+            y: p.y,
+            z: p.z,
+            yaw: p.yaw,
+            pitch: p.pitch,
+        },
+        &mut bytes,
+    )?;
+    append(
+        &SetEntityMetadata { entity_id: player.entity_id, skin_parts: player.skin_parts },
+        &mut bytes,
+    )?;
+    append(&SetHeadRotation { entity_id: player.entity_id, yaw: p.yaw }, &mut bytes)?;
+    Ok(Frame {
+        bytes: Rc::from(bytes),
+        frames: 3,
+        delivery: Delivery::Spawn(player),
+        unload_barrier: false,
+    })
+}
+
+fn movement_frame(
+    player: PlayerSnapshot,
+    previous: &Rendered,
+) -> Result<Option<Frame>, EncodeError> {
+    let id = player.entity_id;
+    let p = player.transform;
+    let old = previous.transform;
+    let changed_position = p.x != old.x || p.y != old.y || p.z != old.z;
+    let changed_rotation = encode_angle(p.yaw) != encode_angle(old.yaw)
+        || encode_angle(p.pitch) != encode_angle(old.pitch);
+    let mut bytes = Vec::with_capacity(96);
+    let mut frames = 0;
+    if changed_position {
+        let deltas = [
+            quantize_position(p.x) - quantize_position(old.x),
+            quantize_position(p.y) - quantize_position(old.y),
+            quantize_position(p.z) - quantize_position(old.z),
+        ];
+        if deltas.iter().all(|delta| *delta >= i16::MIN as f64 && *delta <= i16::MAX as f64) {
+            let [dx, dy, dz] = [deltas[0] as i16, deltas[1] as i16, deltas[2] as i16];
+            if changed_rotation {
+                append(
+                    &MoveEntityPositionRotation {
+                        entity_id: id,
+                        dx,
+                        dy,
+                        dz,
+                        yaw: p.yaw,
+                        pitch: p.pitch,
+                        on_ground: p.on_ground,
+                    },
+                    &mut bytes,
+                )?;
+            } else {
+                append(
+                    &MoveEntityPosition { entity_id: id, dx, dy, dz, on_ground: p.on_ground },
+                    &mut bytes,
+                )?;
+            }
+        } else {
+            append(
+                &EntityPositionSync {
+                    entity_id: id,
+                    x: p.x,
+                    y: p.y,
+                    z: p.z,
+                    yaw: p.yaw,
+                    pitch: p.pitch,
+                    on_ground: p.on_ground,
+                },
+                &mut bytes,
+            )?;
+        }
+        frames += 1;
+    } else if changed_rotation || p.on_ground != old.on_ground {
+        append(
+            &MoveEntityRotation {
+                entity_id: id,
+                yaw: p.yaw,
+                pitch: p.pitch,
+                on_ground: p.on_ground,
+            },
+            &mut bytes,
+        )?;
+        frames += 1;
+    }
+    if encode_angle(p.yaw) != encode_angle(old.yaw) {
+        append(&SetHeadRotation { entity_id: id, yaw: p.yaw }, &mut bytes)?;
+        frames += 1;
+    }
+    if player.skin_parts != previous.skin_parts {
+        append(&SetEntityMetadata { entity_id: id, skin_parts: player.skin_parts }, &mut bytes)?;
+        frames += 1;
+    }
+    Ok((frames != 0).then(|| Frame {
+        bytes: Rc::from(bytes),
+        frames,
+        delivery: Delivery::Move(player),
+        unload_barrier: false,
+    }))
+}
+
+fn quantize_position(value: f64) -> f64 {
+    // VecDeltaCodec uses Java Math.round, whose negative ties round upward.
+    (value * 4096.0 + 0.5).floor()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lobby::Profile;
+    use mc_protocol::packets::PacketWriter;
+    use mc_protocol::packets::client::PlayerInfoUpdate;
+    use mc_protocol::types::VarInt;
+
+    fn player(id: i32, x: f64, revision: u64) -> PlayerSnapshot {
+        let username = format!("player{id}");
+        let uuid = Uuid::from_u128(id as u128 + 1);
+        let info = encode(&PlayerInfoUpdate { uuid, username: &username, properties: Vec::new() })
+            .unwrap();
+        PlayerSnapshot {
+            entity_id: id,
+            profile: Rc::new(Profile { uuid, username, info }),
+            transform: Transform { x, y: 64.0, z: 1.0, ..Transform::default() },
+            skin_parts: 0x7f,
+            revision,
+        }
+    }
+
+    fn packets(mut bytes: &[u8]) -> Vec<(i32, Vec<u8>)> {
+        let mut out = Vec::new();
+        while !bytes.is_empty() {
+            let length = VarInt::read(&mut bytes).unwrap().0 as usize;
+            let mut payload = &bytes[..length];
+            let id = VarInt::read(&mut payload).unwrap().0;
+            out.push((id, payload.to_vec()));
+            bytes = &bytes[length..];
+        }
+        out
+    }
+
+    fn drain(observer: &mut Observer) -> Vec<(i32, Vec<u8>)> {
+        let mut out = Vec::new();
+        while let Some(bytes) = observer.next_frame().unwrap() {
+            out.extend(packets(&bytes));
+            observer.frame_sent();
+        }
+        assert_eq!(observer.queued_bytes(), 0);
+        assert_eq!(observer.queued_frames(), 0);
+        out
+    }
+
+    #[test]
+    fn tab_membership_terrain_visibility_and_unload_order() {
+        let local = player(0, 1.0, 1);
+        let near = player(1, 2.0, 1);
+        let far = player(2, 160.0, 1);
+        let registry = Registry::from_snapshots(vec![local.clone(), near.clone(), far.clone()], 1);
+        let terrain = HashSet::from([(0, 0)]);
+        let mut observer = Observer::default();
+        observer.reconcile(&registry, 0, &terrain).unwrap();
+        let delivered = drain(&mut observer);
+        let profile_index =
+            delivered.iter().rposition(|(id, _)| *id == PlayerInfoUpdate::ID.0).unwrap();
+        let spawn_index = delivered.iter().position(|(id, _)| *id == SpawnPlayer::ID.0).unwrap();
+        assert!(profile_index < spawn_index);
+        assert_eq!(observer.roster_count(), 3);
+        assert_eq!(observer.visible_count(), 1);
+
+        observer.before_unload((0, 0)).unwrap();
+        assert!(observer.has_unload_barrier());
+        let removal = observer.next_frame().unwrap().unwrap();
+        assert_eq!(packets(&removal)[0].0, RemoveEntities::ID.0);
+        observer.frame_sent();
+        assert!(!observer.has_unload_barrier());
+        assert_eq!(observer.visible_count(), 0);
+        assert_eq!(observer.roster_count(), 3);
+
+        let departed = Registry::from_snapshots(vec![local, far], 2);
+        observer.reconcile(&departed, 0, &HashSet::new()).unwrap();
+        let delivered = drain(&mut observer);
+        assert_eq!(delivered.iter().filter(|(id, _)| *id == PlayerInfoRemove::ID.0).count(), 1);
+        assert_eq!(observer.roster_count(), 2);
+    }
+
+    #[test]
+    fn movement_coalesces_against_only_successfully_delivered_baseline() {
+        let local = player(0, 1.0, 1);
+        let terrain = HashSet::from([(0, 0), (2, 0)]);
+        let mut observer = Observer::default();
+        observer
+            .reconcile(
+                &Registry::from_snapshots(vec![local.clone(), player(1, 1.0, 1)], 1),
+                0,
+                &terrain,
+            )
+            .unwrap();
+        drain(&mut observer);
+        for revision in [2, 3] {
+            observer
+                .reconcile(
+                    &Registry::from_snapshots(
+                        vec![local.clone(), player(1, revision as f64, revision)],
+                        revision,
+                    ),
+                    0,
+                    &terrain,
+                )
+                .unwrap();
+        }
+        assert_eq!(observer.coalesced_updates(), 1);
+        let bytes = observer.next_frame().unwrap().unwrap();
+        assert!(Rc::ptr_eq(&bytes, &observer.next_frame().unwrap().unwrap()));
+        assert_eq!(observer.rendered[&1].transform.x, 1.0);
+        let encoded = packets(&bytes);
+        assert_eq!(encoded[0].0, MoveEntityPosition::ID.0);
+        let movement = MoveEntityPosition::decode_payload(&mut encoded[0].1.as_slice()).unwrap();
+        assert_eq!(movement.dx, 2 * 4096);
+        observer.frame_sent();
+        assert_eq!(observer.rendered[&1].transform.x, 3.0);
+
+        observer
+            .reconcile(&Registry::from_snapshots(vec![local, player(1, 40.0, 4)], 4), 0, &terrain)
+            .unwrap();
+        assert_eq!(
+            packets(&observer.next_frame().unwrap().unwrap())[0].0,
+            EntityPositionSync::ID.0
+        );
+        observer.frame_sent();
+        assert_eq!(observer.rendered[&1].transform.x, 40.0);
+    }
+
+    #[test]
+    fn relative_positions_follow_java_rounding_at_positive_and_negative_half_units() {
+        for (old, next, delta) in
+            [(-0.5, 0.5, 1), (-0.51, -0.49, 1), (0.49, 0.51, 1), (0.51, 0.49, -1)]
+        {
+            let previous = player(1, old / 4096.0, 1);
+            let current = player(1, next / 4096.0, 2);
+            let frame = movement_frame(current, &rendered(&previous)).unwrap().unwrap();
+            let encoded = packets(&frame.bytes);
+            let movement =
+                MoveEntityPosition::decode_payload(&mut encoded[0].1.as_slice()).unwrap();
+            assert_eq!(movement.dx, delta, "old={old} next={next}");
+        }
+    }
+
+    #[test]
+    fn unpublished_spawn_and_selected_movement_are_cancelled_before_unload() {
+        let local = player(0, 1.0, 1);
+        let terrain = HashSet::from([(0, 0)]);
+        let registry = Registry::from_snapshots(vec![local.clone(), player(1, 2.0, 1)], 1);
+        let mut observer = Observer::default();
+        observer.reconcile(&registry, 0, &terrain).unwrap();
+        observer.before_unload((0, 0)).unwrap();
+        assert!(drain(&mut observer).iter().all(|(id, _)| *id != SpawnPlayer::ID.0));
+        assert_eq!(observer.visible_count(), 0);
+
+        observer
+            .reconcile(
+                &Registry::from_snapshots(vec![local.clone(), player(1, 2.0, 2)], 2),
+                0,
+                &terrain,
+            )
+            .unwrap();
+        drain(&mut observer);
+        observer
+            .reconcile(&Registry::from_snapshots(vec![local, player(1, 3.0, 3)], 3), 0, &terrain)
+            .unwrap();
+        assert!(observer.next_frame().unwrap().is_some());
+        observer.before_unload((0, 0)).unwrap();
+        let delivered = drain(&mut observer);
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(delivered[0].0, RemoveEntities::ID.0);
+    }
+
+    #[test]
+    fn admissions_are_paced_per_publication_and_backlog_is_bounded() {
+        let records: Vec<_> = (0..40).map(|id| player(id, 1.0, 1)).collect();
+        let registry = Registry::from_snapshots(records.clone(), 1);
+        let mut observer = Observer::default();
+        observer.reconcile(&registry, 0, &HashSet::new()).unwrap();
+        drain(&mut observer);
+        observer.reconcile(&registry, 0, &HashSet::new()).unwrap();
+        assert!(drain(&mut observer).is_empty());
+        assert_eq!(observer.roster_count(), 16);
+        observer.reconcile(&Registry::from_snapshots(records, 2), 0, &HashSet::new()).unwrap();
+        drain(&mut observer);
+        assert_eq!(observer.roster_count(), 32);
+
+        let mut observer = Observer::default();
+        assert!(matches!(observer.reserve(MAX_BYTES + 1, 1), Err(VisibilityError::Overflow)));
+        assert_eq!(observer.queued_bytes(), 0);
+        observer.reserve(MAX_BYTES, MAX_FRAMES).unwrap();
+        assert!(matches!(observer.reserve(0, 1), Err(VisibilityError::Overflow)));
+        assert!(matches!(observer.reserve(1, 0), Err(VisibilityError::Overflow)));
+        assert_eq!(observer.queued_bytes(), MAX_BYTES);
+        assert_eq!(observer.queued_frames(), MAX_FRAMES);
+    }
+}
