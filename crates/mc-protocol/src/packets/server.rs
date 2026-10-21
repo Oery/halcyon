@@ -4,6 +4,7 @@ use crate::VarInt;
 use crate::data::config::*;
 use crate::packets::PacketWriter;
 use crate::packets::Payload;
+use crate::state::HandshakeIntent;
 use crate::state::State;
 use crate::types::KnownPack;
 use crate::types::bytes::Remainder;
@@ -21,7 +22,7 @@ pub struct ServerListPing<'p> {
     pub addr: &'p str,
     pub port: u16,
     #[format = "varint"]
-    pub next_state: State,
+    pub next_state: HandshakeIntent,
 }
 
 #[packet(Status, 0x00, Server)]

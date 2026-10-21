@@ -9,11 +9,10 @@ use crate::error::Error;
 // If the server is not expecting transfers, it may choose to reject
 // the connection by replying with a Disconnect (login) packet.
 
-// FIXME: reject invalid next states
 pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), Error> {
     match pkt {
-        Packets::ServerListPing(slp) => client.ctx.state = slp.next_state,
-        _ => eprintln!("unhandled packet: {pkt:?}"),
+        Packets::ServerListPing(slp) => client.ctx.state = slp.next_state.state(),
+        _ => return Err(Error::UnexpectedResponse),
     };
 
     Ok(())
