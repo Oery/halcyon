@@ -209,6 +209,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn damage_event_entity_ids_remain_varints_after_documentation_attributes() {
+        futures_lite::future::block_on(async {
+            let event = DamageEvent {
+                entity_id: 1,
+                source_type_id: 18,
+                source_cause_id: 0,
+                source_direct_id: 0,
+                source_position: None,
+            };
+            let mut bytes = Vec::new();
+            event.write_packet(&mut bytes).await.unwrap();
+            assert_eq!(bytes, [6, 0x19, 1, 18, 0, 0, 0]);
+        });
+    }
+
+    #[test]
     fn inventory_equipment_and_respawn_lengths_match_frames() {
         futures_lite::future::block_on(async {
             let empty = ItemStack::default();

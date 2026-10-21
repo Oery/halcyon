@@ -40,20 +40,48 @@ Supported gameplay mechanics should behave exactly like the target vanilla versi
 
 ## Current implementation snapshot
 
-This assessment is based on repository inspection on 2026-10-21, not a new live-client compatibility test.
+This assessment was updated on 2026-10-21 after gameplay-foundation implementation and verification. Historical lobby-only measurements below describe their original workloads.
 
 - **Working foundations:** online login, encryption, and profile handling are in [login](../crates/halcyon-server/src/states/login.rs) and [transport](../crates/halcyon-server/src/transport.rs). [Connection lifecycle](../crates/halcyon-server/src/lifecycle.rs) and the [client loop](../crates/halcyon-server/src/client.rs) provide deadlines, keepalives, bounded reads, and cooperative yields.
 - **Read-only world delivery:** the [world loader](../crates/halcyon-world/src/loader.rs) imports terrain into an [immutable world](../crates/halcyon-world/src/lib.rs). [Wire caches](../crates/halcyon-server/src/cache.rs) share configuration and chunk data; [chunk scheduling](../crates/halcyon-server/src/chunks.rs) handles residency, view distance, batching, and feedback. Sent chunks currently omit block entities and use a fullbright lighting suffix; this is not lighting simulation.
-- **Shared multiplayer lobby:** the [lobby owner](../crates/halcyon-server/src/lobby.rs) reserves unique player entity IDs, owns authenticated profiles and spatial membership, and publishes latest human-player input every 50 ms. Session guards clean up failed setup and disconnected players without depending on queue space. The [observer tracker](../crates/halcyon-server/src/visibility.rs) delivers lobby-wide Tab profiles and nearby player spawning, movement, rotation, skins, and removal through bounded per-connection output. Entity visibility requires actual terrain already sent to the observer; removals precede chunk unloads. Slow observers cannot block the owner or other connection tasks.
-- **Partial movement and gameplay:** the [Play handler](../crates/halcyon-server/src/states/play.rs) performs finite-value checks and coordinate clamping, handles initial teleport confirmation with a deadline, and updates chunk residency. Shared position replication is not authoritative collision, speed validation, or physics. Initial health and abilities packets are not health simulation or complete game-mode support.
+- **Shared multiplayer lobby:** the [lobby owner](../crates/halcyon-server/src/lobby.rs) reserves unique player entity IDs, owns authenticated profiles and spatial membership, and publishes accepted gameplay snapshots every 50 ms. Session guards clean up failed setup and disconnected players without depending on queue space. The [observer tracker](../crates/halcyon-server/src/visibility.rs) delivers lobby-wide Tab profiles and nearby player spawning, movement, rotation, skins, and removal through bounded per-connection output. Entity visibility requires actual terrain already sent to the observer; removals precede chunk unloads. Slow observers cannot block the owner or other connection tasks.
+- **Queryable terrain and movement authority:** immutable uniform/dense sections retain block states alongside wire encodings. A version-matched shared catalog distinguishes full blocks, slabs, stairs and other static shapes, including tall geometry. The [movement validator](../crates/halcyon-server/src/movement.rs) accepts ordered client predictions using bounded collision, support, stepping and sneak-clearance work. It does not replay gravity, enforce speed, detect flight or validate jump trajectories. Unsupported media and contextual geometry preserve known solid collisions while relaxing pose/fall inference; the conservative compact envelope is not swimming/crawling physics.
+- **Clock and player lifecycle:** the owner processes actions at 120 Hz and publishes independently at 20 Hz. Catch-up is capped at four steps; connection deadlines and supported damage timing use elapsed time. [Player state](../crates/halcyon-server/src/player.rs) coordinates reusable teleports, health, damage, death, same-world respawn and reset APIs. The lobby is invulnerable and void falls teleport to spawn. Games can enable supported fall/void damage; combat, armor mitigation, regeneration and hunger simulation remain absent.
+- **Inventory and equipment:** [player inventory](../crates/halcyon-server/src/inventory.rs) owns storage/hotbar, armor, offhand, cursor and selection. Ordinary rearrangement supports pickup/split/merge, shift transfer, number/offhand swaps, drag and collection. Server-owned stacks reconcile bounded hashed predictions; predictions never create items. Death preserves inventory and cursor. Atomic loadouts and grants are typed gameplay APIs. Components support vanilla defaults and bounded damage/unbreakable/name/lore/dye/glint overrides. Crafting, external containers, drops, creative acquisition, bundle-content interactions and gameplay item effects are disabled.
 - **Partial protocol and configuration support:** [configuration](../crates/halcyon-server/src/states/config.rs) enters a basic Play session. [Status](../crates/halcyon-server/src/states/status.rs) answers pings and reports actual active players plus the 1,024-player admission limit. That bound is not a demonstrated population capacity. The [packet definitions](../crates/mc-protocol/src/packets/mod.rs) include a compression field and packet types without implemented compressed framing. Recognizing an incoming transfer intent is not a configured transfer service or admission policy.
-- **Absent platform systems:** [server state](../crates/halcyon-server/src/server.rs) retains immutable lobby terrain, keys, caches, and diagnostics while an executor-local owner holds the shared human-player population. There is no authoritative gameplay physics, mutable arena state, inventory/combat subsystem, bot implementation, matchmaking, or match lifecycle. The [entry point](../crates/halcyon-server/src/main.rs) still runs one executor on a fixed core; separate lobby ownership is not yet multi-core execution.
+- **Absent platform systems:** [server state](../crates/halcyon-server/src/server.rs) shares immutable terrain, keys, caches and diagnostics with the executor-local owner. Complete server-driven physics, mutable arenas, combat, bots, matchmaking and match orchestration remain absent. The [entry point](../crates/halcyon-server/src/main.rs) still runs one executor on a fixed core; separate lobby ownership is not yet multi-core execution.
 
 The recommendations and size bands are judgments. Vanilla behavior references are collected in the companion inventory; direct official references below explain particularly important version-sensitive boundaries.
 
-### Lobby verification and measurements
+### Gameplay foundation verification and measurements
 
-The shared-lobby implementation passes workspace tests, formatting checks, and Clippy with warnings denied. New coverage concentrates on packet layouts, reservation/activation/cleanup, movement coalescing and fairness, profile/spawn/removal ordering, terrain residency, and bounded observer output. The 26.3 spawn and movement formats were also checked against the installed matching client bytecode. A local startup smoke test loaded the lobby and opened the listener successfully. Two authenticated clients were not verified together: the matching Prism instance and another server were already running. The smoke-test server was stopped; the existing processes were left alone.
+Workspace tests, formatting, Clippy with warnings denied, and the workspace build pass. Focused coverage checks collision geometry and bounded traversal, movement correction, rational clock deadlines, elapsed-time damage, life transitions, inventory conservation, component encoding, and delivered equipment baselines. An authenticated 26.3 client verified item names/glint, inventory rearrangement, offhand swapping, rejected drops, death/respawn, reset and protected void teleportation. The live check exposed and fixed a damage-event VarInt encoding error and a same-world respawn loading gate: respawn now restarts terrain loading and resends the cached center chunk. Temporary test items and timed lifecycle triggers were removed; the test client and server were closed.
+
+Run the opt-in release measurements with:
+
+```sh
+HALCYON_BENCH_REPORT=/tmp/halcyon-gameplay-cpu.json cargo test -p halcyon-server --release gameplay_world_benchmark -- --ignored --nocapture
+HALCYON_BENCH_REPORT=/tmp/halcyon-gameplay-scheduler.json cargo test -p halcyon-server --release gameplay_scheduler_benchmark -- --ignored --nocapture
+```
+
+On 2026-10-21, 100 synthetic players and 100 encrypted memory sinks produced the following results. The workload uses production gameplay state, retained terrain, 120 Hz simulation, 20 Hz publication and bounded observer drains. Each case measures 1,200 steps after warmup. The paced case runs on a Glommio executor with real timer waits; the other cases measure CPU cost without waiting.
+
+| Scenario | Combined CPU p99 | Simulation p99 | Deadline misses |
+| --- | --- | --- | --- |
+| Idle | 0.111 ms | 0.004 ms | 0 |
+| Spread, 20 Hz input | 0.273 ms | 0.066 ms | 0 |
+| Crowded, 20 Hz input | 1.502 ms | 0.066 ms | 0 |
+| Crowded, 120 Hz input | 1.551 ms | 0.066 ms | 0 |
+| Steps, equipment and lifecycle churn | 2.609 ms | 0.095 ms | 0 |
+| Paced steps, equipment and lifecycle churn | 3.215 ms | 0.137 ms | 0 |
+
+The paced case had 0.078 ms p99 scheduling lateness, 4.147 ms maximum combined CPU cost, no skipped steps and no unexpected movement corrections. Deadline misses include CPU time plus scheduling lateness against 8.33 ms. All cases passed the optional `HALCYON_BENCH_MAX_P99_US=4000` gate. Delivered movement lag reached two publication revisions under crowded fanout and converged to zero after inputs stopped. The churn fixture retained 792,286 bytes of registry/input/collision payload capacity plus 150,912 bytes of terrain; this is not RSS and excludes allocator/reference-count/hash overhead and transport buffers. The actual 100-column lobby retains 2,299,392 bytes of terrain-query payload plus a shared 181,884-byte shape catalog.
+
+These results leave headroom for future gameplay on this machine; they do not establish socket capacity. The benchmark excludes sockets, authentication, chunk streaming and complete client physics. The production runtime still uses one core, and movement validation checks collision/synchronization rather than replaying gravity or enforcing speed and jump trajectories.
+
+### Historical lobby-only verification and measurements
+
+Before the gameplay foundation, the shared-lobby implementation passed workspace tests, formatting checks, and Clippy with warnings denied. Coverage concentrated on packet layouts, reservation/activation/cleanup, movement coalescing and fairness, profile/spawn/removal ordering, terrain residency, and bounded observer output. The 26.3 spawn and movement formats were also checked against the installed matching client bytecode. A local startup smoke test loaded the lobby and opened the listener successfully. Two authenticated clients were not verified together in that check: the matching Prism instance and another server were already running. The smoke-test server was stopped; the existing processes were left alone.
 
 Run the opt-in measurement with:
 
@@ -72,7 +100,7 @@ One release-mode run on 2026-10-21 produced the following results. Each case use
 | 4,096 | Sparse | 16 | 123.8 µs | 132.9 µs |
 | 4,096 | Dense | 65,520 | 18.37 ms | 25.64 ms |
 
-These fixtures represent records in one lobby/world with only 16 observer sinks, not the same number of connected clients as player records. Halcyon's target simulation rate is 120 TPS for worlds with up to 100 total human and bot players, an approximately 8.33 ms deadline. Against that deadline, the dense 1,024-record mean of 3.35 ms consumes about 40% and its p95 of 4.71 ms about 57%, before networking and future gameplay systems. Those larger fixtures exceed the per-world target population. The current 50 ms publication interval does not demonstrate 120 TPS simulation. A 1,000-player lobby maintaining 120 TPS is not a current requirement; representative matches need substantial headroom for gameplay.
+These fixtures represent records in one lobby/world with only 16 observer sinks, not the same number of connected clients as player records. Halcyon's target simulation rate is 120 TPS for worlds with up to 100 total human and bot players, an approximately 8.33 ms deadline. Against that deadline, the dense 1,024-record mean of 3.35 ms consumes about 40% and its p95 of 4.71 ms about 57%, before networking and future gameplay systems. Those larger fixtures exceed the per-world target population. This historical 50 ms publication measurement does not establish simulation capacity. A 1,000-player lobby maintaining 120 TPS is not a current requirement; representative matches need substantial headroom for gameplay.
 
 For the dense 1,024-record case, estimated registry/player payload capacity was 451,666 bytes and observer payload capacity across all 16 sinks was 4,891,448 bytes. The dense 4,096-record case used 1,809,490 and 19,306,160 bytes respectively. These estimates count container payload capacities and retained data, sharing profile payloads once per player; they exclude hash controls, reference-count headers and allocator overhead and are not RSS measurements.
 
@@ -109,7 +137,7 @@ The [official networking notes](https://www.minecraft.net/en-us/article/minecraf
 | Adventure mode | Include | Medium | A natural fit for protected arenas and lobbies; item-based exceptions depend on item components and interaction validation. |
 | Spectator mode | Include | Large | Essential for eliminated players and observation; include camera, interaction, visibility, and transition rules, not just a mode flag. |
 | Hardcore rules | Omit | Small | One-life matches belong to match elimination rules; world-level permanent death adds a second lifecycle model without a distinct need. |
-| Ground movement | Include | Large | Core to every game and bots; position replication and observer synchronization exist, but authoritative movement checks and physics remain absent. |
+| Ground movement | Include | Large | Core to every game and bots; bounded collision/synchronization validation exists, while full server-driven movement physics remains future work. |
 | Collision and stepping | Include | Large | Essential to fair movement and navigation; collision shapes, stepping, and prediction compatibility are substantial shared code. |
 | Sprinting and sneaking | Include | Medium | Common gameplay inputs with movement, pose, and visibility effects; worthwhile once the movement foundation exists. |
 | Jumping and falling | Include | Medium | Required for ordinary traversal, parkour, and combat; depends on collision, motion, and fall-damage state. |
@@ -147,7 +175,7 @@ Exact movement is a major foundation, not a cheap consequence of receiving clien
 | Damage types and attribution | Include | Large | Shared source-of-truth for combat, hazards, deaths, and scoring; effects need consistent source handling. |
 | Damage cooldowns | Include | Small | Short shared damage-state logic with significant effect on vanilla combat feel. |
 | Armor and protection | Include | Medium | Common loadout behavior; requires attributes, supported enchantments, and damage-specific exceptions. |
-| Health and absorption | Include | Small | Core state and synchronization once damage exists; current initial health packets do not implement it. |
+| Health and absorption | Include | Small | Health, healing and death synchronization exist; absorption remains future work. |
 | Healing and regeneration | Include | Medium | Reusable survival/combat rules; account for food, effects, and game-rule settings rather than approximating regeneration. |
 | Hunger, saturation, and exhaustion | Include | Medium | Supports ordinary vanilla combat and movement; games may deliberately freeze food through their rules. |
 | Eating and drinking | Include | Medium | Common utility items; depends on item components, use duration, inventory, and effects. |

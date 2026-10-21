@@ -61,6 +61,15 @@ impl ChunkTracker {
         self.radius = i32::from(distance).clamp(2, MAX_VIEW_DISTANCE);
     }
 
+    /// Same-world respawn retains terrain but restarts its section-ready callback.
+    /// Re-send the identical center while preserving delivered residency and any
+    /// outstanding batch acknowledgement. Other columns need no re-encoding.
+    pub fn resend_center(&mut self, world: &halcyon_world::World, center: Position) {
+        self.sent.remove(&center);
+        self.center_dirty = true;
+        self.reconcile(world, center);
+    }
+
     pub fn reconcile(&mut self, world: &halcyon_world::World, center: Position) {
         self.center_dirty |= self.center != Some(center);
         self.center = Some(center);
@@ -208,6 +217,20 @@ pub async fn send_pending(client: &mut Client) -> Result<(), Error> {
 mod tests {
     use super::*;
     use halcyon_world::{LoadedWorld, World, loader::LoadedChunk};
+
+    #[test]
+    fn respawn_requeues_the_center_without_losing_a_batch_acknowledgement() {
+        let now = Instant::now();
+        let mut chunks = ChunkTracker::new(now);
+        chunks.sent.insert((0, 0), Residency::Terrain);
+        chunks.terrain.insert((0, 0));
+        chunks.waiting = Some(now);
+        chunks.resend_center(&world(), (0, 0));
+        assert_eq!(chunks.waiting, Some(now));
+        assert!(chunks.terrain.contains(&(0, 0)));
+        assert!(chunks.pending.contains(&((0, 0), Residency::Terrain)));
+        assert!(chunks.center_dirty);
+    }
 
     fn world() -> World {
         World::from_loaded(LoadedWorld {

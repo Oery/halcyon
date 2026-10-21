@@ -1,4 +1,8 @@
 //! Generated from the official 26.3 client registry and component initializers.
+//! Source jar SHA-256: 4508d006323f24fa02876310c192d739af56516eb259000ac50f0909a68c9a2d.
+//! Offline Java 25: initialize SharedConstants/Bootstrap, create VanillaRegistries
+//! world lookup, then DATA_COMPONENT_INITIALIZERS.build(lookup) for Registries.ITEM.
+//! Read MAX_STACK_SIZE/MAX_DAMAGE/EQUIPPABLE; emit rows in BuiltInRegistries.ITEM ID order.
 //! IDs are array indices. Tuple: identifier, maximum stack, durability, armor/offhand kind.
 pub const COMPONENT_COUNT: usize = 122;
 pub const ITEMS: &[(&str, u8, u32, u8)] = &[

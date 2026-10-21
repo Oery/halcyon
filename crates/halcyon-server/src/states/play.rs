@@ -4,6 +4,7 @@ use mc_protocol::packets::Packets;
 use mc_protocol::packets::client::{
     GameEvent, PlayerAbilities, SetDefaultSpawnPosition, SetEntityMetadata, SetHealth,
 };
+use mc_protocol::packets::server::PlayerAction as PlayerActionPacket;
 
 use crate::Client;
 use crate::error::Error;
@@ -130,8 +131,12 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
         Packets::PlayerAction(p) => {
             if let Some(session) = &client.session {
                 match p.action {
-                    3 | 4 => session.inventory(InventoryAction::RejectDrop),
-                    6 => session.inventory(InventoryAction::SwapHands),
+                    PlayerActionPacket::DROP_ALL_ITEMS | PlayerActionPacket::DROP_ITEM => {
+                        session.inventory(InventoryAction::RejectDrop)
+                    }
+                    PlayerActionPacket::SWAP_ITEM_WITH_OFFHAND => {
+                        session.inventory(InventoryAction::SwapHands)
+                    }
                     _ => {}
                 }
             }

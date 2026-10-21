@@ -324,7 +324,7 @@ impl Client {
     ) -> Result<(), Error> {
         use crate::lifecycle::{DamageKind, TELEPORT_TIMEOUT};
         use mc_protocol::packets::client::{
-            CombatKill, DamageEvent, PlayerAbilities, Respawn, SetContainerContent,
+            CombatKill, DamageEvent, GameEvent, PlayerAbilities, Respawn, SetContainerContent,
             SetContainerSlot, SetCursorItem, SetHealth, SetHeldItemResponse, SyncPlayerPosition,
         };
         use mc_protocol::types::Nbt;
@@ -343,13 +343,19 @@ impl Client {
                 data_kept: 0,
             })
             .await?;
+            // Same-world respawn also restarts the client's level-load gate.
+            let center =
+                update.teleport.map_or(self.pos.chunk(), |teleport| teleport.destination.chunk());
+            self.chunks.resend_center(&self.server.lobby, center);
+            self.send(&GameEvent { event: 13, value: 0.0 }).await?;
             self.send(&PlayerAbilities { flags: 0, flying_speed: 0.05, fov_modifier: 0.1 }).await?;
         }
         if let Some(health) = update.health {
             self.send(&SetHealth { health, food: 20, saturation: 5.0 }).await?;
         }
         if let Some(damage) = update.damage {
-            let source = damage.source.and_then(|id| id.checked_add(1)).unwrap_or(0);
+            let source =
+                damage.source.filter(|id| *id > 0).and_then(|id| id.checked_add(1)).unwrap_or(0);
             self.send(&DamageEvent {
                 entity_id: self.entity_id()?,
                 source_type_id: damage.kind.protocol_id(),

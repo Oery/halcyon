@@ -36,6 +36,24 @@ impl From<&Attribute> for Format {
 
 impl From<&Vec<Attribute>> for Format {
     fn from(attrs: &Vec<Attribute>) -> Format {
-        attrs.iter().map(Format::from).nth(0).unwrap_or(Format::Standard)
+        attrs
+            .iter()
+            .find(|attr| attr.path().is_ident("format"))
+            .map(Format::from)
+            .unwrap_or(Format::Standard)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn documentation_does_not_hide_a_field_format() {
+        let attrs = vec![
+            syn::parse_quote!(#[doc="An optional entity ID"]),
+            syn::parse_quote!(#[format="varint"]),
+        ];
+        assert!(matches!(Format::from(&attrs), Format::VarInt));
     }
 }

@@ -327,6 +327,14 @@ impl Inventory {
     }
 
     fn pickup(&mut self, slot: usize, right: bool) -> bool {
+        // Moving an empty bundle is ordinary storage. Its special interaction
+        // with another owned stack needs nested contents, which are not enabled.
+        if !self.cursor.is_empty()
+            && !self.slots[slot].is_empty()
+            && (self.cursor.is_bundle() || self.slots[slot].is_bundle())
+        {
+            return false;
+        }
         if self.cursor.is_empty() {
             let count = self.slots[slot].count();
             self.cursor = self.slots[slot].take(if right { count.div_ceil(2) } else { count });
@@ -624,6 +632,12 @@ mod tests {
         inventory.apply(InventoryAction::Close { window_id: 0 });
         assert!(inventory.cursor.is_empty());
         assert_eq!(total(&inventory), 11);
+
+        inventory.set_slot(9, item("minecraft:bundle", 1)).unwrap();
+        click(&mut inventory, 36, 0, 0);
+        assert!(click(&mut inventory, 9, 1, 0).full_sync);
+        assert_eq!(total(&inventory), 12);
+        inventory.apply(InventoryAction::Close { window_id: 0 });
 
         for slot in STORAGE {
             inventory.set_slot(slot, item("minecraft:stone", 64)).unwrap();

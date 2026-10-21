@@ -89,6 +89,11 @@ impl ItemStack {
         ITEMS[usize::from(self.item_id)].3
     }
 
+    pub fn is_bundle(&self) -> bool {
+        let name = ITEMS[usize::from(self.item_id)].0;
+        name == "minecraft:bundle" || name.ends_with("_bundle")
+    }
+
     pub fn same_item(&self, other: &Self) -> bool {
         !self.is_empty()
             && !other.is_empty()

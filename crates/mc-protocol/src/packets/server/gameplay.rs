@@ -37,6 +37,13 @@ pub struct PlayerAction {
     pub sequence: i32,
 }
 
+impl PlayerAction {
+    // 26.3 added CHANGE_DESTROY_DIRECTION; older versions' action ordinals differ.
+    pub const DROP_ALL_ITEMS: i32 = 4;
+    pub const DROP_ITEM: i32 = 5;
+    pub const SWAP_ITEM_WITH_OFFHAND: i32 = 7;
+}
+
 #[packet(Play, 0x2A, Server)]
 pub struct PlayerCommand {
     #[format = "varint"]

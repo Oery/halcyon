@@ -82,6 +82,8 @@ impl Receiver {
                 sea_level: 63,
                 data_kept: 0,
             });
+            self.packet(&GameEvent { event: 13, value: 0.0 });
+            self.packet(&PlayerAbilities { flags: 0, flying_speed: 0.05, fov_modifier: 0.1 });
         }
         if let Some(health) = update.health {
             self.packet(&SetHealth { health, food: 20, saturation: 5.0 });
@@ -373,16 +375,56 @@ async fn measure(case: Scenario, paced: bool) -> Value {
     assert_eq!(corrections, 0, "valid fixture movement should not need corrections");
     let stats = |values: &mut Vec<u64>| {
         values.sort_unstable();
-        json!({"p95_us":values[values.len()*95/100] as f64/1000.0,"p99_us":values[values.len()*99/100] as f64/1000.0,"max_us":values.last().unwrap().to_owned() as f64/1000.0})
+        json!({
+            "p95_us": values[values.len() * 95 / 100] as f64 / 1000.0,
+            "p99_us": values[values.len() * 99 / 100] as f64 / 1000.0,
+            "max_us": values[values.len() - 1] as f64 / 1000.0,
+        })
     };
     let over_budget = combined.iter().filter(|&&ns| u128::from(ns) > DEADLINE_NS).count();
-    let result = json!({"scenario":case.name,"players":PLAYERS,"receivers":PLAYERS,"input_period":case.input_period,"paced":paced,"combined":stats(&mut combined),"simulation":stats(&mut simulation),"lateness":stats(&mut lateness),"over_budget":over_budget,"samples":SAMPLES,"skipped_steps":skipped,"corrections":corrections,"collision_cells":cells,"queue_peak_frames":queue_peak,"peak_pending_motions":peak_pending_motions,"max_revision_lag":max_revision_lag,"pending_frames_before_final_drain":before_drain,"pending_frames_after_final_drain":remaining,"terrain_bytes":world.terrain_bytes,"registry_payload_bytes":registry.capacity_payload_bytes(),"sent_bytes":receivers.iter().map(|receiver|receiver.stream.inner.bytes).sum::<u64>()});
+    let deadline_misses = combined
+        .iter()
+        .zip(&lateness)
+        .filter(|(cpu, late)| u128::from(**cpu) + u128::from(**late) > DEADLINE_NS)
+        .count();
+    let result = json!({
+        "scenario": case.name,
+        "players": PLAYERS,
+        "receivers": PLAYERS,
+        "input_period": case.input_period,
+        "paced": paced,
+        "combined": stats(&mut combined),
+        "simulation": stats(&mut simulation),
+        "lateness": stats(&mut lateness),
+        "over_budget": over_budget,
+        "deadline_misses": deadline_misses,
+        "samples": SAMPLES,
+        "skipped_steps": skipped,
+        "corrections": corrections,
+        "collision_cells": cells,
+        "queue_peak_frames": queue_peak,
+        "peak_pending_motions": peak_pending_motions,
+        "max_revision_lag": max_revision_lag,
+        "pending_frames_before_final_drain": before_drain,
+        "pending_frames_after_final_drain": remaining,
+        "terrain_bytes": world.terrain_bytes,
+        "registry_payload_bytes": registry.capacity_payload_bytes(),
+        "sent_bytes": receivers.iter().map(|receiver| receiver.stream.inner.bytes).sum::<u64>(),
+    });
     println!("{}", result);
     result
 }
 
 fn report(cases: Vec<Value>, paced: bool) {
-    let report = json!({"schema_version":1,"simulation_hz":120,"publication_hz":20,"encrypted":true,"paced":paced,"excludes":["sockets","authentication","chunk streaming","complete client physics"],"cases":cases});
+    let report = json!({
+        "schema_version": 1,
+        "simulation_hz": 120,
+        "publication_hz": 20,
+        "encrypted": true,
+        "paced": paced,
+        "excludes": ["sockets", "authentication", "chunk streaming", "complete client physics"],
+        "cases": cases,
+    });
     if let Some(path) = std::env::var_os("HALCYON_BENCH_REPORT") {
         std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
     }
