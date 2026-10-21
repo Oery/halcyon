@@ -162,7 +162,7 @@ impl MovementState {
                 break;
             };
             result.processed += 1;
-            if !valid_transform(proposal.transform) {
+            if !proposal.transform.is_valid() {
                 result.correction = true;
                 break;
             }
@@ -269,17 +269,6 @@ impl MovementState {
             || self.sprinting != old_sprinting;
         result
     }
-}
-
-fn valid_transform(value: Transform) -> bool {
-    value.x.is_finite()
-        && value.y.is_finite()
-        && value.z.is_finite()
-        && value.yaw.is_finite()
-        && value.pitch.is_finite()
-        && value.x.abs() <= 30_000_000.0
-        && value.z.abs() <= 30_000_000.0
-        && value.y.abs() <= 20_000_000.0
 }
 
 struct TerrainCell {

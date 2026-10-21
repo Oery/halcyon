@@ -110,7 +110,7 @@ impl PlayerLife {
     }
 
     pub fn teleport(&mut self, destination: Transform) -> Option<Teleport> {
-        if !destination.is_finite() {
+        if !destination.is_valid() {
             return None;
         }
         self.next_teleport_id = self.next_teleport_id.checked_add(1)?;

@@ -37,20 +37,92 @@ pub enum PlayerAction {
 mod tests {
     use super::*;
 
+    fn empty_world() -> World {
+        World::from_loaded(halcyon_world::LoadedWorld {
+            chunks: Vec::new(),
+            spawn: (0.0, 0.0, 0.0, 0.0, 0.0),
+            missing_blocks: 0,
+            remapped_biomes: 0,
+        })
+    }
+
     #[test]
     fn a_new_life_supersedes_undelivered_death_and_damage() {
         let damage = Damage { kind: DamageKind::Fall, amount: 30.0, source: None };
+        let mut player = PlayerState::new(Transform::default());
+        player.life.rules.protected = false;
+        let mut actions = ActionQueue::default();
+        actions.push(0, PlayerAction::Damage(damage));
+        actions.push(0, PlayerAction::Reset);
+        actions.push(0, PlayerAction::Damage(damage)); // Old-life work after reset is stale.
+        let (newer, _) = player.advance(
+            &empty_world(),
+            &mut ProposalQueue::default(),
+            &mut actions,
+            Instant::now(),
+            false,
+        );
+        assert!(player.life.alive());
+        assert_eq!(player.life.health(), 20.0);
+        assert_eq!(player.life.generation, 1);
         let mut update = PlayerUpdate {
             health: Some(0.0),
             damage: Some(damage),
             death: Some(damage),
             ..Default::default()
         };
-        update.merge(PlayerUpdate { respawn: true, health: Some(20.0), ..Default::default() });
+        update.merge(newer);
         assert!(update.death.is_none());
         assert!(update.damage.is_none());
         assert_eq!(update.health, Some(20.0));
         assert!(update.respawn);
+    }
+
+    #[test]
+    fn invalid_destinations_preserve_position_teleport_and_rules() {
+        let spawn = Transform::default();
+        let mut player = PlayerState::new(spawn);
+        let pending = player.life.teleport(spawn).unwrap();
+        for destination in [
+            Transform { x: 30_000_000.1, ..spawn },
+            Transform { y: -20_000_000.1, ..spawn },
+            Transform { z: -30_000_000.1, ..spawn },
+            Transform { x: f64::NAN, ..spawn },
+            Transform { pitch: f32::INFINITY, ..spawn },
+        ] {
+            assert!(player.life.teleport(destination).is_none());
+            let mut actions = ActionQueue::default();
+            actions.push(0, PlayerAction::Teleport(destination));
+            actions.push(
+                0,
+                PlayerAction::Rules(PlayerRules {
+                    protected: false,
+                    respawn: destination,
+                    ..player.life.rules
+                }),
+            );
+            let (update, _) = player.advance(
+                &empty_world(),
+                &mut ProposalQueue::default(),
+                &mut actions,
+                Instant::now(),
+                false,
+            );
+            assert!(!update.changed());
+            assert_eq!(player.movement.transform(), spawn);
+            assert_eq!(player.life.pending_teleport(), Some(pending));
+            assert_eq!(player.life.rules.respawn, spawn);
+            assert!(player.life.rules.protected);
+        }
+        for sign in [-1.0, 1.0] {
+            let boundary = Transform {
+                x: sign * 30_000_000.0,
+                y: sign * 20_000_000.0,
+                z: sign * 30_000_000.0,
+                ..spawn
+            };
+            assert!(player.life.teleport(boundary).is_some());
+        }
     }
 }
 
@@ -120,12 +192,16 @@ pub struct PlayerUpdate {
 }
 
 impl PlayerUpdate {
+    fn clear_life_events(&mut self) {
+        self.damage = None;
+        self.death = None;
+        self.teleport = None;
+    }
+
     pub fn merge(&mut self, newer: Self) {
         if newer.respawn {
             // A replacement life supersedes transient events from the old one.
-            self.damage = None;
-            self.death = None;
-            self.teleport = None;
+            self.clear_life_events();
         }
         if newer.teleport.is_some() {
             self.teleport = newer.teleport;
@@ -192,6 +268,7 @@ impl PlayerState {
             if reset {
                 self.life.reset();
             }
+            update.clear_life_events();
             self.inventory.begin_life();
             update.health = Some(self.life.health());
             update.respawn = true;
@@ -282,7 +359,7 @@ impl PlayerState {
                     }
                 }
                 PlayerAction::Rules(rules) => {
-                    if rules.respawn.is_finite() {
+                    if rules.respawn.is_valid() {
                         self.life.rules = rules;
                     }
                 }

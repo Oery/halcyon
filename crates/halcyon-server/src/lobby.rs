@@ -36,12 +36,16 @@ impl Transform {
         ((self.x.floor() as i32) >> 4, (self.z.floor() as i32) >> 4)
     }
 
-    pub(crate) fn is_finite(self) -> bool {
+    /// Coordinate domain shared by movement, teleports and spawn destinations.
+    pub(crate) fn is_valid(self) -> bool {
         self.x.is_finite()
             && self.y.is_finite()
             && self.z.is_finite()
             && self.yaw.is_finite()
             && self.pitch.is_finite()
+            && self.x.abs() <= 30_000_000.0
+            && self.z.abs() <= 30_000_000.0
+            && self.y.abs() <= 20_000_000.0
     }
 }
 
@@ -200,7 +204,7 @@ impl Session {
     #[cfg(test)]
     pub fn publish_transform(&self, transform: Transform) {
         // Network handlers validate before publishing; this also protects future callers.
-        if transform.is_finite() && self.input.transform.replace(Some(transform)).is_some() {
+        if transform.is_valid() && self.input.transform.replace(Some(transform)).is_some() {
             self.input.coalesced.set(self.input.coalesced.get().saturating_add(1));
         }
     }
@@ -239,7 +243,7 @@ impl Session {
     // Arena APIs are intentionally available before a concrete minigame consumes them.
     #[allow(dead_code)]
     pub fn teleport(&self, transform: Transform) -> bool {
-        self.submit(PlayerAction::Teleport(transform))
+        transform.is_valid() && self.submit(PlayerAction::Teleport(transform))
     }
 
     #[allow(dead_code)]
@@ -254,7 +258,7 @@ impl Session {
 
     #[allow(dead_code)]
     pub fn set_rules(&self, rules: PlayerRules) -> bool {
-        self.submit(PlayerAction::Rules(rules))
+        rules.respawn.is_valid() && self.submit(PlayerAction::Rules(rules))
     }
 
     pub fn respawn(&self) {
@@ -370,7 +374,7 @@ impl Registry {
     ) {
         for (id, transform) in transforms {
             if let Some(player) = self.players.get(&id)
-                && transform.is_finite()
+                && transform.is_valid()
             {
                 player.input.transform.set(Some(transform));
             }
@@ -467,7 +471,7 @@ impl Registry {
         if input.closed.get() {
             return Err(AdmissionError::Closed);
         }
-        if !transform.is_finite() {
+        if !transform.is_valid() {
             return Err(AdmissionError::InvalidTransform);
         }
         if profile.username.is_empty()
