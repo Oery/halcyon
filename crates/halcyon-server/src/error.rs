@@ -8,6 +8,18 @@ pub enum Error {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
+    #[error("packet decode failed: {0}")]
+    Decode(#[from] mc_protocol::error::DecodeError),
+
+    #[error("json encoding failed: {0}")]
+    Json(#[from] serde_json::Error),
+
+    #[error("connection deadline exceeded")]
+    Timeout,
+
+    #[error("invalid player data")]
+    InvalidPlayerData,
+
     #[error("packet encode failed: {0}")]
     Encode(#[from] EncodeError),
 

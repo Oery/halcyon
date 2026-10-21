@@ -1,6 +1,8 @@
 use mc_protocol::auth::Response;
+use std::{sync::OnceLock, time::Duration};
 
 const BASE_URL: &str = "https://sessionserver.mojang.com/session/minecraft/hasJoined";
+static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
 
 // NOTE: Vanilla server supports an optional ip component
 // when `prevent-proxy-connections` is enabled; we omit it.
@@ -12,7 +14,14 @@ pub async fn authenticate(username: &str, hash: &str) -> Result<Response, String
     // inside `spawn_blocking`, off the latency-sensitive executor thread.
     glommio::executor()
         .spawn_blocking(move || {
-            ureq::get(format!("{BASE_URL}?username={username}&serverId={hash}"))
+            AGENT
+                .get_or_init(|| {
+                    ureq::Agent::config_builder()
+                        .timeout_global(Some(Duration::from_secs(10)))
+                        .build()
+                        .new_agent()
+                })
+                .get(format!("{BASE_URL}?username={username}&serverId={hash}"))
                 .call()
                 .map_err(|e| e.to_string())?
                 .body_mut()

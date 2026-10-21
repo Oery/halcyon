@@ -4,6 +4,7 @@ pub struct Server {
     pub keys: Keys,
     pub lobby: halcyon_world::World,
     pub packets: crate::cache::PacketCache,
+    pub diagnostics: bool,
 }
 
 impl Server {
@@ -13,6 +14,7 @@ impl Server {
             keys: Keys::new()?,
             lobby,
             packets,
+            diagnostics: std::env::var_os("HALCYON_DIAGNOSTICS").is_some(),
         })
     }
 }

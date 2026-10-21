@@ -1,60 +1,35 @@
 use mc_protocol::auth::Response;
 use mc_protocol::error::DecodeError;
 use mc_protocol::packets::Packets;
-use mc_protocol::packets::Payload;
 use mc_protocol::packets::client::*;
 use mc_protocol::packets::server::*;
 use mc_protocol::types::{GameProfile, ProfileProperty};
 use uuid::Uuid;
 
-use crate::Client;
-use crate::auth::authenticate;
-use crate::encryption::*;
-use crate::error::Error;
-
-// NOTE: we should probably separate client into different states
-// only an unauthenticated client needs the verify token
-// while authenticated client will need to store more data
+use crate::{Client, auth::authenticate, encryption::*, error::Error, lifecycle::LoginProgress};
 
 const SERVER_ID: &str = "";
 
-/// Best-effort `LoginDisconnect`: encode failure means the reason JSON
-/// itself is broken, so just close silently.
-async fn disconnect(client: &mut Client, reason: &str) {
-    let json = serde_json::json!({ "text": reason });
-    match serde_json::to_string(&json) {
-        Ok(text) => {
-            let _ =
-                LoginDisconnect { reason: text.as_str() }.write_packet(&mut client.stream).await;
-        }
-        Err(e) => eprintln!("could not encode disconnect reason: {e}"),
-    }
-    close(client).await;
-}
-
-async fn close(client: &mut Client) {
-    let _ = futures_lite::AsyncWriteExt::close(&mut client.stream).await;
-}
-
 async fn handle_login_start(p: LoginStart<'_>, client: &mut Client) -> Result<(), Error> {
+    if p.name.is_empty()
+        || p.name.len() > 16
+        || !p.name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
+    {
+        return Err(Error::InvalidPlayerData);
+    }
+    client.login.advance(LoginProgress::Start, LoginProgress::Encryption)?;
     client.ctx.username = Some(p.name.to_owned());
-    client.ctx.player_uuid = Some(p.uuid);
-
     let verify_token = generate_verify_token()?;
-
-    let public_key = client.server.keys.public.clone();
-
-    let request = EncryptionRequest {
-        server_id: SERVER_ID,
-        public_key: &public_key,
-        verify_token: &verify_token,
-        should_authenticate: true,
-    };
-
-    client.send(&request).await?;
-
+    let server = std::sync::Arc::clone(&client.server);
+    client
+        .send(&EncryptionRequest {
+            server_id: SERVER_ID,
+            public_key: &server.keys.public,
+            verify_token: &verify_token,
+            should_authenticate: true,
+        })
+        .await?;
     client.ctx.verify_token = Some(verify_token);
-
     Ok(())
 }
 
@@ -62,102 +37,76 @@ fn parse_profile_id(raw: &str) -> Result<Uuid, DecodeError> {
     if raw.len() != 32 || !raw.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(DecodeError::InvalidProfileId);
     }
-
-    let mut hex = String::with_capacity(36);
-    hex.push_str(&raw[0..8]);
-    hex.push('-');
-    hex.push_str(&raw[8..12]);
-    hex.push('-');
-    hex.push_str(&raw[12..16]);
-    hex.push('-');
-    hex.push_str(&raw[16..20]);
-    hex.push('-');
-    hex.push_str(&raw[20..32]);
-
-    Uuid::parse_str(&hex).map_err(|_| DecodeError::InvalidProfileId)
+    Uuid::parse_str(raw).map_err(|_| DecodeError::InvalidProfileId)
 }
 
 fn to_game_profile<'p>(
     res: &'p Response,
     username: &'p str,
 ) -> Result<GameProfile<'p>, DecodeError> {
-    let uuid = parse_profile_id(&res.id)?;
-    let mut properties = Vec::with_capacity(res.properties.len());
-
-    for prop in &res.properties {
-        properties.push(ProfileProperty {
-            name: prop.name.as_str(),
-            value: prop.value.as_str(),
-            signature: prop.signature.as_deref(),
-        });
-    }
-
-    Ok(GameProfile { uuid, username, properties })
+    Ok(GameProfile {
+        uuid: parse_profile_id(&res.id)?,
+        username,
+        properties: res
+            .properties
+            .iter()
+            .map(|prop| ProfileProperty {
+                name: &prop.name,
+                value: &prop.value,
+                signature: prop.signature.as_deref(),
+            })
+            .collect(),
+    })
 }
 
 async fn handle_encryption_response(
     p: EncryptionResponse<'_>,
     client: &mut Client,
 ) -> Result<(), Error> {
-    if let Err(e) = login(p, client).await {
-        eprintln!("login failed: {e:?}");
-        match e.disconnect_reason() {
-            Some(reason) => disconnect(client, reason).await,
-            None => close(client).await,
-        }
+    let result = login(p, client).await;
+    if let Err(error) = &result
+        && let Some(reason) = error.disconnect_reason()
+    {
+        let text = serde_json::to_string(&serde_json::json!({ "text": reason }))?;
+        let _ = client.send(&LoginDisconnect { reason: &text }).await;
     }
-
-    Ok(())
+    result
 }
 
 async fn login(p: EncryptionResponse<'_>, client: &mut Client) -> Result<(), Error> {
-    let Some(expected_token) = client.ctx.verify_token else {
-        Err(Error::UnexpectedResponse)?
-    };
-    let Some(username) = client.ctx.username.clone() else {
-        Err(Error::MissingStart)?
-    };
-
+    if client.login != LoginProgress::Encryption {
+        return Err(Error::UnexpectedResponse);
+    }
+    let expected_token = client.ctx.verify_token.take().ok_or(Error::UnexpectedResponse)?;
+    let username = client.ctx.username.clone().ok_or(Error::MissingStart)?;
     let secret = decrypt_rsa(p.shared_secret, &client.server.keys.private)
         .map_err(|_| Error::DecryptSecret)?;
     let token = decrypt_rsa(p.verify_token, &client.server.keys.private)
         .map_err(|_| Error::DecryptToken)?;
-
     if token != expected_token {
-        Err(Error::TokenMismatch)?;
+        return Err(Error::TokenMismatch);
     }
-    if secret.len() != 16 {
-        Err(Error::BadSecretLen)?;
-    }
-    let shared: [u8; 16] = secret[..16].try_into().map_err(|_| Error::BadSecretLen)?;
-
+    let shared: [u8; 16] = secret.as_slice().try_into().map_err(|_| Error::BadSecretLen)?;
+    // All subsequent traffic, including authentication failures, is encrypted.
+    let (enc, dec) = ciphers(&shared)?;
+    client.stream.enable_encryption(enc, dec)?;
     let hash = server_hash(SERVER_ID, &shared, &client.server.keys.public);
     let profile: Response =
         authenticate(&username, &hash).await.map_err(|_| Error::VerifyFailed)?;
-
     if profile.name != username {
-        Err(Error::NameMismatch)?;
+        return Err(Error::NameMismatch);
     }
-
     let game_profile = to_game_profile(&profile, &username).map_err(|_| Error::BadProfileId)?;
-    // Session ID is a fresh random UUID identifying this login session
-    // (Velocity: `UUID.randomUUID()`; BungeeCord: same since MINECRAFT_26_2).
-    let session_id = Uuid::new_v4();
     let player_uuid = game_profile.uuid;
-    let success = LoginSuccess { profile: game_profile, session_id };
-
-    let (enc, dec) = ciphers(&shared)?;
-    client.enable_encryption(enc, dec)?;
-    client.send(&success).await?;
-
-    client.ctx.verify_token = None;
+    client.send(&LoginSuccess { profile: game_profile, session_id: Uuid::new_v4() }).await?;
     client.ctx.player_uuid = Some(player_uuid);
     client.ctx.profile_properties = profile.properties;
-
+    client.login.advance(LoginProgress::Encryption, LoginProgress::Acknowledge)?;
     Ok(())
 }
 
 async fn handle_login_acknowledge(client: &mut Client) -> Result<(), Error> {
+    client.login.advance(LoginProgress::Acknowledge, LoginProgress::Complete)?;
     client.ctx.state = mc_protocol::State::Config;
     let server = std::sync::Arc::clone(&client.server);
     for frame in &server.packets.configuration {
@@ -168,16 +117,11 @@ async fn handle_login_acknowledge(client: &mut Client) -> Result<(), Error> {
 }
 
 pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), Error> {
-    use Packets::*;
-
     match pkt {
-        LoginStart(p) => handle_login_start(p, client).await,
-        EncryptionResponse(p) => handle_encryption_response(p, client).await,
-        LoginAcknowledge(_) => handle_login_acknowledge(client).await,
-        LoginPluginResponse(_) | LoginCookieResponse(_) => Ok(()),
-        _ => {
-            eprintln!("unhandled packet: {pkt:?}");
-            Ok(())
-        }
+        Packets::LoginStart(p) => handle_login_start(p, client).await,
+        Packets::EncryptionResponse(p) => handle_encryption_response(p, client).await,
+        Packets::LoginAcknowledge(_) => handle_login_acknowledge(client).await,
+        Packets::LoginPluginResponse(_) | Packets::LoginCookieResponse(_) => Ok(()),
+        _ => Err(Error::UnexpectedResponse),
     }
 }

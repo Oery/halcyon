@@ -10,6 +10,7 @@ mod cache;
 mod client;
 mod encryption;
 mod error;
+mod lifecycle;
 mod packet;
 mod server;
 mod states;

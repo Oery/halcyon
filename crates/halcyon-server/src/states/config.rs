@@ -11,6 +11,9 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
         }
         Packets::ConfigPluginMessage(_) | Packets::ConfigKnownPacks(_) => {}
         Packets::AcknowledgeFinish(_) => {
+            if client.login != crate::lifecycle::LoginProgress::Complete {
+                return Err(Error::UnexpectedResponse);
+            }
             // Entity ID 0 is vanilla's unassigned sentinel (Entity.getId
             // throws on 0); the Default uses 1.
             client.send(&PlayLogin::default()).await?;
@@ -18,7 +21,7 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
             client.ctx.state = mc_protocol::State::Play;
             return Ok(());
         }
-        _ => eprintln!("unhandled packet: {pkt:?}"),
+        _ => return Err(Error::UnexpectedResponse),
     };
 
     Ok(())

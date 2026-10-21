@@ -1,10 +1,7 @@
-use futures_lite::AsyncWriteExt;
-use std::time::Instant;
-
 use mc_protocol::packets::client::{
-    ChunkBatchFinished, GameEvent, PLAYER_ENTITY_ID, PlayKeepAlive, PlayerAbilities,
-    PlayerInfoUpdate, SetCenterChunk, SetDefaultSpawnPosition, SetEntityMetadata, SetHealth,
-    SyncPlayerPosition, UnloadChunk,
+    ChunkBatchFinished, GameEvent, PLAYER_ENTITY_ID, PlayerAbilities, PlayerInfoUpdate,
+    SetCenterChunk, SetDefaultSpawnPosition, SetEntityMetadata, SetHealth, SyncPlayerPosition,
+    UnloadChunk,
 };
 use mc_protocol::packets::{Packets, Payload};
 use mc_protocol::types::ProfileProperty;
@@ -16,12 +13,25 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
     match pkt {
         Packets::ConfirmTeleportation(p) => {
             if client.pending_teleport == Some(p.teleport_id) {
+                if !p.x.is_finite()
+                    || !p.y.is_finite()
+                    || !p.z.is_finite()
+                    || !p.yaw.is_finite()
+                    || !p.pitch.is_finite()
+                {
+                    return Err(Error::InvalidPlayerData);
+                }
                 client.pending_teleport = None;
-                client.pos.x = p.x;
-                client.pos.y = p.y;
-                client.pos.z = p.z;
-                client.pos.yaw = p.yaw;
-                client.pos.pitch = p.pitch;
+                move_player(
+                    client,
+                    p.x.clamp(-30_000_000.0, 30_000_000.0),
+                    p.y.clamp(-20_000_000.0, 20_000_000.0),
+                    p.z.clamp(-30_000_000.0, 30_000_000.0),
+                    Some(p.yaw),
+                    Some(p.pitch),
+                    client.pos.on_ground,
+                )
+                .await?;
             }
         }
         Packets::SetPlayerPosition(p) => {
@@ -29,9 +39,7 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
                 return Ok(());
             }
             if !p.x.is_finite() || !p.feet_y.is_finite() || !p.z.is_finite() {
-                eprintln!("non-finite SetPlayerPosition coordinates, closing connection");
-                let _ = client.stream.close().await;
-                return Ok(());
+                return Err(Error::InvalidPlayerData);
             }
             move_player(
                 client,
@@ -54,9 +62,7 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
                 || !p.yaw.is_finite()
                 || !p.pitch.is_finite()
             {
-                eprintln!("non-finite SetPlayerPositionRotation coordinates, closing connection");
-                let _ = client.stream.close().await;
-                return Ok(());
+                return Err(Error::InvalidPlayerData);
             }
             move_player(
                 client,
@@ -74,9 +80,7 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
                 return Ok(());
             }
             if !p.yaw.is_finite() || !p.pitch.is_finite() {
-                eprintln!("non-finite SetPlayerRotation coordinates, closing connection");
-                let _ = client.stream.close().await;
-                return Ok(());
+                return Err(Error::InvalidPlayerData);
             }
             client.pos.yaw = p.yaw;
             client.pos.pitch = p.pitch;
@@ -91,11 +95,10 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
                 })
                 .await?;
         }
-        Packets::PlayKeepAliveResponse(_)
-        | Packets::ChunkBatchReceived(_)
-        | Packets::ClientTickEnd(_)
-        | Packets::PlayerLoaded(_) => {}
-        _ => eprintln!("unhandled packet: {pkt:?}"),
+        Packets::PlayKeepAliveResponse(p) => client.keepalive.acknowledge(p.id)?,
+        Packets::ChunkBatchReceived(_) => {}
+        Packets::ClientTickEnd(_) | Packets::PlayerLoaded(_) => {}
+        _ => {}
     };
 
     Ok(())
@@ -315,10 +318,6 @@ pub async fn enter_play(client: &mut Client) -> Result<(), Error> {
         .await?;
     client.next_teleport_id = 1;
     client.pending_teleport = Some(1);
-
-    client.send(&PlayKeepAlive { id: 1 }).await?;
-    client.keepalive_id = 1;
-    client.last_keepalive = Instant::now();
 
     Ok(())
 }
