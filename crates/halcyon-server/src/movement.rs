@@ -18,6 +18,7 @@ const POSITION_TOLERANCE: f64 = 1e-5;
 const HALF_WIDTH: f64 = 0.3;
 const STANDING_HEIGHT: f64 = 1.8;
 const SNEAKING_HEIGHT: f64 = 1.5;
+const UNCERTAIN_POSE_HEIGHT: f64 = 0.6;
 const STEP_HEIGHT: f64 = 0.6;
 const EDGE_INCREMENT: f64 = 0.05;
 
@@ -78,6 +79,7 @@ pub struct MovementState {
     transform: Transform,
     sneaking: bool,
     sprinting: bool,
+    uncertain_pose: bool,
     fall_distance: f64,
     uncertain_fall: bool,
     colliders: Vec<Aabb>,
@@ -90,6 +92,7 @@ impl MovementState {
             transform,
             sneaking: false,
             sprinting: false,
+            uncertain_pose: false,
             fall_distance: 0.0,
             uncertain_fall: false,
             colliders: Vec::with_capacity(64),
@@ -115,6 +118,7 @@ impl MovementState {
         self.transform = transform;
         self.sneaking = false;
         self.sprinting = false;
+        self.uncertain_pose = false;
         self.fall_distance = 0.0;
         self.uncertain_fall = false;
         self.colliders.clear();
@@ -177,7 +181,21 @@ impl MovementState {
             let sneaking = proposal.sneaking
                 || (self.sneaking
                     && self.colliders.iter().any(|shape| intersects(standing, *shape)));
-            let bounds = player_box(self.transform, sneaking);
+            let normal_bounds = player_box(self.transform, sneaking);
+            // Unsupported media can produce swimming/crawling poses. A compact
+            // envelope preserves body collision without assuming standing height.
+            // Keep it through a dry low tunnel until the ordinary body fits.
+            let uncertain_pose = uncertain
+                || (self.uncertain_pose
+                    && self.colliders.iter().any(|shape| intersects(normal_bounds, *shape)));
+            let height = if uncertain_pose {
+                UNCERTAIN_POSE_HEIGHT
+            } else if sneaking {
+                SNEAKING_HEIGHT
+            } else {
+                STANDING_HEIGHT
+            };
+            let bounds = player_box_with_height(self.transform, height);
             let mut requested = delta;
             if sneaking
                 && delta[1] <= 0.0
@@ -198,9 +216,12 @@ impl MovementState {
             accepted.x = self.transform.x + resolved[0];
             accepted.y = self.transform.y + resolved[1];
             accepted.z = self.transform.z + resolved[2];
-            accepted.on_ground =
-                supported(player_box(accepted, sneaking), POSITION_TOLERANCE, &self.colliders);
-            if uncertain {
+            accepted.on_ground = supported(
+                player_box_with_height(accepted, height),
+                POSITION_TOLERANCE,
+                &self.colliders,
+            );
+            if uncertain || uncertain_pose {
                 self.uncertain_fall = true;
                 self.fall_distance = 0.0;
             } else if resolved[1] < 0.0 {
@@ -208,7 +229,7 @@ impl MovementState {
             } else if resolved[1] > 0.0 {
                 self.fall_distance = 0.0;
             }
-            result.uncertain_motion |= uncertain || self.uncertain_fall;
+            result.uncertain_motion |= uncertain || uncertain_pose || self.uncertain_fall;
             if accepted.on_ground {
                 if !self.uncertain_fall && self.fall_distance > 0.0 {
                     result.landed_fall_distance =
@@ -216,11 +237,12 @@ impl MovementState {
                 }
                 self.fall_distance = 0.0;
                 // A clean supported landing establishes the next fall baseline.
-                self.uncertain_fall = uncertain;
+                self.uncertain_fall = uncertain || uncertain_pose;
             }
             self.transform = accepted;
             self.sneaking = sneaking;
             self.sprinting = proposal.sprinting;
+            self.uncertain_pose = uncertain_pose;
             result.correction = delta
                 .iter()
                 .zip(resolved)
@@ -327,13 +349,13 @@ fn collect_colliders(
 }
 
 fn player_box(position: Transform, sneaking: bool) -> Aabb {
+    player_box_with_height(position, if sneaking { SNEAKING_HEIGHT } else { STANDING_HEIGHT })
+}
+
+fn player_box_with_height(position: Transform, height: f64) -> Aabb {
     Aabb {
         min: [position.x - HALF_WIDTH, position.y, position.z - HALF_WIDTH],
-        max: [
-            position.x + HALF_WIDTH,
-            position.y + if sneaking { SNEAKING_HEIGHT } else { STANDING_HEIGHT },
-            position.z + HALF_WIDTH,
-        ],
+        max: [position.x + HALF_WIDTH, position.y + height, position.z + HALF_WIDTH],
     }
 }
 
@@ -652,5 +674,40 @@ mod tests {
         assert!(!state.advance_with(&map, &mut queue).correction);
         propose(&mut queue, position(0.5, 1.0, 0.5));
         assert_eq!(state.advance_with(&map, &mut queue).landed_fall_distance, Some(4.0));
+    }
+
+    #[test]
+    fn unsupported_media_allow_low_tunnels_but_retain_body_collision() {
+        let mut map = Map::floor();
+        // Water leads into a dry one-block-high tunnel.
+        map.blocks.insert((0, 1, 0), (&[], true));
+        for x in 0..=2 {
+            map.blocks.insert((x, 2, 0), (FULL, false));
+        }
+        let mut state = MovementState::new(position(-0.5, 1.0, 0.5));
+        let mut queue = ProposalQueue::default();
+        propose(&mut queue, position(0.5, 1.0, 0.5));
+        let result = state.advance_with(&map, &mut queue);
+        assert!(!result.correction);
+        assert!(result.uncertain_motion);
+        propose(&mut queue, position(1.5, 1.0, 0.5));
+        assert!(!state.advance_with(&map, &mut queue).correction);
+        propose(&mut queue, position(2.5, 1.0, 0.5));
+        assert!(!state.advance_with(&map, &mut queue).correction);
+
+        // Even the compact envelope cannot enter an ordinary full block.
+        map.blocks.insert((3, 1, 0), (FULL, false));
+        propose(&mut queue, position(3.5, 1.0, 0.5));
+        let result = state.advance_with(&map, &mut queue);
+        assert!(result.correction);
+        assert!((result.transform.x - 2.7).abs() < EPSILON);
+
+        // Leaving the low tunnel restores normal height on the next proposal.
+        map.blocks.remove(&(3, 1, 0));
+        propose(&mut queue, position(3.5, 1.0, 0.5));
+        assert!(!state.advance_with(&map, &mut queue).correction);
+        propose(&mut queue, position(3.5, 1.0, 0.5));
+        assert!(!state.advance_with(&map, &mut queue).correction);
+        assert!(!state.uncertain_pose);
     }
 }
