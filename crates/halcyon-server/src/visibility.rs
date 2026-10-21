@@ -21,6 +21,8 @@ type Column = (i32, i32);
 const MAX_BYTES: usize = 256 * 1024;
 const MAX_FRAMES: usize = 2048;
 const ADMISSIONS_PER_PUBLICATION: usize = 16;
+pub(crate) const WRITE_SLICE_FRAMES: usize = 32;
+pub(crate) const WRITE_SLICE_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Error)]
 pub enum VisibilityError {
@@ -714,7 +716,7 @@ mod tests {
     use mc_protocol::packets::client::PlayerInfoUpdate;
     use mc_protocol::types::VarInt;
 
-    fn player(id: i32, x: f64, revision: u64) -> PlayerSnapshot {
+    pub(super) fn player(id: i32, x: f64, revision: u64) -> PlayerSnapshot {
         let username = format!("player{id}");
         let uuid = Uuid::from_u128(id as u128 + 1);
         let info = encode(&PlayerInfoUpdate { uuid, username: &username, properties: Vec::new() })
@@ -1133,3 +1135,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "bench/visibility.rs"]
+mod benchmarks;

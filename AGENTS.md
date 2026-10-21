@@ -43,6 +43,7 @@ Add a packet: define `#[packet(State, 0xNN, Client|Server)] struct` in `crates/m
 - `crates/mc-protocol/src/`: codec — `encode.rs`, `decode.rs`, `error.rs`, `state.rs`, `packets/{mod,client,server}.rs`, `types/{varint,int,str,bytes,uuid,game_profile}.rs`, `data/{motd,config/*}`, `auth/`.
 - `crates/mc-protocol-macros/src/`: `lib.rs`, `attrs.rs`, `format.rs` — `#[packet]` / `Payload` / `InnerPacket` codegen.
 - `docs/`: vanilla feature inventory and Halcyon feature assessment. No `scripts/`, `tools/`, standalone `tests/`, `benches/`, `examples/`, `.github/`, or `Dockerfile`.
+- `crates/halcyon-server/src/bench/`: opt-in component benchmarks, compiled only for tests.
 
 ## Development Commands
 
@@ -94,4 +95,6 @@ The macro crate is an automatic workspace member through its path dependency; wo
 - Minimal tests: the repo should not be lost in a test soup. tests should only be added when required, for small units. They should not verify the entire server working, only small chunks.
 - Live-client verification: `prismlauncher -l <instance> -s 127.0.0.1:25565` is allowed for test runs; choose an instance matching the current packet/registry version. Always close the client and the server afterward.
 - QA = `cargo fmt --check` + `cargo clippy --workspace --all-targets`.
-- Opt-in lobby measurement: `cargo test -p halcyon-server --release synthetic_lobby -- --ignored --nocapture`. Uses synthetic player records and in-memory observer sinks; reports publication/fanout timings, encoded bytes, queue bounds and payload-capacity estimates. It excludes sockets, encryption and chunk streaming and does not establish a supported population.
+- Target-world benchmark: `cargo test -p halcyon-server --release target_world_benchmark -- --ignored --nocapture`. Uses 100 synthetic players and 100 encrypted memory sinks, shared production writer budgets, idle/spread/crowded/visibility-churn cases and a hypothetical 120 Hz driver. Reports CPU p95/p99, samples exceeding 8.33 ms, delivery lag, bytes and payload-capacity estimates. Set `HALCYON_BENCH_REPORT=/tmp/halcyon-bench.json` for machine-readable results and optionally `HALCYON_BENCH_MAX_P99_US=4000` for a hardware-specific performance gate. It excludes sockets, authentication, chunks, executor scheduling and gameplay physics; the production publication clock remains 20 Hz.
+- Larger synthetic stress measurement: `cargo test -p halcyon-server --release synthetic_lobby -- --ignored --nocapture`. Uses 16 unencrypted memory sinks and populations through 4,096, with unrestricted drains; its results are not directly comparable to the target-world benchmark.
+- Add deterministic, focused correctness tests and representative benchmark cases as gameplay mechanics arrive. Timing gates are opt-in because results depend on hardware and system load; keep a small live-client check for rendering and prediction compatibility.

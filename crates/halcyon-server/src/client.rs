@@ -18,7 +18,7 @@ use crate::{
     server::Server,
     states::handle_packet,
     transport::ClientStream,
-    visibility::Observer,
+    visibility::{Observer, WRITE_SLICE_BYTES, WRITE_SLICE_FRAMES},
 };
 
 const INITIAL_BUFFER: usize = 1_024;
@@ -164,18 +164,18 @@ impl Client {
         self.reconcile_players()?;
         let mut bytes = 0;
         let mut frames = 0;
-        while frames < 32 {
+        while frames < WRITE_SLICE_FRAMES {
             let Some((size, count)) = self.send_player_frame().await? else {
                 break;
             };
             bytes += size;
             frames += count;
-            if bytes >= 64 * 1024 {
+            if bytes >= WRITE_SLICE_BYTES {
                 break;
             }
         }
         self.report_observer();
-        if frames >= 32 || bytes >= 64 * 1024 {
+        if frames >= WRITE_SLICE_FRAMES || bytes >= WRITE_SLICE_BYTES {
             glommio::executor().yield_now().await;
         }
         Ok(())
