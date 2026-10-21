@@ -59,6 +59,7 @@ pub enum Packets<'p> {
     SetPlayerPosition(SetPlayerPosition),
     SetPlayerPositionRotation(SetPlayerPositionRotation),
     SetPlayerRotation(SetPlayerRotation),
+    SetPlayerMovementFlags(SetPlayerMovementFlags),
     ClientTickEnd(ClientTickEnd),
     PlayerLoaded(PlayerLoaded),
     PlayClientInformation(ClientInformation<'p>),
@@ -112,6 +113,9 @@ impl<'p> Packets<'p> {
             )),
             (0x20, State::Play) => {
                 Ok(Packets::SetPlayerRotation(SetPlayerRotation::decode_payload(buf)?))
+            }
+            (0x21, State::Play) => {
+                Ok(Packets::SetPlayerMovementFlags(SetPlayerMovementFlags::decode_payload(buf)?))
             }
             (0x0D, State::Play) => Ok(Packets::ClientTickEnd(ClientTickEnd)),
             (0x0E, State::Play) => {
@@ -182,6 +186,21 @@ mod tests {
 
         assert!(matches!(Packets::read(&mut slice, &ctx).unwrap(), Packets::EncryptionResponse(_)));
         assert!(slice.is_empty());
+    }
+
+    #[test]
+    fn movement_flags_dispatches_in_play_and_preserves_collision_bit() {
+        let ctx = Context { state: State::Play, ..Default::default() };
+        let raw = [0x21, 0x03];
+        let mut input = raw.as_slice();
+        let Packets::SetPlayerMovementFlags(packet) = Packets::read(&mut input, &ctx).unwrap()
+        else {
+            panic!("incorrect movement packet");
+        };
+        assert!(input.is_empty());
+        assert_eq!(packet.flags, 0x03);
+        assert_eq!(encode(&packet), [0x02, 0x21, 0x03]);
+        assert!(SetPlayerMovementFlags::decode_payload(&mut [].as_slice()).is_err());
     }
 
     #[test]

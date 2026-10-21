@@ -190,3 +190,9 @@ pub struct SetPlayerRotation {
     pub pitch: f32,
     pub flags: u8,
 }
+
+#[packet(Play, 0x21, Server)]
+pub struct SetPlayerMovementFlags {
+    /// Bit 0: on ground; bit 1: horizontal collision.
+    pub flags: u8,
+}
