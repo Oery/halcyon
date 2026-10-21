@@ -68,6 +68,7 @@ pub struct Observer {
     roster: HashMap<i32, Uuid>,
     rendered: HashMap<i32, Rendered>,
     latest: HashMap<i32, PlayerSnapshot>,
+    motion_waiting: VecDeque<i32>,
     resident: HashSet<Column>,
     reliable: VecDeque<Frame>,
     priority: VecDeque<Frame>,
@@ -208,26 +209,26 @@ impl Observer {
                     continue;
                 }
                 if let Some(rendered) = self.rendered.get(&id) {
-                    if rendered.revision != player.revision
-                        && let Some(previous) = self.latest.insert(id, player.clone())
-                        && previous.revision != player.revision
-                    {
-                        self.coalesced += 1;
+                    if rendered.revision != player.revision {
+                        self.remember_latest(player.clone());
                     }
                     continue;
                 }
                 // Refresh a pending spawn rather than queueing motion against an
                 // entity the transport has not delivered yet.
                 if self.pending_spawns.contains(&id) {
-                    if let Some(index) = self.reliable.iter().position(|frame| {
-                    matches!(&frame.delivery, Delivery::Spawn(pending) if pending.entity_id == id)
-                }) {
-                    let pending = &self.reliable[index];
-                    if let Delivery::Spawn(previous) = &pending.delivery
-                        && previous.revision != player.revision
-                    {
-                    let frame = spawn_frame(player.clone())?;
-                        self.replace(index, frame)?;
+                    let pending_index =
+                        self.reliable.iter().position(|frame| match &frame.delivery {
+                            Delivery::Spawn(pending) => pending.entity_id == id,
+                            _ => false,
+                        });
+                    if let Some(index) = pending_index {
+                        let pending = &self.reliable[index];
+                        if let Delivery::Spawn(previous) = &pending.delivery
+                            && previous.revision != player.revision
+                        {
+                            let frame = spawn_frame(player.clone())?;
+                            self.replace(index, frame)?;
                             self.coalesced += 1;
                         }
                     } else {
@@ -235,7 +236,7 @@ impl Observer {
                         // budget. Preserve newer motion until that immutable
                         // spawn is successfully delivered, then encode from
                         // its actual delivered baseline.
-                        self.latest.insert(id, player.clone());
+                        self.remember_latest(player.clone());
                     }
                     continue;
                 }
@@ -262,6 +263,9 @@ impl Observer {
             }
             self.spawn_waiting.pop_front();
             self.push(spawn_frame(player.clone())?)?;
+        }
+        if spatial_changed {
+            self.prune_motion();
         }
         Ok(())
     }
@@ -296,6 +300,7 @@ impl Observer {
         for id in removals {
             self.queue_remove(id, true)?;
         }
+        self.prune_motion();
         Ok(())
     }
 
@@ -307,10 +312,12 @@ impl Observer {
         }
         self.active = self.priority.pop_front().or_else(|| self.reliable.pop_front());
         while self.active.is_none() {
-            let Some((&id, _)) = self.latest.iter().next() else {
+            let Some(id) = self.motion_waiting.pop_front() else {
                 return Ok(None);
             };
-            let player = self.latest.remove(&id).expect("latest entry exists");
+            let Some(player) = self.latest.remove(&id) else {
+                continue;
+            };
             if self.removal_pending(id) {
                 continue;
             }
@@ -392,9 +399,60 @@ impl Observer {
         self.sent_bytes
     }
 
+    #[cfg(test)]
+    fn capacity_payload_bytes(&self) -> usize {
+        use std::mem::size_of;
+        size_of::<Self>()
+            + self.roster.capacity() * size_of::<(i32, Uuid)>()
+            + self.rendered.capacity() * size_of::<(i32, Rendered)>()
+            + self.latest.capacity() * size_of::<(i32, PlayerSnapshot)>()
+            + self.resident.capacity() * size_of::<Column>()
+            + self.desired.capacity() * size_of::<i32>()
+            + self.candidate_ids.capacity() * size_of::<i32>()
+            + (self.roster_waiting.capacity()
+                + self.spawn_waiting.capacity()
+                + self.motion_waiting.capacity())
+                * size_of::<i32>()
+            + (self.reliable.capacity() + self.priority.capacity()) * size_of::<Frame>()
+            + (self.pending_roster.capacity()
+                + self.pending_spawns.capacity()
+                + self.pending_removals.capacity()
+                + self.pending_departures.capacity()
+                + self.admitted.capacity())
+                * size_of::<i32>()
+            + self
+                .active
+                .iter()
+                .chain(self.reliable.iter())
+                .chain(self.priority.iter())
+                .filter(|frame| !matches!(frame.delivery, Delivery::RosterAdd { .. }))
+                .map(|frame| frame.bytes.len())
+                .sum::<usize>()
+    }
+
     fn admit(&mut self, id: i32) -> bool {
         self.admitted.contains(&id)
             || (self.admitted.len() < ADMISSIONS_PER_PUBLICATION && self.admitted.insert(id))
+    }
+
+    fn remember_latest(&mut self, player: PlayerSnapshot) {
+        use std::collections::hash_map::Entry;
+        match self.latest.entry(player.entity_id) {
+            Entry::Vacant(entry) => {
+                self.motion_waiting.push_back(player.entity_id);
+                entry.insert(player);
+            }
+            Entry::Occupied(mut entry) => {
+                if entry.get().revision != player.revision {
+                    self.coalesced += 1;
+                }
+                entry.insert(player);
+            }
+        }
+    }
+
+    fn prune_motion(&mut self) {
+        self.motion_waiting.retain(|id| self.latest.contains_key(id));
     }
 
     fn removal_pending(&self, id: i32) -> bool {
@@ -866,6 +924,35 @@ mod tests {
     }
 
     #[test]
+    fn continuously_moving_players_share_a_limited_writer_budget() {
+        let players: Vec<_> = (0..80).map(|id| player(id, 1.0, 1)).collect();
+        let mut registry = Registry::from_snapshots(players.clone(), 1);
+        let terrain = HashSet::from([(0, 0)]);
+        let mut observer = Observer::default();
+        for _ in 0..6 {
+            registry.publish_transforms([]);
+            observer.reconcile(&registry, 0, &terrain).unwrap();
+            drain(&mut observer);
+        }
+        assert_eq!(observer.visible_count(), 79);
+        for tick in 0..3 {
+            registry.publish_transforms(players.iter().map(|player| {
+                let mut transform = player.transform;
+                transform.x += 0.25 + tick as f64 * 0.01;
+                (player.entity_id, transform)
+            }));
+            observer.reconcile(&registry, 0, &terrain).unwrap();
+            let mut frames = 0;
+            while frames < 32 && observer.next_frame().unwrap().is_some() {
+                frames += observer.next_frame_count();
+                observer.frame_sent();
+            }
+            assert_eq!(observer.motion_waiting.len(), observer.latest.len());
+        }
+        assert!(observer.rendered.values().all(|player| player.transform.x > 1.0));
+    }
+
+    #[test]
     #[ignore = "manual synthetic lobby fanout measurement; no sockets or gameplay actors"]
     fn synthetic_lobby() {
         use std::time::Instant;
@@ -974,6 +1061,9 @@ mod tests {
                     .unwrap();
                 let delivered_bytes: u64 =
                     observers.iter().map(|(observer, _)| observer.sent_bytes()).sum();
+                let observer_capacity_payload_bytes: usize =
+                    observers.iter().map(|(observer, _)| observer.capacity_payload_bytes()).sum();
+                let shared_registry_capacity_payload_bytes = registry.capacity_payload_bytes();
 
                 // A sink that never drains must either retain a bounded set
                 // of coalesced state or reject further reliable admissions.
@@ -1002,7 +1092,7 @@ mod tests {
                     assert!(overflow);
                 }
                 eprintln!(
-                    "synthetic lobby population={population} layout={} observers=16 visible_edges={edges} admission_us={admission_us} admission_encoded_bytes={admission_bytes} ticks=1000 mean_us={mean_us:.1} p95_us={:.1} max_us={:.1} encoded_bytes={bytes} protocol_frames={frames} coalesced={coalesced} high_water_bytes={high_water} delivered_bytes_including_warmup={delivered_bytes} shared_profile_payload_bytes_per_actor={:.1} stalled_overflow={overflow} stalled_bytes={} stalled_frames={} (in-memory sinks; excludes sockets, encryption, chunks, shared scheduler and allocation overhead)",
+                    "synthetic lobby population={population} layout={} observers=16 visible_edges={edges} admission_us={admission_us} admission_encoded_bytes={admission_bytes} ticks=1000 mean_us={mean_us:.1} p95_us={:.1} max_us={:.1} encoded_bytes={bytes} protocol_frames={frames} coalesced={coalesced} high_water_bytes={high_water} delivered_bytes_including_warmup={delivered_bytes} shared_profile_payload_bytes_per_actor={:.1} shared_registry_capacity_payload_bytes={shared_registry_capacity_payload_bytes} observer_capacity_payload_bytes={observer_capacity_payload_bytes} stalled_overflow={overflow} stalled_bytes={} stalled_frames={} (in-memory sinks; excludes sockets, encryption, chunks, shared scheduler, hash controls, Rc headers and allocator overhead)",
                     if dense { "dense" } else { "sparse" },
                     samples[949] as f64 / 1000.0,
                     samples[999] as f64 / 1000.0,
