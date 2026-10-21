@@ -4,7 +4,7 @@ use crate::error::DecodeError;
 use crate::packets::PacketWriter;
 
 /// Network NBT value. Only encoding is implemented (registry data is
-/// serverbound-only in practice); decoding returns `UnexpectedEof`.
+/// clientbound-only in practice); decoding returns `UnexpectedEof`.
 #[derive(Debug, Clone)]
 pub enum Nbt<'p> {
     Bool(bool),
@@ -48,45 +48,50 @@ impl Nbt<'_> {
         }
     }
 
-    fn write_payload<'a, T: AsyncWriteExt + Unpin + 'a>(
-        &'a self,
-        w: &'a mut T,
-    ) -> std::pin::Pin<Box<dyn Future<Output = crate::encode::Result> + 'a>> {
-        Box::pin(async move {
-            match self {
-                Nbt::Bool(b) => w.write_all(&[*b as u8]).await?,
-                Nbt::Byte(b) => w.write_all(&[*b as u8]).await?,
-                Nbt::Short(v) => w.write_all(&v.to_be_bytes()).await?,
-                Nbt::Int(v) => w.write_all(&v.to_be_bytes()).await?,
-                Nbt::Long(v) => w.write_all(&v.to_be_bytes()).await?,
-                Nbt::Float(v) => w.write_all(&v.to_be_bytes()).await?,
-                Nbt::Double(v) => w.write_all(&v.to_be_bytes()).await?,
-                Nbt::Str(s) => {
-                    w.write_all(&(s.len() as u16).to_be_bytes()).await?;
-                    w.write_all(s.as_bytes()).await?;
+    fn write_payload(&self, w: &mut Vec<u8>) -> crate::encode::Result {
+        match self {
+            Nbt::Bool(b) => w.push(*b as u8),
+            Nbt::Byte(b) => w.push(*b as u8),
+            Nbt::Short(v) => w.extend_from_slice(&v.to_be_bytes()),
+            Nbt::Int(v) => w.extend_from_slice(&v.to_be_bytes()),
+            Nbt::Long(v) => w.extend_from_slice(&v.to_be_bytes()),
+            Nbt::Float(v) => w.extend_from_slice(&v.to_be_bytes()),
+            Nbt::Double(v) => w.extend_from_slice(&v.to_be_bytes()),
+            Nbt::Str(s) => {
+                write_string(w, s)?;
+            }
+            Nbt::List(items) => {
+                let elem = items.first().map(Nbt::id).unwrap_or(0);
+                if items.iter().any(|item| item.id() != elem) {
+                    return Err(crate::error::EncodeError::InvalidLength);
                 }
-                Nbt::List(items) => {
-                    let elem = items.first().map(Nbt::id).unwrap_or(0);
-                    w.write_all(&[elem]).await?;
-                    w.write_all(&(items.len() as i32).to_be_bytes()).await?;
-                    for item in items {
-                        item.write_payload(w).await?;
-                    }
-                }
-                Nbt::Compound(entries) => {
-                    for (k, v) in entries {
-                        w.write_all(&[v.id()]).await?;
-                        w.write_all(&(k.len() as u16).to_be_bytes()).await?;
-                        w.write_all(k.as_bytes()).await?;
-                        v.write_payload(w).await?;
-                    }
-                    w.write_all(&[0]).await?;
+                w.push(elem);
+                let len = i32::try_from(items.len())
+                    .map_err(|_| crate::error::EncodeError::InvalidLength)?;
+                w.extend_from_slice(&len.to_be_bytes());
+                for item in items {
+                    item.write_payload(w)?;
                 }
             }
+            Nbt::Compound(entries) => {
+                for (k, v) in entries {
+                    w.push(v.id());
+                    write_string(w, k)?;
+                    v.write_payload(w)?;
+                }
+                w.push(0);
+            }
+        }
 
-            Ok(())
-        })
+        Ok(())
     }
+}
+
+fn write_string(w: &mut Vec<u8>, value: &str) -> crate::encode::Result {
+    let len = u16::try_from(value.len()).map_err(|_| crate::error::EncodeError::InvalidLength)?;
+    w.extend_from_slice(&len.to_be_bytes());
+    w.extend_from_slice(value.as_bytes());
+    Ok(())
 }
 
 impl PacketWriter<'_> for Nbt<'_> {
@@ -95,13 +100,33 @@ impl PacketWriter<'_> for Nbt<'_> {
     }
 
     async fn write<T: AsyncWriteExt + Unpin>(&self, w: &mut T) -> crate::encode::Result {
-        w.write_all(&[self.id()]).await?;
-        self.write_payload(w).await?;
+        let mut bytes = Vec::with_capacity(self.body_len());
+        bytes.push(self.id());
+        self.write_payload(&mut bytes)?;
+        w.write_all(&bytes).await?;
 
         Ok(())
     }
 
     fn body_len(&self) -> usize {
         1 + self.payload_len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn synchronous_nbt_encoding_preserves_nested_wire_layout() {
+        futures_lite::future::block_on(async {
+            let value = Nbt::Compound(vec![("x", Nbt::List(vec![Nbt::Int(42)]))]);
+            let mut bytes = Vec::new();
+            value.write(&mut bytes).await.unwrap();
+            assert_eq!(bytes, [10, 9, 0, 1, b'x', 3, 0, 0, 0, 1, 0, 0, 0, 42, 0]);
+            assert_eq!(value.body_len(), bytes.len());
+            let invalid = Nbt::List(vec![Nbt::Int(1), Nbt::Byte(2)]);
+            assert!(invalid.write(&mut Vec::new()).await.is_err());
+        });
     }
 }

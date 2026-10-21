@@ -5,6 +5,9 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum EncodeError {
+    #[error("invalid or excessive length")]
+    InvalidLength,
+
     #[error("io error")]
     IOError(#[from] io::Error),
 
