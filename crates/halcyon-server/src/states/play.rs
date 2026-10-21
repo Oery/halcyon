@@ -1,11 +1,10 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use mc_protocol::packets::Packets;
 use mc_protocol::packets::client::{
-    GameEvent, PLAYER_ENTITY_ID, PlayerAbilities, PlayerInfoUpdate, SetDefaultSpawnPosition,
-    SetEntityMetadata, SetHealth, SyncPlayerPosition,
+    GameEvent, PlayerAbilities, SetDefaultSpawnPosition, SetEntityMetadata, SetHealth,
+    SyncPlayerPosition,
 };
-use mc_protocol::packets::{Packets, Payload};
-use mc_protocol::types::ProfileProperty;
 
 use crate::Client;
 use crate::error::Error;
@@ -23,16 +22,10 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
                     return Err(Error::InvalidPlayerData);
                 }
                 client.pending_teleport = None;
-                move_player(
-                    client,
-                    p.x.clamp(-30_000_000.0, 30_000_000.0),
-                    p.y.clamp(-20_000_000.0, 20_000_000.0),
-                    p.z.clamp(-30_000_000.0, 30_000_000.0),
-                    Some(p.yaw),
-                    Some(p.pitch),
-                    client.pos.on_ground,
-                )
-                .await?;
+                client.teleport_deadline = None;
+                // Confirmation acknowledges the server's spawn, rather than
+                // providing a second client-selected initial position.
+                client.session.as_ref().ok_or(Error::UnexpectedResponse)?.activate();
             }
         }
         Packets::SetPlayerPosition(p) => {
@@ -86,20 +79,26 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
             client.pos.yaw = p.yaw;
             client.pos.pitch = p.pitch;
             client.pos.on_ground = p.flags & 0x01 != 0;
+            client.publish_position();
+        }
+        Packets::SetPlayerMovementFlags(p) => {
+            if client.pending_teleport.is_none() {
+                client.pos.on_ground = p.flags & 0x01 != 0;
+                client.publish_position();
+            }
         }
         Packets::PlayClientInformation(p) => {
             client.ctx.skin_parts = p.skin_parts.0;
+            if let Some(session) = &client.session {
+                session.publish_skin_parts(p.skin_parts.0);
+            }
             client.chunks.set_view_distance(p.render_distance);
             client.chunks.reconcile(
                 &client.server.lobby,
                 ((client.pos.x.floor() as i32) >> 4, (client.pos.z.floor() as i32) >> 4),
             );
-            client
-                .send(&SetEntityMetadata {
-                    entity_id: PLAYER_ENTITY_ID,
-                    skin_parts: p.skin_parts.0,
-                })
-                .await?;
+            let entity_id = client.entity_id()?;
+            client.send(&SetEntityMetadata { entity_id, skin_parts: p.skin_parts.0 }).await?;
         }
         Packets::PlayKeepAliveResponse(p) => client.keepalive.acknowledge(p.id)?,
         Packets::ChunkBatchReceived(p) => {
@@ -145,34 +144,19 @@ async fn move_player(
     if (cx, cz) != (old_cx, old_cz) {
         client.chunks.reconcile(&client.server.lobby, (cx, cz));
     }
+    client.publish_position();
     Ok(())
 }
 /// Sends the two packets the client renders the player's skin from:
 /// `Player Info Update` (Mojang `textures` property verified at login)
 /// and `Set Entity Metadata` (skin-parts bitmask from `Client Information`).
 async fn send_skin(client: &mut Client) -> Result<(), Error> {
-    let (Some(uuid), Some(username)) = (client.ctx.player_uuid, client.ctx.username.as_deref())
-    else {
-        return Ok(());
-    };
-
     let skin_parts = client.ctx.skin_parts;
-    let properties: Vec<ProfileProperty> = client
-        .ctx
-        .profile_properties
-        .iter()
-        .map(|property| ProfileProperty {
-            name: property.name.as_str(),
-            value: property.value.as_str(),
-            signature: property.signature.as_deref(),
-        })
-        .collect();
-    // Borrow profile data while encoding, then release it before sending.
-    client.packet_buffer.clear();
-    PlayerInfoUpdate { uuid, username, properties }.write_packet(&mut client.packet_buffer).await?;
-    client.send_encoded_buffer().await?;
+    let info = client.profile_info.clone().ok_or(Error::UnexpectedResponse)?;
+    client.send_encoded(&info).await?;
     // Entity ID must match the one sent in `PlayLogin`.
-    client.send(&SetEntityMetadata { entity_id: PLAYER_ENTITY_ID, skin_parts }).await?;
+    let entity_id = client.entity_id()?;
+    client.send(&SetEntityMetadata { entity_id, skin_parts }).await?;
 
     Ok(())
 }
@@ -216,6 +200,7 @@ pub async fn enter_play(client: &mut Client) -> Result<(), Error> {
         .await?;
     client.next_teleport_id = 1;
     client.pending_teleport = Some(1);
+    client.teleport_deadline = Some(Instant::now() + Duration::from_secs(30));
 
     Ok(())
 }

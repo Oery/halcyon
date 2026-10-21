@@ -17,7 +17,7 @@ Implementation principles:
 
 ## Current Implementation
 
-Early-stage Minecraft Java-edition server in Rust. TCP accept on `127.0.0.1:25565` → per-connection packet loop. Implements status, authenticated encrypted login, configuration, and basic Play with a read-only lobby world and chunk streaming. Registry/block-state data targets 26.3. No packet compression, lighting engine, or mutable world simulation yet.
+Early-stage Minecraft Java-edition server in Rust. TCP accept on `127.0.0.1:25565` → per-connection packet loop. Implements status, authenticated encrypted login, configuration, and a shared multiplayer lobby with a read-only world and chunk streaming. Players have unique entity IDs, lobby-wide Tab profiles, terrain-gated entity visibility, and coalesced movement/skin updates. Registry/block-state data targets 26.3. No authoritative collision/physics, bots, packet compression, lighting engine, or mutable world simulation yet.
 
 ## Protocol Reference
 
@@ -30,15 +30,17 @@ Flow: `TcpListener.incoming()` → `Client{stream, ctx, server: Arc<Server>}` �
 
 Crate dependency: `halcyon-server → mc_protocol → macros` (proc-macro), plus `halcyon-server → halcyon-world`. Protocol owns codecs; macros owns `#[packet]` codegen; server owns I/O, lifecycle, wire caches and chunk scheduling; world owns disk parsing and immutable pre-encoded chunk sections.
 
+An executor-local `Lobby` owns shared human-player state and publishes latest input every 50 ms; `Arc<Server>` retains immutable startup resources. Each `Client` holds a unique session guard and an `Observer` that tracks delivered profiles/entities and bounded output. Registry borrows end before socket I/O. Dropping the guard signals cleanup without needing registration queue space. Independent lobby ownership is the boundary for future executor placement; the runtime still uses one core.
+
 Add a packet: define `#[packet(State, 0xNN, Client|Server)] struct` in `crates/mc-protocol/src/packets/{server,client}.rs` → add `Packets` enum variant → add `(id, state)` arm in `Packets::read` → handle in `crates/halcyon-server/src/states/<state>.rs`.
 
 ## Key Directories
 
-- `crates/halcyon-server/src/`: runtime — `main.rs`, `server.rs`, `client.rs`, `transport.rs`, `packet.rs`, `lifecycle.rs`, `cache.rs`, `chunks.rs`, `states/`, `auth/`, `encryption/`.
+- `crates/halcyon-server/src/`: runtime — `main.rs`, `server.rs`, `client.rs`, `transport.rs`, `packet.rs`, `lifecycle.rs`, `lobby.rs`, `visibility.rs`, `cache.rs`, `chunks.rs`, `states/`, `auth/`, `encryption/`.
 - `crates/halcyon-world/src/`: startup world loading — `loader.rs`, `disk_nbt.rs`, `blockstates.rs`, immutable world grid in `lib.rs`.
 - `crates/mc-protocol/src/`: codec — `encode.rs`, `decode.rs`, `error.rs`, `state.rs`, `packets/{mod,client,server}.rs`, `types/{varint,int,str,bytes,uuid,game_profile}.rs`, `data/{motd,config/*}`, `auth/`.
 - `crates/mc-protocol-macros/src/`: `lib.rs`, `attrs.rs`, `format.rs` — `#[packet]` / `Payload` / `InnerPacket` codegen.
-- No `scripts/`, `tools/`, `docs/`, `tests/`, `benches/`, `examples/`, `.github/`, `Dockerfile`.
+- `docs/`: vanilla feature inventory and Halcyon feature assessment. No `scripts/`, `tools/`, standalone `tests/`, `benches/`, `examples/`, `.github/`, or `Dockerfile`.
 
 ## Development Commands
 
@@ -63,14 +65,15 @@ The macro crate is an automatic workspace member through its path dependency; wo
 - State: `Context` holds wire state and profile data. Handshake decodes `HandshakeIntent`, never arbitrary `State`. `LoginProgress` guards authentication and acknowledgement. Handlers own transitions through Login → Config → Play. `compression` is unused; do not negotiate it until framing supports it.
 - Async: `glommio` `Fixed(0)` single-place executor, one local task per connection. Receive storage starts at 1024 bytes and grows to at most `MAX_FRAME_LEN + 3`. A complete frame with an incomplete payload is invalid, not a partial network read. Parse loops and chunk sends yield explicitly; blocking HTTPS runs off the executor with a request timeout.
 - Scheduling: login/config deadline 60 s, writes 10 s, Play keepalive every 15 s with a 30 s response deadline. Chunk batches wait for acknowledgement, respect bounded client rate feedback, and cap view distance at 8. Residency distinguishes real terrain and empty padding. Keep configuration/chunk encodings shared; lighting suffix is shared separately to avoid duplicating 104 KiB per cached chunk.
+- Multiplayer: at most 1,024 reserved/active humans and 256 pending registrations; this is an admission bound, not a measured network capacity. Initial teleport confirmation has a 30 s deadline. Latest movement/settings replace pending input, and missed publication ticks are skipped. Observer output is bounded to 256 KiB/2,048 protocol frames, with 16 player admissions per publication and drain slices of 32 frames/64 KiB. Entity removals precede terrain unload/replacement; empty padding never enables entity spawns. Tab profiles persist throughout lobby membership. Relative movement uses Java-compatible `Math.round(position * 4096)` deltas against delivered positions.
 - DI: `Arc<Server>` cloned into `Client::new(stream, server)`; handlers reach keys via `client.server.keys`.
-- Error handling: typed decode/encode/connection errors; malformed client input ends only that connection. Validate lengths before allocation. Unknown packets consume their frame without logging. Set `HALCYON_DIAGNOSTICS=1` to log connection failures; avoid unconditional per-packet or per-chunk output.
+- Error handling: typed decode/encode/connection errors; malformed client input ends only that connection. Validate lengths before allocation. Unknown packets consume their frame without logging. Set `HALCYON_DIAGNOSTICS=1` for connection failures and five-second aggregate lobby/observer metrics; avoid unconditional per-packet or per-chunk output.
 
 ## Important Files
 
 - `crates/halcyon-server/src/main.rs`: `ADDR`, `MiMalloc` global allocator, `glommio::main`, accept loop.
 - `crates/halcyon-server/src/client.rs`, `packet.rs`: read loop, VarInt framing.
-- `crates/halcyon-server/src/states/mod.rs`, `login.rs`, `status.rs`: connection-state dispatch, authenticated login, hardcoded status response (`protocol: 777`).
+- `crates/halcyon-server/src/states/mod.rs`, `login.rs`, `status.rs`: connection-state dispatch, authenticated login, status response with actual active lobby population (`protocol: 777`).
 - `crates/halcyon-server/src/encryption/mod.rs`: `Keys`, `Rsa::generate(2048)`, `generate_verify_token`, `decrypt_rsa` (PKCS1).
 - `crates/mc-protocol/src/packets/mod.rs`, `state.rs`, `error.rs`, `encode.rs`, `decode.rs`: `Context`, `State`, traits, error enums.
 - `crates/mc-protocol-macros/src/lib.rs`, `attrs.rs`, `format.rs`: codegen entry points.
@@ -89,3 +92,4 @@ The macro crate is an automatic workspace member through its path dependency; wo
 - Minimal tests: the repo should not be lost in a test soup. tests should only be added when required, for small units. They should not verify the entire server working, only small chunks.
 - Live-client verification: `prismlauncher -l <instance> -s 127.0.0.1:25565` is allowed for test runs; choose an instance matching the current packet/registry version. Always close the client and the server afterward.
 - QA = `cargo fmt --check` + `cargo clippy --workspace --all-targets`.
+- Opt-in lobby measurement: `cargo test -p halcyon-server --release synthetic_lobby -- --ignored --nocapture`. Uses synthetic player records and in-memory observer sinks; reports publication/fanout timings, encoded bytes, queue bounds and payload-capacity estimates. It excludes sockets, encryption and chunk streaming and does not establish a supported population.

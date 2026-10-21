@@ -20,6 +20,12 @@ pub enum Error {
     #[error("invalid player data")]
     InvalidPlayerData,
 
+    #[error("lobby admission failed: {0}")]
+    Admission(#[from] crate::lobby::AdmissionError),
+
+    #[error("player output backlog exceeded its limit")]
+    PlayerBacklog,
+
     #[error("packet encode failed: {0}")]
     Encode(#[from] EncodeError),
 
@@ -63,6 +69,15 @@ impl Error {
         match self {
             Error::VerifyFailed | Error::NameMismatch => Some("Failed to verify username!"),
             _ => None,
+        }
+    }
+}
+
+impl From<crate::visibility::VisibilityError> for Error {
+    fn from(error: crate::visibility::VisibilityError) -> Self {
+        match error {
+            crate::visibility::VisibilityError::Overflow => Self::PlayerBacklog,
+            crate::visibility::VisibilityError::Encode(error) => Self::Encode(error),
         }
     }
 }

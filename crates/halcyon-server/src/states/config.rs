@@ -15,10 +15,12 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
             if client.login != crate::lifecycle::LoginProgress::Complete {
                 return Err(Error::UnexpectedResponse);
             }
-            // Entity ID 0 is vanilla's unassigned sentinel (Entity.getId
-            // throws on 0); the Default uses 1.
+            // Reserve a unique entity ID before the client creates its local player.
+            client.reserve_player().await?;
+            let entity_id = client.entity_id()?;
             client
                 .send(&PlayLogin {
+                    entity_id,
                     // Advertise the server cap so later client settings can
                     // raise their effective radius without stale login limits.
                     view_distance: crate::chunks::MAX_VIEW_DISTANCE,

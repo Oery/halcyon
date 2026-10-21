@@ -12,10 +12,12 @@ mod client;
 mod encryption;
 mod error;
 mod lifecycle;
+mod lobby;
 mod packet;
 mod server;
 mod states;
 mod transport;
+mod visibility;
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -26,6 +28,7 @@ async fn main() -> std::io::Result<()> {
     let lobby = halcyon_world::World::load(std::path::Path::new("worlds/lobby"))
         .map_err(std::io::Error::other)?;
     let server = Arc::new(Server::new(lobby).await.map_err(std::io::Error::other)?);
+    let players = lobby::Lobby::spawn(server.diagnostics);
 
     let listener = TcpListener::bind(ADDR)?;
     let mut incoming = listener.incoming();
@@ -36,8 +39,9 @@ async fn main() -> std::io::Result<()> {
         match conn {
             Ok(conn) => {
                 let handle = Arc::clone(&server);
+                let players = players.clone();
                 glommio::spawn_local(async move {
-                    Client::new(conn, handle).run().await;
+                    Client::new(conn, handle, players).run().await;
                 })
                 .detach();
             }

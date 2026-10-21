@@ -4,7 +4,7 @@ use crate::{Client, error::Error};
 use mc_protocol::packets::client::{
     ChunkBatchFinished, ChunkBatchStart, SetCenterChunk, UnloadChunk,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 pub const MAX_VIEW_DISTANCE: i32 = 8;
@@ -21,6 +21,7 @@ pub enum Residency {
 
 pub struct ChunkTracker {
     sent: HashMap<Position, Residency>,
+    terrain: HashSet<Position>,
     wanted: HashMap<Position, Residency>,
     pending: Vec<(Position, Residency)>,
     gone: Vec<Position>,
@@ -37,6 +38,7 @@ impl ChunkTracker {
     pub fn new(now: Instant) -> Self {
         Self {
             sent: HashMap::new(),
+            terrain: HashSet::new(),
             wanted: HashMap::new(),
             pending: Vec::new(),
             gone: Vec::new(),
@@ -48,6 +50,11 @@ impl ChunkTracker {
             batch_size: 4,
             batch_interval: BATCH_INTERVAL,
         }
+    }
+
+    /// Terrain successfully written on this connection; empty padding is excluded.
+    pub fn terrain(&self) -> &HashSet<Position> {
+        &self.terrain
     }
 
     pub fn set_view_distance(&mut self, distance: u8) {
@@ -134,8 +141,10 @@ pub async fn send_pending(client: &mut Client) -> Result<(), Error> {
     }
     // Unload/update the center even when no new terrain exists at this location.
     while let Some(pos) = client.chunks.gone.pop() {
+        client.remove_players_before_unload(pos).await?;
         client.send(&UnloadChunk { chunk_x: pos.0, chunk_z: pos.1 }).await?;
         client.chunks.sent.remove(&pos);
+        client.chunks.terrain.remove(&pos);
         glommio::executor().yield_if_needed().await;
     }
     if client.chunks.center_dirty {
@@ -157,6 +166,9 @@ pub async fn send_pending(client: &mut Client) -> Result<(), Error> {
         let Some((pos, kind)) = client.chunks.pending.pop() else {
             break;
         };
+        if kind == Residency::Padding && client.chunks.terrain.contains(&pos) {
+            client.remove_players_before_unload(pos).await?;
+        }
         let cache = &server.packets;
         match kind {
             Residency::Terrain => {
@@ -173,6 +185,14 @@ pub async fn send_pending(client: &mut Client) -> Result<(), Error> {
             }
         }
         client.chunks.sent.insert(pos, kind);
+        match kind {
+            Residency::Terrain => {
+                client.chunks.terrain.insert(pos);
+            }
+            Residency::Padding => {
+                client.chunks.terrain.remove(&pos);
+            }
+        }
         // Ready socket writes must not let a join burst monopolize the executor.
         glommio::executor().yield_now().await;
     }
@@ -180,6 +200,7 @@ pub async fn send_pending(client: &mut Client) -> Result<(), Error> {
     let sent = Instant::now();
     client.chunks.waiting = Some(sent);
     client.chunks.next_batch = sent + client.chunks.batch_interval;
+    client.reconcile_players()?;
     Ok(())
 }
 

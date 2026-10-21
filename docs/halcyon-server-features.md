@@ -44,17 +44,43 @@ This assessment is based on repository inspection on 2026-10-21, not a new live-
 
 - **Working foundations:** online login, encryption, and profile handling are in [login](../crates/halcyon-server/src/states/login.rs) and [transport](../crates/halcyon-server/src/transport.rs). [Connection lifecycle](../crates/halcyon-server/src/lifecycle.rs) and the [client loop](../crates/halcyon-server/src/client.rs) provide deadlines, keepalives, bounded reads, and cooperative yields.
 - **Read-only world delivery:** the [world loader](../crates/halcyon-world/src/loader.rs) imports terrain into an [immutable world](../crates/halcyon-world/src/lib.rs). [Wire caches](../crates/halcyon-server/src/cache.rs) share configuration and chunk data; [chunk scheduling](../crates/halcyon-server/src/chunks.rs) handles residency, view distance, batching, and feedback. Sent chunks currently omit block entities and use a fullbright lighting suffix; this is not lighting simulation.
-- **Partial player support:** the [Play handler](../crates/halcyon-server/src/states/play.rs) receives position and rotation, performs finite-value checks and coordinate clamping, handles initial teleport confirmation, and updates chunk residency. It does not validate terrain collision or broadcast movement between players. Initial health, abilities, and skin packets are not health simulation, complete game-mode support, or general entity tracking.
-- **Partial protocol and configuration support:** [configuration](../crates/halcyon-server/src/states/config.rs) enters a basic Play session. [Status](../crates/halcyon-server/src/states/status.rs) answers pings but advertises hardcoded population values. The [packet definitions](../crates/mc-protocol/src/packets/mod.rs) include a compression field and packet types without implemented compressed framing. Recognizing an incoming transfer intent is not a configured transfer service or admission policy.
-- **Absent platform systems:** [server state](../crates/halcyon-server/src/server.rs) currently contains lobby data, keys, caches, and diagnostics. There is no shared player population, authoritative gameplay simulation, mutable arena state, inventory/combat subsystem, bot implementation, matchmaking, or match lifecycle. The [entry point](../crates/halcyon-server/src/main.rs) runs one executor on a fixed core; this is the starting implementation, not the target scaling architecture.
+- **Shared multiplayer lobby:** the [lobby owner](../crates/halcyon-server/src/lobby.rs) reserves unique player entity IDs, owns authenticated profiles and spatial membership, and publishes latest human-player input every 50 ms. Session guards clean up failed setup and disconnected players without depending on queue space. The [observer tracker](../crates/halcyon-server/src/visibility.rs) delivers lobby-wide Tab profiles and nearby player spawning, movement, rotation, skins, and removal through bounded per-connection output. Entity visibility requires actual terrain already sent to the observer; removals precede chunk unloads. Slow observers cannot block the owner or other connection tasks.
+- **Partial movement and gameplay:** the [Play handler](../crates/halcyon-server/src/states/play.rs) performs finite-value checks and coordinate clamping, handles initial teleport confirmation with a deadline, and updates chunk residency. Shared position replication is not authoritative collision, speed validation, or physics. Initial health and abilities packets are not health simulation or complete game-mode support.
+- **Partial protocol and configuration support:** [configuration](../crates/halcyon-server/src/states/config.rs) enters a basic Play session. [Status](../crates/halcyon-server/src/states/status.rs) answers pings and reports actual active players plus the 1,024-player admission limit. That bound is not a demonstrated population capacity. The [packet definitions](../crates/mc-protocol/src/packets/mod.rs) include a compression field and packet types without implemented compressed framing. Recognizing an incoming transfer intent is not a configured transfer service or admission policy.
+- **Absent platform systems:** [server state](../crates/halcyon-server/src/server.rs) retains immutable lobby terrain, keys, caches, and diagnostics while an executor-local owner holds the shared human-player population. There is no authoritative gameplay physics, mutable arena state, inventory/combat subsystem, bot implementation, matchmaking, or match lifecycle. The [entry point](../crates/halcyon-server/src/main.rs) still runs one executor on a fixed core; separate lobby ownership is not yet multi-core execution.
 
 The recommendations and size bands are judgments. Vanilla behavior references are collected in the companion inventory; direct official references below explain particularly important version-sensitive boundaries.
+
+### Lobby verification and measurements
+
+The shared-lobby implementation passes workspace tests, formatting checks, and Clippy with warnings denied. New coverage concentrates on packet layouts, reservation/activation/cleanup, movement coalescing and fairness, profile/spawn/removal ordering, terrain residency, and bounded observer output. The 26.3 spawn and movement formats were also checked against the installed matching client bytecode. A local startup smoke test loaded the lobby and opened the listener successfully. Two authenticated clients were not verified together: the matching Prism instance and another server were already running. The smoke-test server was stopped; the existing processes were left alone.
+
+Run the opt-in measurement with:
+
+```sh
+cargo test -p halcyon-server --release synthetic_lobby -- --ignored --nocapture
+```
+
+One release-mode run on 2026-10-21 produced the following results. Each case uses 16 in-memory observer sinks, completes paced roster/entity admission before 100 warmup and 1,000 measured publications, moves synthetic player records within their columns, and withholds one drain in four to exercise coalescing. Sparse cases have 16 total visibility edges; dense cases expose every other player to each observer.
+
+| Player records | Layout | Visibility edges | Mean publication + fanout | p95 |
+| --- | --- | --- | --- | --- |
+| 128 | Sparse | 16 | 6.7 µs | 12.2 µs |
+| 128 | Dense | 2,032 | 381.2 µs | 527.9 µs |
+| 1,024 | Sparse | 16 | 26.7 µs | 28.2 µs |
+| 1,024 | Dense | 16,368 | 3.35 ms | 4.71 ms |
+| 4,096 | Sparse | 16 | 123.8 µs | 132.9 µs |
+| 4,096 | Dense | 65,520 | 18.37 ms | 25.64 ms |
+
+For the dense 1,024-record case, estimated registry/player payload capacity was 451,666 bytes and observer payload capacity across all 16 sinks was 4,891,448 bytes. The dense 4,096-record case used 1,809,490 and 19,306,160 bytes respectively. These estimates count container payload capacities and retained data, sharing profile payloads once per player; they exclude hash controls, reference-count headers and allocator overhead and are not RSS measurements.
+
+The stalled dense 1,024-record sink reached the 2,048-frame bound while the healthy sink kept receiving updates. The registry population was unchanged. The 4,096-record fixtures deliberately exceed production admission to expose scaling costs. Timings exclude sockets, encryption, chunk streaming and shared-executor scheduling. Sinks drain without the production writer's per-pass budget. Results demonstrate the costs of these synthetic workloads, not network throughput or a supported population; observer fanout and lobby-wide profile distribution remain material scaling costs.
 
 ## 1. Connections and compatibility
 
 | Feature | Recommendation | Code size | Use case / rationale |
 | --- | --- | --- | --- |
-| Server-list status | Include | Small | Required public entry point; reuse the responder and replace hardcoded counts with actual server state. |
+| Server-list status | Include | Small | Required public entry point; the responder reports actual active lobby membership and its admission limit. |
 | Status latency measurement | Include | Small | Already supported and useful to every human player; little ongoing code. |
 | Protocol negotiation | Include | Small | Clearly admit the supported version and intents; broad multi-version translation is a separate, unjustified project. |
 | Online authentication | Include | Medium | Existing identity foundation for human accounts; retain verification and failure handling. Bots do not need client login sessions. |
@@ -81,7 +107,7 @@ The [official networking notes](https://www.minecraft.net/en-us/article/minecraf
 | Adventure mode | Include | Medium | A natural fit for protected arenas and lobbies; item-based exceptions depend on item components and interaction validation. |
 | Spectator mode | Include | Large | Essential for eliminated players and observation; include camera, interaction, visibility, and transition rules, not just a mode flag. |
 | Hardcore rules | Omit | Small | One-life matches belong to match elimination rules; world-level permanent death adds a second lifecycle model without a distinct need. |
-| Ground movement | Include | Large | Core to every game and bots; existing position storage lacks authoritative checks and observer synchronization. |
+| Ground movement | Include | Large | Core to every game and bots; position replication and observer synchronization exist, but authoritative movement checks and physics remain absent. |
 | Collision and stepping | Include | Large | Essential to fair movement and navigation; collision shapes, stepping, and prediction compatibility are substantial shared code. |
 | Sprinting and sneaking | Include | Medium | Common gameplay inputs with movement, pose, and visibility effects; worthwhile once the movement foundation exists. |
 | Jumping and falling | Include | Medium | Required for ordinary traversal, parkour, and combat; depends on collision, motion, and fall-damage state. |
