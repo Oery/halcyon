@@ -1,15 +1,18 @@
 use futures_lite::AsyncWriteExt;
 
-use crate::decode::take;
+use crate::decode::{MAX_COLLECTION_LEN, read_length, take};
 use crate::error::DecodeError;
 use crate::packets::PacketWriter;
 use crate::types::VarInt;
 
 impl<'p> PacketWriter<'p> for &'p str {
     fn read(input: &mut &'p [u8]) -> Result<&'p str, DecodeError> {
-        let len = VarInt::read(input)?.0 as usize;
+        let len = read_length(input, 32_767 * 3)?;
         let bytes = take(input, len)?;
-        let str = str::from_utf8(&bytes)?;
+        let str = str::from_utf8(bytes)?;
+        if str.encode_utf16().count() > 32_767 {
+            return Err(DecodeError::InvalidLength);
+        }
         Ok(str)
     }
 
@@ -27,8 +30,10 @@ impl<'p> PacketWriter<'p> for &'p str {
 
 impl<'p, T: PacketWriter<'p>> PacketWriter<'p> for Vec<T> {
     fn read(buf: &mut &'p [u8]) -> Result<Self, DecodeError> {
-        let length = VarInt::read(buf)?.0;
-        let mut elements = Vec::with_capacity(length as usize);
+        let length = read_length(buf, MAX_COLLECTION_LEN)?;
+        // Do not reserve from an untrusted count. Successful elements alone
+        // grow storage; truncated input fails before a large reservation.
+        let mut elements = Vec::new();
 
         for _ in 0..length {
             let element = T::read(buf)?;
@@ -87,5 +92,22 @@ impl<'p, T: PacketWriter<'p>> PacketWriter<'p> for Option<T> {
         };
 
         payload + 1
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn collection_lengths_are_bounded_before_allocation() {
+        for bytes in [&[0xff, 0xff, 0xff, 0xff, 0x0f][..], &[0xff, 0xff, 0xff, 0xff, 0x07]] {
+            assert!(matches!(Vec::<u8>::read(&mut &bytes[..]), Err(DecodeError::InvalidLength)));
+        }
+        assert!(matches!(
+            Vec::<u8>::read(&mut &[0x80, 0x80, 0x04][..]),
+            Err(DecodeError::UnexpectedEof)
+        ));
+        assert_eq!(Vec::<u8>::read(&mut &[2, 10, 20][..]).unwrap(), [10, 20]);
     }
 }

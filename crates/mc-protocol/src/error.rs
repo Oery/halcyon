@@ -14,6 +14,12 @@ pub enum EncodeError {
 
 #[derive(Error, Debug)]
 pub enum DecodeError {
+    #[error("invalid or excessive length")]
+    InvalidLength,
+
+    #[error("packet contains trailing data")]
+    TrailingData,
+
     #[error("expected bytes but got eof")]
     UnexpectedEof,
 

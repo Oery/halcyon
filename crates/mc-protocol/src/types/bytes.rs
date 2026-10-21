@@ -1,13 +1,13 @@
 use futures_lite::AsyncWriteExt;
 
-use crate::decode::take;
+use crate::decode::{MAX_FRAME_LEN, read_length, take};
 use crate::error::DecodeError;
 use crate::packets::PacketWriter;
 use crate::types::VarInt;
 
 impl<'p> PacketWriter<'p> for &'p [u8] {
     fn read(input: &mut &'p [u8]) -> Result<&'p [u8], DecodeError> {
-        let len = VarInt::read(input)?.0 as usize;
+        let len = read_length(input, MAX_FRAME_LEN)?;
         let bytes = take(input, len)?;
         Ok(bytes)
     }
