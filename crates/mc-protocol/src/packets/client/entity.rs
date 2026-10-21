@@ -9,7 +9,48 @@ use crate::decode::Result as DecodeResult;
 use crate::encode::Result as EncodeResult;
 use crate::error::{DecodeError, EncodeError};
 use crate::packets::{PacketWriter, Payload};
+use crate::types::LpVec3;
 use crate::types::VarInt;
+
+/// Falling sand, red sand and gravel use the same versioned entity type.
+#[packet(Play, 0x01, Client)]
+pub struct SpawnFallingBlock {
+    #[format = "varint"]
+    pub entity_id: i32,
+    pub uuid: Uuid,
+    #[format = "varint"]
+    pub entity_type: i32,
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    pub velocity: LpVec3,
+    pub pitch: u8,
+    pub yaw: u8,
+    pub head_yaw: u8,
+    #[format = "varint"]
+    pub block_state: i32,
+}
+
+#[packet(Play, 0x67, Client)]
+pub struct SetEntityVelocity {
+    #[format = "varint"]
+    pub entity_id: i32,
+    pub velocity: LpVec3,
+}
+
+#[packet(Play, 0x08, Client)]
+pub struct BlockUpdate {
+    pub location: i64,
+    #[format = "varint"]
+    pub block_state: i32,
+}
+
+#[packet(Play, 0x25, Client)]
+pub struct AddTransientBlock {
+    pub location: i64,
+    #[format = "varint"]
+    pub block_state: i32,
+}
 
 /// The player entry in the Minecraft Java 26.3 entity-type registry.
 pub const PLAYER_ENTITY_TYPE: i32 = 159;
@@ -21,6 +62,8 @@ pub struct PlayerStateMetadata {
     pub entity_id: i32,
     pub skin_parts: u8,
     pub sneaking: bool,
+    /// The crouching pose can persist under a ceiling after Shift is released.
+    pub crouching: bool,
     pub sprinting: bool,
     pub health: f32,
 }
@@ -46,7 +89,7 @@ impl<'p> Payload<'p> for PlayerStateMetadata {
         VarInt(20).write(w).await?;
         VarInt(if self.health <= 0.0 {
             7
-        } else if self.sneaking {
+        } else if self.crouching {
             5
         } else {
             0
@@ -446,6 +489,7 @@ mod tests {
                 entity_id: 1,
                 skin_parts: 0x7f,
                 sneaking: true,
+                crouching: true,
                 sprinting: true,
                 health: 20.0,
             };
@@ -453,6 +497,11 @@ mod tests {
             packet.write_payload(&mut bytes).await.unwrap();
             assert_eq!(bytes.len(), packet.payload_len().unwrap());
             assert_eq!(bytes, [1, 0, 0, 0x0a, 6, 20, 5, 9, 3, 0x41, 0xa0, 0, 0, 16, 0, 0x7f, 0xff]);
+            let packet = PlayerStateMetadata { sneaking: false, ..packet };
+            bytes.clear();
+            packet.write_payload(&mut bytes).await.unwrap();
+            assert_eq!(bytes[3], 0x08);
+            assert_eq!(bytes[6], 5);
         });
     }
 

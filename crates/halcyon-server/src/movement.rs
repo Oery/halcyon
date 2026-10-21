@@ -1,12 +1,20 @@
-//! Bounded validation of client-predicted movement against immutable terrain.
+//! Shared, bounded ground collision for predictions and server-driven motion.
 //!
-//! Coordinates remain proposals: this checks geometry and synchronizes stance,
-//! rather than replaying client physics or detecting speed/flight cheats.
+//! Client coordinates remain proposals checked against geometry and stance;
+//! owner-driven inputs use the same resolver with fixed-step ground physics.
+//! Human movement does not enforce speed, flight or jump trajectories.
 use std::collections::VecDeque;
 
-use halcyon_world::{Aabb, MAX_BLOCK_Y, MIN_BLOCK_Y, World, state_info};
+use halcyon_world::{
+    Aabb, BlockView, MAX_BLOCK_Y, MIN_BLOCK_Y, MotionInfo, Surface, motion_info, state_info,
+};
 
 use crate::lobby::Transform;
+
+mod physics;
+#[cfg(test)]
+pub use physics::shared_motion_bytes;
+pub use physics::{GroundInput, MotionState};
 
 const PROPOSAL_CAPACITY: usize = 32;
 const PROPOSALS_PER_STEP: usize = 4;
@@ -15,11 +23,10 @@ const CELLS_PER_STEP: usize = 512;
 const MAX_COLLIDERS: usize = 2_048;
 const EPSILON: f64 = 1e-7;
 const POSITION_TOLERANCE: f64 = 1e-5;
-const HALF_WIDTH: f64 = 0.3;
-const STANDING_HEIGHT: f64 = 1.8;
+const HALF_WIDTH: f64 = 0.6f32 as f64 / 2.0;
+const STANDING_HEIGHT: f64 = 1.8f32 as f64;
 const SNEAKING_HEIGHT: f64 = 1.5;
-const UNCERTAIN_POSE_HEIGHT: f64 = 0.6;
-const STEP_HEIGHT: f64 = 0.6;
+const STEP_HEIGHT: f64 = 0.6f32 as f64;
 const EDGE_INCREMENT: f64 = 0.05;
 
 #[derive(Clone, Copy, Debug)]
@@ -70,25 +77,79 @@ impl ProposalQueue {
 pub struct Advance {
     pub transform: Transform,
     pub sneaking: bool,
+    pub crouching: bool,
     pub sprinting: bool,
     pub changed: bool,
     pub correction: bool,
-    /// Largest clean landing in this bounded batch; unsupported media suppress it.
-    pub landed_fall_distance: Option<f64>,
+    /// Largest landing damage in this bounded batch, after surface modifiers.
+    pub landed_fall_damage: Option<f32>,
     pub uncertain_motion: bool,
     pub processed: usize,
     pub collision_cells: usize,
+    /// Actual clipping, independent of whether a client correction is needed.
+    pub collisions: [bool; 3],
+    pub ground: MotionInfo,
 }
 
 pub struct MovementState {
     transform: Transform,
     sneaking: bool,
+    crouching: bool,
     sprinting: bool,
-    uncertain_pose: bool,
     fall_distance: f64,
-    uncertain_fall: bool,
+    pub motion: MotionState,
     colliders: Vec<Aabb>,
     step_heights: Vec<f64>,
+}
+
+/// Cold-path recovery for an imported spawn obstructed by map geometry. Search
+/// only nearby static support surfaces; do not generate terrain or edit maps.
+pub fn resolve_spawn(world: &impl BlockView, requested: Transform) -> Option<Transform> {
+    if !requested.is_valid() {
+        return None;
+    }
+    let mut movement = MovementState::new(requested);
+    if movement.supports_destination(world, requested) {
+        return Some(requested);
+    }
+    let mut candidates = Vec::new();
+    let [sx, sy, sz] = [requested.x, requested.y, requested.z].map(|n| n.floor() as i32);
+    for x in sx - 4..=sx + 4 {
+        for z in sz - 4..=sz + 4 {
+            for y in
+                sy.saturating_sub(8).max(MIN_BLOCK_Y)..=sy.saturating_add(8).min(MAX_BLOCK_Y - 1)
+            {
+                let Some(id) = world.block_at(x, y, z) else { continue };
+                if motion_info(id).surface == Surface::Unsupported {
+                    continue;
+                }
+                for shape in state_info(id).collision_boxes() {
+                    if shape.min[0] <= 0.5
+                        && shape.max[0] >= 0.5
+                        && shape.min[2] <= 0.5
+                        && shape.max[2] >= 0.5
+                    {
+                        let destination = Transform {
+                            x: f64::from(x) + 0.5,
+                            y: f64::from(y) + shape.max[1],
+                            z: f64::from(z) + 0.5,
+                            on_ground: false,
+                            ..requested
+                        };
+                        let distance = (destination.x - requested.x).powi(2)
+                            + (destination.y - requested.y).powi(2)
+                            + (destination.z - requested.z).powi(2);
+                        candidates.push((distance, destination));
+                    }
+                }
+            }
+        }
+    }
+    candidates.sort_by(|a, b| a.0.total_cmp(&b.0));
+    candidates.into_iter().map(|(_, destination)| destination).find(|destination| {
+        movement.supports_destination(world, *destination)
+            && supported(player_box(*destination, false), POSITION_TOLERANCE, &movement.colliders)
+    })
 }
 
 impl MovementState {
@@ -101,10 +162,10 @@ impl MovementState {
         Self {
             transform,
             sneaking: false,
+            crouching: false,
             sprinting: false,
-            uncertain_pose: false,
             fall_distance: 0.0,
-            uncertain_fall: false,
+            motion: MotionState::default(),
             colliders: Vec::with_capacity(64),
             step_heights: Vec::with_capacity(16),
         }
@@ -118,8 +179,43 @@ impl MovementState {
         self.sneaking
     }
 
+    pub fn crouching(&self) -> bool {
+        self.crouching
+    }
+
     pub fn sprinting(&self) -> bool {
         self.sprinting
+    }
+
+    /// Vanilla's thin eye-level envelope, rather than the entire player body.
+    /// Existing solid overlaps do not forbid movement out of a settled block.
+    pub fn suffocating(&self, world: &impl BlockView) -> bool {
+        let eye = self.transform.y + f64::from(if self.crouching { 1.27f32 } else { 1.62f32 });
+        let radius = f64::from(0.6f32 * 0.8f32) / 2.0;
+        let eyes = Aabb {
+            min: [self.transform.x - radius, eye - 0.5e-6, self.transform.z - radius],
+            max: [self.transform.x + radius, eye + 0.5e-6, self.transform.z + radius],
+        };
+        for x in eyes.min[0].floor() as i32..=eyes.max[0].floor() as i32 {
+            for y in eyes.min[1].floor() as i32..=eyes.max[1].floor() as i32 {
+                for z in eyes.min[2].floor() as i32..=eyes.max[2].floor() as i32 {
+                    let Some(id) = world.block_at(x, y, z) else {
+                        continue;
+                    };
+                    if halcyon_world::block_properties(id).suffocating()
+                        && state_info(id).collision_boxes().iter().any(|shape| {
+                            intersects(
+                                eyes,
+                                translate(*shape, [f64::from(x), f64::from(y), f64::from(z)]),
+                            )
+                        })
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
     }
 
     /// Teleport/respawn establishes a new fall baseline without allocating.
@@ -127,40 +223,71 @@ impl MovementState {
         transform.on_ground = false;
         self.transform = transform;
         self.sneaking = false;
+        self.crouching = false;
         self.sprinting = false;
-        self.uncertain_pose = false;
         self.fall_distance = 0.0;
-        self.uncertain_fall = false;
+        self.motion = MotionState::default();
         self.colliders.clear();
         self.step_heights.clear();
     }
 
-    pub fn advance(&mut self, world: &World, proposals: &mut ProposalQueue) -> Advance {
+    pub fn advance(&mut self, world: &impl BlockView, proposals: &mut ProposalQueue) -> Advance {
         self.advance_with(world, proposals)
     }
 
+    /// Teleports and initial spawning must not bypass supported-content checks.
+    pub fn supports_destination(&mut self, world: &impl BlockView, transform: Transform) -> bool {
+        if !transform.is_valid() {
+            return false;
+        }
+        let bounds = player_box(transform, false);
+        let mut cells = 0;
+        collect_colliders(world, bounds, inflate(bounds, 0.02), &mut self.colliders, &mut cells)
+            == Some(false)
+            && !self.colliders.iter().any(|shape| intersects(bounds, *shape))
+    }
+
     fn advance_with(&mut self, terrain: &impl Terrain, proposals: &mut ProposalQueue) -> Advance {
+        let overflowed = std::mem::take(&mut proposals.overflowed);
+        let mut result = self.resolve(
+            terrain,
+            std::iter::from_fn(|| proposals.pending.pop_front()).take(PROPOSALS_PER_STEP),
+            true,
+            0,
+        );
+        result.correction |= overflowed;
+        if result.correction {
+            proposals.clear();
+        }
+        result
+    }
+
+    fn resolve(
+        &mut self,
+        terrain: &impl Terrain,
+        proposals: impl Iterator<Item = MovementProposal>,
+        prediction: bool,
+        cells: usize,
+    ) -> Advance {
         let old_transform = self.transform;
         let old_sneaking = self.sneaking;
+        let old_crouching = self.crouching;
         let old_sprinting = self.sprinting;
         let mut result = Advance {
             transform: self.transform,
             sneaking: self.sneaking,
+            crouching: self.crouching,
             sprinting: self.sprinting,
             changed: false,
-            correction: std::mem::take(&mut proposals.overflowed),
-            landed_fall_distance: None,
-            uncertain_motion: self.uncertain_fall,
+            correction: false,
+            landed_fall_damage: None,
+            uncertain_motion: false,
             processed: 0,
-            collision_cells: 0,
+            collision_cells: cells,
+            collisions: [false; 3],
+            ground: MotionInfo::default(),
         };
-        for _ in 0..PROPOSALS_PER_STEP {
-            if result.correction {
-                break;
-            }
-            let Some(proposal) = proposals.pending.pop_front() else {
-                break;
-            };
+        for proposal in proposals {
             result.processed += 1;
             if !proposal.transform.is_valid() {
                 result.correction = true;
@@ -177,8 +304,14 @@ impl MovementState {
             let mut query = expand_towards(standing, delta);
             query.min[1] -= STEP_HEIGHT + POSITION_TOLERANCE;
             query.max[1] += STEP_HEIGHT;
-            let contact = inflate(expand_towards(standing, delta), 0.02);
-            let Some(uncertain) = collect_colliders(
+            let contact = inflate(
+                expand_towards(
+                    player_box(self.transform, proposal.sneaking || self.crouching),
+                    delta,
+                ),
+                0.02,
+            );
+            let Some(unsupported) = collect_colliders(
                 terrain,
                 query,
                 contact,
@@ -188,28 +321,22 @@ impl MovementState {
                 result.correction = true;
                 break;
             };
-            let sneaking = proposal.sneaking
-                || (self.sneaking
+            if unsupported {
+                result.uncertain_motion = true;
+                result.correction = true;
+                break;
+            }
+            let crouching = proposal.sneaking
+                || (self.crouching
                     && self.colliders.iter().any(|shape| intersects(standing, *shape)));
-            let normal_bounds = player_box(self.transform, sneaking);
-            // Unsupported media can produce swimming/crawling poses. A compact
-            // envelope preserves body collision without assuming standing height.
-            // Keep it through a dry low tunnel until the ordinary body fits.
-            let uncertain_pose = uncertain
-                || (self.uncertain_pose
-                    && self.colliders.iter().any(|shape| intersects(normal_bounds, *shape)));
-            let height = if uncertain_pose {
-                UNCERTAIN_POSE_HEIGHT
-            } else if sneaking {
-                SNEAKING_HEIGHT
-            } else {
-                STANDING_HEIGHT
-            };
+            let height = if crouching { SNEAKING_HEIGHT } else { STANDING_HEIGHT };
             let bounds = player_box_with_height(self.transform, height);
             let mut requested = delta;
-            if sneaking
+            if proposal.sneaking
                 && delta[1] <= 0.0
-                && (self.transform.on_ground || supported(bounds, STEP_HEIGHT, &self.colliders))
+                && (self.transform.on_ground
+                    || (self.fall_distance < STEP_HEIGHT
+                        && supported(bounds, STEP_HEIGHT, &self.colliders)))
                 && !back_off_edges(bounds, &mut requested, &self.colliders)
             {
                 result.correction = true;
@@ -231,50 +358,140 @@ impl MovementState {
                 POSITION_TOLERANCE,
                 &self.colliders,
             );
-            if uncertain || uncertain_pose {
-                self.uncertain_fall = true;
-                self.fall_distance = 0.0;
-            } else if resolved[1] < 0.0 {
-                self.fall_distance -= resolved[1];
+            result.collisions =
+                std::array::from_fn(|axis| (requested[axis] - resolved[axis]).abs() > EPSILON);
+            if !prediction {
+                accepted.on_ground = requested[1] < 0.0 && result.collisions[1];
+            }
+            let ground = ground_contact(terrain, accepted);
+            result.ground = ground.map_or_else(MotionInfo::default, |contact| contact.motion);
+            if resolved[1] < 0.0 {
+                self.fall_distance -= f64::from(resolved[1] as f32);
             } else if resolved[1] > 0.0 {
                 self.fall_distance = 0.0;
             }
-            result.uncertain_motion |= uncertain || uncertain_pose || self.uncertain_fall;
             if accepted.on_ground {
-                if !self.uncertain_fall && self.fall_distance > 0.0 {
-                    result.landed_fall_distance =
-                        Some(result.landed_fall_distance.unwrap_or(0.0).max(self.fall_distance));
+                if self.fall_distance > 0.0 {
+                    let damage =
+                        landing_damage(self.fall_distance, result.ground, proposal.sneaking);
+                    result.landed_fall_damage =
+                        Some(result.landed_fall_damage.unwrap_or(0.0).max(damage));
                 }
                 self.fall_distance = 0.0;
-                // A clean supported landing establishes the next fall baseline.
-                self.uncertain_fall = uncertain || uncertain_pose;
+            }
+            if honey_slide(terrain, accepted, resolved[1]) {
+                self.fall_distance = 0.0;
             }
             self.transform = accepted;
-            self.sneaking = sneaking;
+            self.sneaking = proposal.sneaking;
+            self.crouching = crouching;
             self.sprinting = proposal.sprinting;
-            self.uncertain_pose = uncertain_pose;
-            result.correction = delta
-                .iter()
-                .zip(resolved)
-                .any(|(wanted, actual)| (wanted - actual).abs() > POSITION_TOLERANCE);
-        }
-        if result.correction {
-            proposals.clear();
+            result.correction = prediction
+                && delta
+                    .iter()
+                    .zip(resolved)
+                    .any(|(wanted, actual)| (wanted - actual).abs() > POSITION_TOLERANCE);
+            if result.correction {
+                break;
+            }
         }
         result.transform = self.transform;
         result.sneaking = self.sneaking;
+        result.crouching = self.crouching;
         result.sprinting = self.sprinting;
         result.changed = self.transform != old_transform
             || self.sneaking != old_sneaking
+            || self.crouching != old_crouching
             || self.sprinting != old_sprinting;
         result
     }
+}
+
+#[derive(Clone, Copy)]
+struct GroundContact {
+    block: [i32; 3],
+    motion: MotionInfo,
+}
+
+/// Vanilla chooses the closest supporting block, preferring the greater
+/// (Y, Z, X) position on ties. At most the small foot envelope plus a rim is
+/// inspected; protruding static shapes can extend 0.25 horizontally and 1.5 up.
+fn ground_contact(terrain: &impl Terrain, position: Transform) -> Option<GroundContact> {
+    let bounds = player_box(position, true);
+    let feet = Aabb {
+        min: [bounds.min[0], position.y - 1e-6, bounds.min[2]],
+        max: [bounds.max[0], position.y, bounds.max[2]],
+    };
+    let mut best: Option<(f64, GroundContact)> = None;
+    for y in (position.y - 1.5).floor() as i32..=position.y.floor() as i32 {
+        for z in (bounds.min[2] - 0.25).floor() as i32..=(bounds.max[2] + 0.25).floor() as i32 {
+            for x in (bounds.min[0] - 0.25).floor() as i32..=(bounds.max[0] + 0.25).floor() as i32 {
+                let Some(cell) = terrain.cell(x, y, z) else { continue };
+                if cell.contextual || cell.uncertain {
+                    continue;
+                }
+                let origin = [f64::from(x), f64::from(y), f64::from(z)];
+                if !cell.shapes.iter().any(|shape| intersects(feet, translate(*shape, origin))) {
+                    continue;
+                }
+                let distance = (position.x - origin[0] - 0.5).powi(2)
+                    + (position.y - origin[1] - 0.5).powi(2)
+                    + (position.z - origin[2] - 0.5).powi(2);
+                let contact = GroundContact { block: [x, y, z], motion: cell.motion };
+                if best.is_none_or(|(d, b)| {
+                    distance < d
+                        || (distance == d && [y, z, x] > [b.block[1], b.block[2], b.block[0]])
+                }) {
+                    best = Some((distance, contact));
+                }
+            }
+        }
+    }
+    best.map(|(_, contact)| contact)
+}
+
+fn landing_damage(distance: f64, surface: MotionInfo, sneaking: bool) -> f32 {
+    if surface.surface == Surface::Slime && !sneaking {
+        return 0.0;
+    }
+    let distance = distance * f64::from(1.0 - surface.fall_reduction);
+    let multiplier = if matches!(surface.surface, Surface::Honey | Surface::Hay) {
+        f64::from(0.2f32)
+    } else {
+        1.0
+    };
+    ((distance - 3.0) * multiplier).ceil().max(0.0) as f32
+}
+
+/// Honey's inset collision shape leaves a narrow inside-block contact along
+/// its sides. Sliding is not climbing and is supported for dry honey blocks.
+fn honey_slide(terrain: &impl Terrain, position: Transform, delta_y: f64) -> bool {
+    if position.on_ground || delta_y >= -0.08 {
+        return false;
+    }
+    let bounds = player_box(position, true);
+    for x in bounds.min[0].floor() as i32..=bounds.max[0].floor() as i32 {
+        for z in bounds.min[2].floor() as i32..=bounds.max[2].floor() as i32 {
+            for y in bounds.min[1].floor() as i32..=bounds.max[1].floor() as i32 {
+                let Some(cell) = terrain.cell(x, y, z) else { continue };
+                if cell.motion.surface == Surface::Honey
+                    && position.y <= f64::from(y) + 0.9375 - EPSILON
+                    && ((f64::from(x) + 0.5 - position.x).abs() + EPSILON > 0.4375 + HALF_WIDTH
+                        || (f64::from(z) + 0.5 - position.z).abs() + EPSILON > 0.4375 + HALF_WIDTH)
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 struct TerrainCell {
     shapes: &'static [Aabb],
     uncertain: bool,
     contextual: bool,
+    motion: MotionInfo,
 }
 
 trait Terrain {
@@ -282,17 +499,20 @@ trait Terrain {
     fn cell(&self, x: i32, y: i32, z: i32) -> Option<TerrainCell>;
 }
 
-impl Terrain for World {
+impl<T: BlockView> Terrain for T {
     fn contains_column(&self, x: i32, z: i32) -> bool {
-        self.get(x, z).is_some()
+        BlockView::contains_column(self, x, z)
     }
 
     fn cell(&self, x: i32, y: i32, z: i32) -> Option<TerrainCell> {
-        let info = state_info(self.block_at(x, y, z)?);
+        let id = self.block_at(x, y, z)?;
+        let info = state_info(id);
+        let motion = motion_info(id);
         Some(TerrainCell {
             shapes: info.collision_boxes(),
-            uncertain: info.uncertain_motion(),
+            uncertain: motion.surface == Surface::Unsupported,
             contextual: info.contextual_geometry(),
+            motion,
         })
     }
 }
@@ -435,18 +655,31 @@ fn try_step(
     colliders: &[Aabb],
     heights: &mut Vec<f64>,
 ) -> [f64; 3] {
+    let landing = requested[1] < 0.0 && ordinary[1] > requested[1];
+    let offset = if landing { ordinary[1] } else { 0.0 };
+    let base = translate(bounds, [0.0, offset, 0.0]);
+    let mut query = expand_towards(base, [requested[0], STEP_HEIGHT, requested[2]]);
+    if !landing {
+        query.min[1] -= f64::from(1e-5f32);
+    }
     heights.clear();
     for shape in colliders {
-        let height = shape.max[1] - bounds.min[1];
-        if height > EPSILON && height <= STEP_HEIGHT + EPSILON {
-            heights.push(height);
+        if !intersects(query, *shape) {
+            continue;
+        }
+        for y in [shape.min[1], shape.max[1]] {
+            let height = f64::from((y - base.min[1]) as f32);
+            if (0.0..=STEP_HEIGHT).contains(&height) && height != f64::from(ordinary[1] as f32) {
+                heights.push(height);
+            }
         }
     }
     heights.sort_unstable_by(f64::total_cmp);
-    heights.dedup_by(|a, b| (*a - *b).abs() <= EPSILON);
+    heights.dedup();
     for &height in heights.iter() {
-        let candidate = collide(bounds, [requested[0], height, requested[2]], colliders);
+        let mut candidate = collide(base, [requested[0], height, requested[2]], colliders);
         if horizontal_distance(candidate) > horizontal_distance(ordinary) + EPSILON {
+            candidate[1] += offset;
             return candidate;
         }
     }
@@ -487,19 +720,21 @@ fn back_off_edges(bounds: Aabb, delta: &mut [f64; 3], colliders: &[Aabb]) -> boo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use halcyon_world::World;
     use std::collections::HashMap;
 
     const FULL: &[Aabb] = &[Aabb { min: [0.0; 3], max: [1.0; 3] }];
     const SLAB: &[Aabb] = &[Aabb { min: [0.0; 3], max: [1.0, 0.5, 1.0] }];
 
     #[derive(Default)]
-    struct Map {
-        blocks: HashMap<(i32, i32, i32), (&'static [Aabb], bool)>,
+    pub(super) struct Map {
+        pub(super) blocks: HashMap<(i32, i32, i32), (&'static [Aabb], bool)>,
+        pub(super) surfaces: HashMap<(i32, i32, i32), MotionInfo>,
         missing: bool,
     }
 
     impl Map {
-        fn floor() -> Self {
+        pub(super) fn floor() -> Self {
             let mut map = Self::default();
             for x in -4..=4 {
                 for z in -4..=4 {
@@ -520,6 +755,7 @@ mod tests {
                 shapes,
                 uncertain,
                 contextual: false,
+                motion: self.surfaces.get(&(x, y, z)).copied().unwrap_or_default(),
             })
         }
     }
@@ -530,6 +766,45 @@ mod tests {
 
     fn propose(queue: &mut ProposalQueue, transform: Transform) {
         assert!(queue.push(MovementProposal { transform, sneaking: false, sprinting: false }));
+    }
+
+    #[test]
+    fn imported_spawn_preserves_clear_positions_and_recovers_bounded_obstructions() {
+        use halcyon_world::loader::{LoadedChunk, LoadedWorld};
+        use halcyon_world::{SECTION_COUNT, Section};
+
+        let mut sections =
+            Box::new(std::array::from_fn::<_, SECTION_COUNT, _>(|_| Section::Uniform(0)));
+        sections[7] = Section::Uniform(1);
+        let mut blocks = Box::new([0; 4096]);
+        blocks[8 * 16 + 8] = 1;
+        sections[8] = Section::Dense(blocks);
+        let map = World::from_loaded(LoadedWorld {
+            chunks: vec![LoadedChunk {
+                x: 0,
+                z: 0,
+                data: vec![],
+                heights: [0; 37],
+                wire_bytes: 0,
+                sections,
+            }],
+            spawn: (8.5, 64.0, 8.5, 0.0, 0.0),
+            missing_blocks: 0,
+            remapped_biomes: 0,
+        });
+        let clear = position(4.5, 64.0, 4.5);
+        assert_eq!(resolve_spawn(&map, clear), Some(clear));
+        let obstructed = position(8.5, 64.0, 8.5);
+        let recovered = resolve_spawn(&map, obstructed).unwrap();
+        assert!(MovementState::new(recovered).supports_destination(&map, recovered));
+        assert!(
+            (recovered.x - obstructed.x).powi(2)
+                + (recovered.y - obstructed.y).powi(2)
+                + (recovered.z - obstructed.z).powi(2)
+                <= 1.0
+        );
+        assert!(resolve_spawn(&map, position(f64::NAN, 64.0, 8.5)).is_none());
+        assert!(resolve_spawn(&map, position(100.5, 64.0, 100.5)).is_none());
     }
 
     #[test]
@@ -583,6 +858,45 @@ mod tests {
     }
 
     #[test]
+    fn open_trapdoors_and_dry_small_dripleaf_leave_jump_clearance() {
+        let mut map = Map::default();
+        for x in 39..=44 {
+            for z in -36..=-31 {
+                map.blocks.insert((x, 118, z), (FULL, false));
+            }
+        }
+        for (x, y, z, id) in [
+            (41, 119, -34, 8907),
+            (41, 120, -34, 8907),
+            (41, 122, -34, 8899),
+            (42, 122, -33, 33764),
+        ] {
+            let motion = motion_info(id);
+            map.blocks.insert(
+                (x, y, z),
+                (state_info(id).collision_boxes(), motion.surface == Surface::Unsupported),
+            );
+            map.surfaces.insert((x, y, z), motion);
+        }
+        let start = position(41.85, 119.0, -33.2);
+        let apex = position(start.x, 120.25220334025373, start.z);
+        let mut state = MovementState::new(start);
+        let mut queue = ProposalQueue::default();
+        propose(&mut queue, apex);
+        let result = state.advance_with(&map, &mut queue);
+        assert!(!result.correction);
+        assert_eq!(result.transform.y, apex.y);
+
+        // Closing the overhead trapdoor creates a real horizontal obstruction.
+        map.blocks.insert((41, 122, -34), (state_info(8911).collision_boxes(), false));
+        state.reset(start);
+        propose(&mut queue, apex);
+        let result = state.advance_with(&map, &mut queue);
+        assert!(result.correction);
+        assert!((result.transform.y - (122.0 - STANDING_HEIGHT)).abs() < EPSILON);
+    }
+
+    #[test]
     fn crouch_stays_below_ceiling_and_edge_backoff_keeps_support() {
         const LOW_ROOF: &[Aabb] = &[Aabb { min: [0.0, 0.5, 0.0], max: [1.0; 3] }];
         let mut map = Map::floor();
@@ -594,9 +908,11 @@ mod tests {
             sneaking: true,
             sprinting: false,
         }));
-        assert!(state.advance_with(&map, &mut queue).sneaking);
+        assert!(state.advance_with(&map, &mut queue).crouching);
         propose(&mut queue, position(0.5, 1.0, 0.5));
-        assert!(state.advance_with(&map, &mut queue).sneaking);
+        let result = state.advance_with(&map, &mut queue);
+        assert!(result.crouching);
+        assert!(!result.sneaking);
 
         let mut map = Map::default();
         map.blocks.insert((0, 0, 0), (FULL, false));
@@ -652,31 +968,33 @@ mod tests {
     }
 
     #[test]
-    fn accepted_descents_emit_clean_falls_and_media_suppress_the_whole_fall() {
+    fn accepted_descents_emit_damage_and_unsupported_contacts_do_not_change_authority() {
         let mut state = MovementState::new(position(0.5, 5.0, 0.5));
         let mut queue = ProposalQueue::default();
         propose(&mut queue, position(0.5, 3.0, 0.5));
         propose(&mut queue, position(0.5, 1.0, 0.5));
         let result = state.advance_with(&Map::floor(), &mut queue);
         assert!(!result.correction);
-        assert_eq!(result.landed_fall_distance, Some(4.0));
+        assert_eq!(result.landed_fall_damage, Some(1.0));
 
         let mut map = Map::floor();
         map.blocks.insert((0, 3, 0), (&[], true));
         state.reset(position(0.5, 5.0, 0.5));
         propose(&mut queue, position(0.5, 3.0, 0.5));
-        assert!(state.advance_with(&map, &mut queue).uncertain_motion);
+        let result = state.advance_with(&map, &mut queue);
+        assert!(result.uncertain_motion && result.correction);
+        assert_eq!(state.transform().y, 5.0);
         map.blocks.remove(&(0, 3, 0));
         propose(&mut queue, position(0.5, 1.0, 0.5));
-        assert_eq!(state.advance_with(&map, &mut queue).landed_fall_distance, None);
+        assert_eq!(state.advance_with(&map, &mut queue).landed_fall_damage, Some(1.0));
         propose(&mut queue, position(0.5, 5.0, 0.5));
         assert!(!state.advance_with(&map, &mut queue).correction);
         propose(&mut queue, position(0.5, 1.0, 0.5));
-        assert_eq!(state.advance_with(&map, &mut queue).landed_fall_distance, Some(4.0));
+        assert_eq!(state.advance_with(&map, &mut queue).landed_fall_damage, Some(1.0));
     }
 
     #[test]
-    fn unsupported_media_allow_low_tunnels_but_retain_body_collision() {
+    fn unsupported_media_cannot_enable_low_tunnels() {
         let mut map = Map::floor();
         // Water leads into a dry one-block-high tunnel.
         map.blocks.insert((0, 1, 0), (&[], true));
@@ -687,26 +1005,8 @@ mod tests {
         let mut queue = ProposalQueue::default();
         propose(&mut queue, position(0.5, 1.0, 0.5));
         let result = state.advance_with(&map, &mut queue);
-        assert!(!result.correction);
-        assert!(result.uncertain_motion);
-        propose(&mut queue, position(1.5, 1.0, 0.5));
-        assert!(!state.advance_with(&map, &mut queue).correction);
-        propose(&mut queue, position(2.5, 1.0, 0.5));
-        assert!(!state.advance_with(&map, &mut queue).correction);
-
-        // Even the compact envelope cannot enter an ordinary full block.
-        map.blocks.insert((3, 1, 0), (FULL, false));
-        propose(&mut queue, position(3.5, 1.0, 0.5));
-        let result = state.advance_with(&map, &mut queue);
         assert!(result.correction);
-        assert!((result.transform.x - 2.7).abs() < EPSILON);
-
-        // Leaving the low tunnel restores normal height on the next proposal.
-        map.blocks.remove(&(3, 1, 0));
-        propose(&mut queue, position(3.5, 1.0, 0.5));
-        assert!(!state.advance_with(&map, &mut queue).correction);
-        propose(&mut queue, position(3.5, 1.0, 0.5));
-        assert!(!state.advance_with(&map, &mut queue).correction);
-        assert!(!state.uncertain_pose);
+        assert!(result.uncertain_motion);
+        assert_eq!(state.transform(), position(-0.5, 1.0, 0.5));
     }
 }

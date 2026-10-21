@@ -20,6 +20,9 @@ pub enum Error {
     #[error("invalid player data")]
     InvalidPlayerData,
 
+    #[error("the imported lobby spawn has no nearby clear destination on supported terrain")]
+    UnsupportedSpawn,
+
     #[error("lobby admission failed: {0}")]
     Admission(#[from] crate::lobby::AdmissionError),
 

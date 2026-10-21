@@ -8,11 +8,17 @@ pub struct Server {
 }
 
 impl Server {
-    pub async fn new(lobby: halcyon_world::World) -> Result<Server, crate::error::Error> {
+    pub async fn new(mut lobby: halcyon_world::World) -> Result<Server, crate::error::Error> {
         let (x, y, z, yaw, pitch) = lobby.spawn;
         let spawn = crate::lobby::Transform { x, y, z, yaw, pitch, on_ground: false };
-        if !spawn.is_valid() {
-            return Err(crate::error::Error::InvalidPlayerData);
+        let safe_spawn = crate::movement::resolve_spawn(&lobby, spawn)
+            .ok_or(crate::error::Error::UnsupportedSpawn)?;
+        if safe_spawn != spawn {
+            eprintln!(
+                "world: adjusted obstructed spawn from ({x}, {y}, {z}) to ({}, {}, {})",
+                safe_spawn.x, safe_spawn.y, safe_spawn.z
+            );
+            lobby.spawn = (safe_spawn.x, safe_spawn.y, safe_spawn.z, yaw, pitch);
         }
         let packets = crate::cache::PacketCache::new(&lobby).await?;
         Ok(Server {

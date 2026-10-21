@@ -91,7 +91,12 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
             }
         }
         Packets::PlayerInput(p) => {
-            let sneaking = p.flags & 0x20 != 0;
+            let input = crate::movement::GroundInput::from_flags(
+                p.flags,
+                client.proposed.yaw,
+                client.proposed.pitch,
+            );
+            let sneaking = input.sneaking;
             if client.sneaking != sneaking {
                 client.sneaking = sneaking;
                 client.propose_position();
@@ -139,6 +144,54 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
                     }
                     _ => {}
                 }
+            }
+            // Disabled digging still has client-side predictions. Acknowledge
+            // their sequence and restore authority rather than leaving ghost air.
+            if matches!(p.action, 0..=3) {
+                client.resync_blocks([crate::arena::unpack(p.location)]).await?;
+                client
+                    .send(&mc_protocol::packets::client::AcknowledgeBlockChange {
+                        sequence_id: p.sequence,
+                    })
+                    .await?;
+            }
+        }
+        Packets::UseItemOn(p) => {
+            if !(0..=1).contains(&p.hand)
+                || !(0..=5).contains(&p.face)
+                || ![p.cursor_x, p.cursor_y, p.cursor_z].into_iter().all(f32::is_finite)
+            {
+                return Err(Error::InvalidPlayerData);
+            }
+            let [x, y, z] = crate::arena::unpack(p.location);
+            client
+                .resync_blocks(crate::world_sync::resync_cells(crate::lobby::Transform {
+                    x: f64::from(x) + 0.5,
+                    y: f64::from(y),
+                    z: f64::from(z) + 0.5,
+                    ..Default::default()
+                }))
+                .await?;
+            client
+                .send(&mc_protocol::packets::client::AcknowledgeBlockChange {
+                    sequence_id: p.sequence,
+                })
+                .await?;
+            if let Some(session) = &client.session {
+                session.inventory(InventoryAction::Resync);
+            }
+        }
+        Packets::UseItem(p) => {
+            if !(0..=1).contains(&p.hand) || !p.yaw.is_finite() || !p.pitch.is_finite() {
+                return Err(Error::InvalidPlayerData);
+            }
+            client
+                .send(&mc_protocol::packets::client::AcknowledgeBlockChange {
+                    sequence_id: p.sequence,
+                })
+                .await?;
+            if let Some(session) = &client.session {
+                session.inventory(InventoryAction::Resync);
             }
         }
         Packets::ClientCommand(p) => {
@@ -215,7 +268,7 @@ async fn send_skin(client: &mut Client) -> Result<(), Error> {
 }
 pub async fn enter_play(client: &mut Client) -> Result<(), Error> {
     send_skin(client).await?;
-    let (sx, sy, sz, yaw, pitch) = client.server.lobby.spawn;
+    let crate::lobby::Transform { x: sx, y: sy, z: sz, yaw, pitch, .. } = client.pos;
     let scx = (sx.floor() as i32) >> 4;
     let scz = (sz.floor() as i32) >> 4;
     client.send(&GameEvent { event: 13, value: 0.0 }).await?;

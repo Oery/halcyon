@@ -5,6 +5,7 @@ use std::sync::Arc;
 use crate::client::Client;
 use crate::server::Server;
 
+mod arena;
 mod auth;
 mod cache;
 mod chunks;
@@ -22,6 +23,7 @@ mod simulation;
 mod states;
 mod transport;
 mod visibility;
+mod world_sync;
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -32,7 +34,8 @@ async fn main() -> std::io::Result<()> {
     let lobby = halcyon_world::World::load(std::path::Path::new("worlds/lobby"))
         .map_err(std::io::Error::other)?;
     let server = Arc::new(Server::new(lobby).await.map_err(std::io::Error::other)?);
-    let players = lobby::Lobby::spawn(server.lobby.clone(), server.diagnostics);
+    let players = lobby::Lobby::spawn(server.lobby.clone(), server.diagnostics)
+        .map_err(std::io::Error::other)?;
 
     let listener = TcpListener::bind(ADDR)?;
     let mut incoming = listener.incoming();

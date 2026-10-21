@@ -38,6 +38,7 @@ pub struct Client {
     pub session: Option<Session>,
     pub profile_info: Option<Rc<[u8]>>,
     observer: Observer,
+    world_observer: crate::world_sync::WorldObserver,
     pub pending_teleport: Option<i32>,
     pub teleport_deadline: Option<Instant>,
     selected_slot: u8,
@@ -77,6 +78,7 @@ impl Client {
             session: None,
             profile_info: None,
             observer: Observer::default(),
+            world_observer: crate::world_sync::WorldObserver::default(),
             pending_teleport: None,
             teleport_deadline: None,
             selected_slot: 0,
@@ -118,6 +120,12 @@ impl Client {
         let profile = Rc::new(Profile { uuid, username: username.to_owned(), info: info.clone() });
         let (x, y, z, yaw, pitch) = self.server.lobby.spawn;
         self.pos = Transform { x, y, z, yaw, pitch, on_ground: false };
+        self.pos = self
+            .lobby
+            .with_registry(|registry| {
+                crate::movement::resolve_spawn(&registry.arena.view(&self.server.lobby), self.pos)
+            })
+            .ok_or(Error::UnsupportedSpawn)?;
         self.proposed = self.pos;
         self.session = Some(self.lobby.register(profile, self.pos, self.ctx.skin_parts).await?);
         self.profile_info = Some(info);
@@ -157,6 +165,67 @@ impl Client {
         Ok(Some((frame.len(), frames)))
     }
 
+    async fn send_world_frame(&mut self) -> Result<Option<(usize, usize)>, Error> {
+        let frame =
+            self.lobby.with_registry(|registry| self.world_observer.next_frame(&registry.arena))?;
+        let Some(frame) = frame else {
+            return Ok(None);
+        };
+        let count = self.world_observer.frame_count();
+        self.send_encoded(&frame).await?;
+        self.world_observer.sent();
+        Ok(Some((frame.len(), count)))
+    }
+
+    /// The cached base chunk must be followed by its current edits before any
+    /// entity admission. A resent center chunk resets the delivered baseline too.
+    pub async fn send_terrain_overlay(&mut self, column: (i32, i32)) -> Result<(), Error> {
+        self.world_observer.base_sent(column);
+        loop {
+            let frame = self.lobby.with_registry(|registry| {
+                self.world_observer.patch_column(&registry.arena, column)
+            })?;
+            let Some(frame) = frame else {
+                break;
+            };
+            self.send_encoded(&frame).await?;
+            self.world_observer.sent();
+            glommio::executor().yield_now().await;
+        }
+        Ok(())
+    }
+
+    pub async fn resync_blocks(
+        &mut self,
+        cells: impl IntoIterator<Item = crate::arena::BlockPos>,
+    ) -> Result<(), Error> {
+        use halcyon_world::BlockView;
+        use mc_protocol::packets::client::BlockUpdate;
+        let cells: Vec<_> = cells.into_iter().take(64).collect();
+        let mut frames = Vec::new();
+        self.lobby.with_registry(|registry| {
+            let world = registry.arena.view(&self.server.lobby);
+            for pos in cells {
+                if !self.chunks.terrain().contains(&crate::arena::column(pos)) {
+                    continue;
+                }
+                if let Some(state) = world.block_at(pos[0], pos[1], pos[2]) {
+                    frames.push(BlockUpdate {
+                        location: crate::arena::pack(pos),
+                        block_state: i32::from(state),
+                    });
+                }
+            }
+        });
+        for (index, frame) in frames.iter().enumerate() {
+            self.send(frame).await?;
+            if index % 32 == 31 {
+                glommio::executor().yield_now().await;
+            }
+        }
+        Ok(())
+    }
+
     fn report_observer(&self) {
         if let Some(session) = &self.session {
             session.record_observer(ObserverMetrics {
@@ -173,10 +242,32 @@ impl Client {
 
     async fn drain_players(&mut self) -> Result<(), Error> {
         self.reconcile_players()?;
+        self.lobby.with_registry(|registry| {
+            self.world_observer.reconcile(&registry.arena, self.chunks.terrain())
+        });
         let mut bytes = 0;
         let mut frames = 0;
-        while frames < WRITE_SLICE_FRAMES {
+        while frames < WRITE_SLICE_FRAMES && bytes < WRITE_SLICE_BYTES {
+            // Share the connection budget fairly with world changes. World
+            // frames contain at most sixteen patches or two entity packets.
+            if frames < WRITE_SLICE_FRAMES / 2
+                && let Some((size, count)) = self.send_world_frame().await?
+            {
+                bytes += size;
+                frames += count;
+                if bytes >= WRITE_SLICE_BYTES {
+                    break;
+                }
+                continue;
+            }
             let Some((size, count)) = self.send_player_frame().await? else {
+                if frames <= WRITE_SLICE_FRAMES / 2
+                    && let Some((size, count)) = self.send_world_frame().await?
+                {
+                    bytes += size;
+                    frames += count;
+                    continue;
+                }
                 break;
             };
             bytes += size;
@@ -194,6 +285,12 @@ impl Client {
 
     /// The single connection writer commits removals before their chunk unload.
     pub async fn remove_players_before_unload(&mut self, column: (i32, i32)) -> Result<(), Error> {
+        let ids = self.world_observer.unload_ids(column);
+        for ids in ids.chunks(32) {
+            self.send(&mc_protocol::packets::client::RemoveEntities { entity_ids: ids }).await?;
+            glommio::executor().yield_now().await;
+        }
+        self.world_observer.unloaded(column);
         self.observer.before_unload(column)?;
         let mut frames = 0;
         while self.observer.has_unload_barrier() {
@@ -350,6 +447,9 @@ impl Client {
             self.send(&GameEvent { event: 13, value: 0.0 }).await?;
             self.send(&PlayerAbilities { flags: 0, flying_speed: 0.05, fov_modifier: 0.1 }).await?;
         }
+        if let Some(position) = update.block_resync {
+            self.resync_blocks(crate::world_sync::resync_cells(position)).await?;
+        }
         if let Some(health) = update.health {
             self.send(&SetHealth { health, food: 20, saturation: 5.0 }).await?;
         }
@@ -369,6 +469,7 @@ impl Client {
             let message = match damage.kind {
                 DamageKind::Fall => "You fell from a high place",
                 DamageKind::Void => "You fell out of the world",
+                DamageKind::Suffocation => "You suffocated in a wall",
                 DamageKind::Game => "You died",
             };
             self.send(&CombatKill { player_id: self.entity_id()?, message: Nbt::Str(message) })
@@ -481,7 +582,7 @@ impl Client {
             {
                 wake = wake.min(deadline);
             }
-            if self.observer.queued_frames() > 0 {
+            if self.observer.queued_frames() > 0 || self.world_observer.pending_work() {
                 wake = wake.min(Instant::now());
             }
             let read = future::or(

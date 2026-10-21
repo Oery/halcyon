@@ -38,6 +38,7 @@ struct Rendered {
     skin_parts: u8,
     revision: u64,
     sneaking: bool,
+    crouching: bool,
     sprinting: bool,
     health: f32,
     equipment: Rc<[mc_protocol::types::ItemStack; 6]>,
@@ -607,6 +608,7 @@ fn rendered(player: &PlayerSnapshot) -> Rendered {
         skin_parts: player.skin_parts,
         revision: player.revision,
         sneaking: player.sneaking,
+        crouching: player.crouching,
         sprinting: player.sprinting,
         health: player.health,
         equipment: player.equipment.clone(),
@@ -730,6 +732,7 @@ fn movement_frame(
     }
     if player.skin_parts != previous.skin_parts
         || player.sneaking != previous.sneaking
+        || player.crouching != previous.crouching
         || player.sprinting != previous.sprinting
         || player.health != previous.health
     {
@@ -758,6 +761,7 @@ fn metadata(player: &PlayerSnapshot) -> PlayerStateMetadata {
         entity_id: player.entity_id,
         skin_parts: player.skin_parts,
         sneaking: player.sneaking,
+        crouching: player.crouching,
         sprinting: player.sprinting,
         health: player.health,
     }
@@ -787,6 +791,7 @@ mod tests {
             transform: Transform { x, y: 64.0, z: 1.0, ..Transform::default() },
             skin_parts: 0x7f,
             sneaking: false,
+            crouching: false,
             sprinting: false,
             health: 20.0,
             equipment: Rc::new(std::array::from_fn(|_| mc_protocol::types::ItemStack::default())),

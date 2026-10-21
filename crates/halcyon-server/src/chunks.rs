@@ -183,6 +183,7 @@ pub async fn send_pending(client: &mut Client) -> Result<(), Error> {
             Residency::Terrain => {
                 let frame = cache.chunks.get(&pos).ok_or(Error::InvalidPlayerData)?;
                 client.send_chunk_parts(&frame.header, &frame.data, &cache.chunk_suffix).await?;
+                client.send_terrain_overlay(pos).await?;
             }
             Residency::Padding => {
                 client.packet_buffer.clear();

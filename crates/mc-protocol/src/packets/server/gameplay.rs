@@ -59,6 +59,32 @@ pub struct PlayerInput {
     pub flags: u8,
 }
 
+#[packet(Play, 0x42, Server)]
+pub struct UseItemOn {
+    #[format = "varint"]
+    pub hand: i32,
+    pub location: i64,
+    #[format = "varint"]
+    pub face: i32,
+    pub cursor_x: f32,
+    pub cursor_y: f32,
+    pub cursor_z: f32,
+    pub inside_block: bool,
+    pub world_border_hit: bool,
+    #[format = "varint"]
+    pub sequence: i32,
+}
+
+#[packet(Play, 0x43, Server)]
+pub struct UseItem {
+    #[format = "varint"]
+    pub hand: i32,
+    #[format = "varint"]
+    pub sequence: i32,
+    pub yaw: f32,
+    pub pitch: f32,
+}
+
 /// Prediction hashes never enter gameplay ownership. Keeping only the slot mask
 /// lets the server overwrite every predicted change without implementing HashOps.
 #[derive(Debug)]

@@ -62,6 +62,8 @@ pub enum Packets<'p> {
     SetPlayerMovementFlags(SetPlayerMovementFlags),
     ClientTickEnd(ClientTickEnd),
     PlayerLoaded(PlayerLoaded),
+    UseItemOn(UseItemOn),
+    UseItem(UseItem),
     PlayClientInformation(ClientInformation<'p>),
     ClientCommand(ClientCommand),
     ClickContainer(ClickContainer),
@@ -88,6 +90,8 @@ impl<'p> Packets<'p> {
             (0x29, State::Play) => Ok(Packets::PlayerAction(PlayerAction::decode_payload(buf)?)),
             (0x2A, State::Play) => Ok(Packets::PlayerCommand(PlayerCommand::decode_payload(buf)?)),
             (0x2B, State::Play) => Ok(Packets::PlayerInput(PlayerInput::decode_payload(buf)?)),
+            (0x42, State::Play) => Ok(Packets::UseItemOn(UseItemOn::decode_payload(buf)?)),
+            (0x43, State::Play) => Ok(Packets::UseItem(UseItem::decode_payload(buf)?)),
             (0x00, State::Handshake) => {
                 Ok(Packets::ServerListPing(ServerListPing::decode_payload(buf)?))
             }

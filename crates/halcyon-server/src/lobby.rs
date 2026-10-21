@@ -1,4 +1,4 @@
-//! One executor-local gameplay owner: 120 Hz actions, independent 20 Hz publication.
+//! One executor-local gameplay owner: 20 Hz actions and observer publication.
 //! Dropping a session never needs queue space.
 use glommio::channels::{local_channel, oneshot};
 use glommio::timer::Timer;
@@ -64,6 +64,7 @@ pub struct PlayerSnapshot {
     pub transform: Transform,
     pub skin_parts: u8,
     pub sneaking: bool,
+    pub crouching: bool,
     pub sprinting: bool,
     pub health: f32,
     pub equipment: Rc<[ItemStack; 6]>,
@@ -215,6 +216,13 @@ impl Session {
         }
     }
 
+    /// Trusted gameplay API for future server-driven participants. Network
+    /// PlayerInput packets do not opt human sessions into a second simulation.
+    #[allow(dead_code)]
+    pub fn drive(&self, input: Option<crate::movement::GroundInput>) -> bool {
+        self.ready() && self.submit(PlayerAction::Drive(input))
+    }
+
     pub fn accepted_transform(&self) -> Transform {
         self.input.accepted.get()
     }
@@ -321,6 +329,8 @@ type ColumnMove = (i32, Option<(i32, i32)>, (i32, i32));
 /// Read-only access to the current published lobby state.
 #[derive(Default)]
 pub struct Registry {
+    pub arena: crate::arena::Arena,
+    world_actions: std::collections::VecDeque<WorldAction>,
     players: HashMap<i32, Player>,
     uuids: HashSet<Uuid>,
     columns: HashMap<(i32, i32), HashSet<i32>>,
@@ -390,7 +400,8 @@ impl Registry {
     /// owner-task storage and sockets; this is neither RSS nor total memory.
     #[cfg(test)]
     pub(crate) fn capacity_payload_bytes(&self) -> usize {
-        self.players.capacity() * std::mem::size_of::<(i32, Player)>()
+        self.arena.capacity_payload_bytes()
+            + self.players.capacity() * std::mem::size_of::<(i32, Player)>()
             + self.uuids.capacity() * std::mem::size_of::<Uuid>()
             + self.columns.capacity() * std::mem::size_of::<((i32, i32), HashSet<i32>)>()
             + self
@@ -500,6 +511,7 @@ impl Registry {
                     skin_parts,
                     revision: 0,
                     sneaking: false,
+                    crouching: false,
                     sprinting: false,
                     health: 20.0,
                     equipment: Rc::new(std::array::from_fn(|_| ItemStack::default())),
@@ -558,6 +570,15 @@ impl Registry {
         notices: &mut Vec<Rc<Input>>,
     ) -> StepMetrics {
         let mut metrics = StepMetrics::default();
+        for _ in 0..64 {
+            let Some(action) = self.world_actions.pop_front() else {
+                break;
+            };
+            let result = self.arena.edit(world, action.pos, action.state);
+            let _ = action.reply.send(result);
+        }
+        self.arena.step(world, &mut self.last_entity_id);
+        let world = self.arena.view(world);
         for player in self.players.values_mut() {
             let input = &player.input;
             let had_teleport = player.state.life.pending_teleport().is_some();
@@ -565,7 +586,7 @@ impl Registry {
                 player.state.life.confirm(id);
             }
             let (update, movement) = player.state.advance(
-                world,
+                &world,
                 &mut input.proposals.borrow_mut(),
                 &mut input.actions.borrow_mut(),
                 now,
@@ -611,11 +632,13 @@ impl Registry {
             let old_column = player.snapshot.transform.chunk();
             let mut player_changed = false;
             let sneaking = player.state.movement.sneaking();
+            let crouching = player.state.movement.crouching();
             let sprinting = player.state.movement.sprinting();
             let health = player.state.life.health();
             let visible = player.state.life.visible(now);
             let generation = player.state.life.generation;
             if player.snapshot.sneaking != sneaking
+                || player.snapshot.crouching != crouching
                 || player.snapshot.sprinting != sprinting
                 || player.snapshot.health != health
                 || player.snapshot.visible != visible
@@ -628,6 +651,7 @@ impl Registry {
                     self.spatial_revision = self.spatial_revision.wrapping_add(1);
                 }
                 player.snapshot.sneaking = sneaking;
+                player.snapshot.crouching = crouching;
                 player.snapshot.sprinting = sprinting;
                 player.snapshot.health = health;
                 player.snapshot.visible = visible;
@@ -699,6 +723,12 @@ struct Registration {
     reply: oneshot::Sender<Result<i32, AdmissionError>>,
 }
 
+struct WorldAction {
+    pos: crate::arena::BlockPos,
+    state: halcyon_world::BlockStateId,
+    reply: oneshot::Sender<Result<(), crate::arena::EditError>>,
+}
+
 #[derive(Clone)]
 pub struct Lobby {
     registry: Rc<RefCell<Registry>>,
@@ -708,8 +738,13 @@ pub struct Lobby {
 }
 
 impl Lobby {
-    pub fn spawn(world: Arc<halcyon_world::World>, diagnostics: bool) -> Self {
-        let registry = Rc::new(RefCell::new(Registry::default()));
+    pub fn spawn(
+        world: Arc<halcyon_world::World>,
+        diagnostics: bool,
+    ) -> Result<Self, crate::arena::EditError> {
+        let mut state = Registry::default();
+        state.arena.initialize(&world)?;
+        let registry = Rc::new(RefCell::new(state));
         let (sender, receiver) = local_channel::new_bounded(REGISTRATION_CAPACITY);
         let owner = Rc::new(Signal::default());
         let metrics = Rc::new(Metrics::default());
@@ -722,7 +757,25 @@ impl Lobby {
             world,
         ))
         .detach();
-        Self { registry, registrations: Rc::new(sender), owner, metrics }
+        Ok(Self { registry, registrations: Rc::new(sender), owner, metrics })
+    }
+
+    /// Trusted arena edits only; player digging and placement remain disabled.
+    #[allow(dead_code)]
+    pub async fn set_block(
+        &self,
+        pos: crate::arena::BlockPos,
+        state: halcyon_world::BlockStateId,
+    ) -> Result<(), crate::arena::EditError> {
+        let (reply, response) = oneshot::oneshot();
+        {
+            let mut registry = self.registry.borrow_mut();
+            if registry.world_actions.len() == 64 {
+                return Err(crate::arena::EditError::Unavailable);
+            }
+            registry.world_actions.push_back(WorldAction { pos, state, reply });
+        }
+        response.await.map_err(|_| crate::arena::EditError::Unavailable)?
     }
 
     pub fn with_registry<T>(&self, read: impl FnOnce(&Registry) -> T) -> T {
@@ -875,7 +928,10 @@ async fn run_owner(
                     cpu_samples.record(elapsed);
                     ticks += 1;
                     max_tick = max_tick.max(elapsed);
-                    overruns += u64::from(elapsed.as_nanos() > 1_000_000_000 / 120);
+                    overruns += u64::from(
+                        elapsed.as_nanos()
+                            > 1_000_000_000 / u128::from(crate::simulation::SIMULATION_HZ),
+                    );
                     proposals += step.proposals;
                     collision_cells += step.collision_cells;
                     corrections += step.corrections;

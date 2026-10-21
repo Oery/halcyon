@@ -4,10 +4,92 @@ use std::mem::size_of;
 
 #[path = "collision_data.rs"]
 mod data;
+#[path = "falling_data.rs"]
+mod falling_data;
+#[path = "motion_data.rs"]
+mod motion_data;
+
+#[derive(Clone, Copy)]
+pub struct BlockProperties(u8);
+
+impl BlockProperties {
+    pub fn free(self) -> bool {
+        self.0 & 1 != 0
+    }
+    pub fn replaceable(self) -> bool {
+        self.0 & 2 != 0
+    }
+    pub fn suffocating(self) -> bool {
+        self.0 & 4 != 0
+    }
+    pub fn falls(self) -> bool {
+        self.0 & 8 != 0
+    }
+    pub fn entity_motion_effects(self) -> bool {
+        self.0 & 16 != 0
+    }
+}
+
+pub fn block_properties(id: BlockStateId) -> BlockProperties {
+    BlockProperties(falling_data::properties(id))
+}
 
 pub use data::{COLLISION_MAX_OFFSET, COLLISION_MIN_OFFSET};
 
 pub type BlockStateId = u16;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Surface {
+    #[default]
+    Ordinary,
+    Slime,
+    Honey,
+    Hay,
+    Unsupported,
+}
+
+/// Shared block properties, in vanilla's per-50-ms movement units. These are
+/// deliberately independent of item effects, attributes, and mutable terrain.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MotionInfo {
+    pub friction: f32,
+    pub speed: f32,
+    pub jump: f32,
+    pub bounce: f32,
+    pub fall_reduction: f32,
+    pub surface: Surface,
+}
+
+impl Default for MotionInfo {
+    fn default() -> Self {
+        Self {
+            friction: 0.6,
+            speed: 1.0,
+            jump: 1.0,
+            bounce: 0.0,
+            fall_reduction: 0.0,
+            surface: Surface::Ordinary,
+        }
+    }
+}
+
+/// Special dry surfaces are enabled only with authoritative static geometry.
+/// Other uncertain contexts (fluids, climbables, webs, dynamic shapes) cannot
+/// acquire support merely because their representative shape is empty.
+pub fn motion_info(id: BlockStateId) -> MotionInfo {
+    let state = state_info(id);
+    if state.flags.has_fluid() || state.contextual_geometry() {
+        return MotionInfo { surface: Surface::Unsupported, ..MotionInfo::default() };
+    }
+    motion_data::special_motion(id).unwrap_or_else(|| MotionInfo {
+        surface: if state.uncertain_motion() {
+            Surface::Unsupported
+        } else {
+            Surface::Ordinary
+        },
+        ..MotionInfo::default()
+    })
+}
 
 pub const MIN_BLOCK_Y: i32 = -64;
 pub const MAX_BLOCK_Y: i32 = 320;
@@ -184,7 +266,50 @@ mod tests {
     }
 
     #[test]
-    fn slabs_stairs_and_tall_shapes_keep_exact_geometry() {
+    fn ground_profiles_match_target_surface_properties_and_keep_media_disabled() {
+        let motion = |key| motion_info(block_state_id(key).unwrap() as BlockStateId);
+        assert_eq!(motion("minecraft:ice").friction, 0.98);
+        assert_eq!(motion("minecraft:blue_ice").friction, 0.989);
+        assert_eq!(motion("minecraft:soul_sand").speed, 0.4);
+        assert_eq!(motion("minecraft:honey_block").jump, 0.5);
+        assert_eq!(motion("minecraft:slime_block").bounce, 1.0);
+        for key in ["minecraft:sand", "minecraft:red_sand", "minecraft:gravel"] {
+            let properties = block_properties(block_state_id(key).unwrap() as u16);
+            assert!(properties.falls() && properties.suffocating());
+            assert!(!properties.free() && !properties.replaceable());
+        }
+        assert!(block_properties(1).suffocating());
+        assert!(!block_properties(block_state_id("minecraft:glass").unwrap() as u16).suffocating());
+        assert_eq!(motion("minecraft:shelf_mushroom[age=0,facing=north]").bounce, 0.75);
+        assert_eq!(
+            motion("minecraft:small_dripleaf[facing=west,half=lower,waterlogged=false]"),
+            MotionInfo::default()
+        );
+        assert_eq!(
+            motion("minecraft:small_dripleaf[facing=west,half=lower,waterlogged=true]").surface,
+            Surface::Unsupported
+        );
+        for key in [
+            "minecraft:ice",
+            "minecraft:soul_sand",
+            "minecraft:slime_block",
+            "minecraft:honey_block",
+            "minecraft:mud",
+        ] {
+            assert_ne!(motion(key).surface, Surface::Unsupported, "{key}");
+        }
+        for key in [
+            "minecraft:water[level=0]",
+            "minecraft:cobweb",
+            "minecraft:powder_snow",
+            "minecraft:ladder[facing=north,waterlogged=false]",
+        ] {
+            assert_eq!(motion(key).surface, Surface::Unsupported, "{key}");
+        }
+    }
+
+    #[test]
+    fn slabs_stairs_trapdoors_and_tall_shapes_keep_exact_geometry() {
         for (slab_type, min, max) in [("bottom", 0.0, 0.5), ("top", 0.5, 1.0), ("double", 0.0, 1.0)]
         {
             let slab = info(&format!("minecraft:oak_slab[type={slab_type},waterlogged=false]"));
@@ -193,6 +318,26 @@ mod tests {
                 slab.collision_boxes(),
                 &[Aabb { min: [0.0, min, 0.0], max: [1.0, max, 1.0] }]
             );
+        }
+        for (facing, min, max) in [
+            ("north", [0.0, 0.0, 0.8125], [1.0; 3]),
+            ("south", [0.0; 3], [1.0, 1.0, 0.1875]),
+            ("east", [0.0; 3], [0.1875, 1.0, 1.0]),
+            ("west", [0.8125, 0.0, 0.0], [1.0; 3]),
+        ] {
+            for (half, height) in [("bottom", 0.0), ("top", 0.8125)] {
+                let open = info(&format!(
+                    "minecraft:spruce_trapdoor[facing={facing},half={half},open=true,powered=false,waterlogged=false]"
+                ));
+                assert_eq!(open.collision_boxes(), &[Aabb { min, max }]);
+                let closed = info(&format!(
+                    "minecraft:spruce_trapdoor[facing={facing},half={half},open=false,powered=false,waterlogged=false]"
+                ));
+                assert_eq!(
+                    closed.collision_boxes(),
+                    &[Aabb { min: [0.0, height, 0.0], max: [1.0, height + 0.1875, 1.0] }]
+                );
+            }
         }
         for facing in ["north", "south", "east", "west"] {
             for half in ["top", "bottom"] {

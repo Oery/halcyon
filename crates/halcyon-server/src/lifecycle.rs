@@ -15,6 +15,7 @@ const DEATH_ANIMATION: Duration = Duration::from_secs(1);
 pub enum DamageKind {
     Fall,
     Void,
+    Suffocation,
     /// Used by arena damage APIs before a concrete game exists.
     #[allow(dead_code)]
     Game,
@@ -26,6 +27,7 @@ impl DamageKind {
         match self {
             Self::Fall => 10,
             Self::Void => 32,
+            Self::Suffocation => 22,
             Self::Game => 18,
         }
     }
@@ -166,18 +168,11 @@ impl PlayerLife {
         changed
     }
 
-    pub fn fall_damage(&mut self, distance: f64, now: Instant) -> DamageResult {
-        if !self.rules.fall_damage || !distance.is_finite() {
+    pub fn landing_damage(&mut self, amount: f32, now: Instant) -> DamageResult {
+        if !self.rules.fall_damage {
             return DamageResult::Ignored;
         }
-        self.damage(
-            Damage {
-                kind: DamageKind::Fall,
-                amount: (distance - 3.0).ceil().max(0.0) as f32,
-                source: None,
-            },
-            now,
-        )
+        self.damage(Damage { kind: DamageKind::Fall, amount, source: None }, now)
     }
 
     pub fn void_damage(&mut self, below_world: bool, now: Instant) -> DamageResult {
@@ -317,8 +312,8 @@ mod tests {
         life.rules.protected = false;
         life.rules.fall_damage = true;
         life.rules.void_damage = true;
-        assert_eq!(life.fall_damage(3.0, now), DamageResult::Ignored);
-        assert_eq!(life.fall_damage(3.1, now), DamageResult::Hurt { health: 19.0, died: false });
+        assert_eq!(life.landing_damage(0.0, now), DamageResult::Ignored);
+        assert_eq!(life.landing_damage(1.0, now), DamageResult::Hurt { health: 19.0, died: false });
         life.reset();
         for tick in 0..120 {
             life.void_damage(true, now + Duration::from_nanos(tick * 1_000_000_000 / 120));

@@ -1,7 +1,9 @@
 //! Fixed simulation deadlines and independently paced network publication.
 use std::time::{Duration, Instant};
 
-pub const SIMULATION_HZ: u64 = 120;
+// Vanilla movement uses discrete 50-ms steps. A higher-rate simulation is a
+// future milestone, not a change of units for these physics rules.
+pub const SIMULATION_HZ: u64 = 20;
 pub const MAX_CATCH_UP_STEPS: usize = 4;
 const PUBLICATION_INTERVAL: Duration = Duration::from_millis(50);
 const NANOS_PER_SECOND: u128 = 1_000_000_000;
@@ -63,12 +65,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rational_deadlines_keep_120_steps_and_20_publications_per_second() {
+    fn deadlines_keep_20_steps_and_publications_per_second() {
         let start = Instant::now();
         let mut clock = SimulationClock::new(start);
         let mut steps = 0;
         let mut publications = 0;
-        for _ in 0..120 {
+        for _ in 0..SIMULATION_HZ {
             let deadline = clock.next_deadline();
             assert_eq!(clock.poll(deadline - Duration::from_nanos(1)).steps, 0);
             let advance = clock.poll(deadline);
@@ -77,9 +79,9 @@ mod tests {
             assert_eq!(advance.skipped_steps, 0);
             assert_eq!(advance.lateness, Duration::ZERO);
         }
-        assert_eq!(steps, 120);
+        assert_eq!(steps, 20);
         assert_eq!(publications, 20);
-        assert_eq!(clock.next_deadline() - start, Duration::from_nanos(1_008_333_334));
+        assert_eq!(clock.next_deadline() - start, Duration::from_millis(1_050));
     }
 
     #[test]
@@ -88,9 +90,9 @@ mod tests {
         let mut clock = SimulationClock::new(start);
         let advance = clock.poll(start + Duration::from_secs(1));
         assert_eq!(advance.steps, 4);
-        assert_eq!(advance.skipped_steps, 116);
+        assert_eq!(advance.skipped_steps, 16);
         assert!(advance.publication);
-        assert!(advance.lateness > Duration::from_millis(990));
+        assert_eq!(advance.lateness, Duration::from_millis(950));
         assert_eq!(clock.poll(start + Duration::from_secs(1)), ClockAdvance::default());
         assert_eq!(clock.poll(clock.next_deadline()).steps, 1);
     }

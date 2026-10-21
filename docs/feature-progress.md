@@ -1,6 +1,6 @@
 # Halcyon feature progress
 
-Last reviewed: 2026-10-21. Target: Java Edition 26.3.
+Last reviewed: 2026-10-22. Target: Java Edition 26.3.
 
 All 335 features from the [feature assessment](halcyon-server-features.md), in the same order. This tracks available behavior; the assessment records scope and rationale.
 
@@ -37,17 +37,17 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Adventure mode | Not started |
 | Spectator mode | Not started |
 | Hardcore rules | Excluded |
-| Ground movement | Partial — collision-checked client movement; no server-driven physics. |
+| Ground movement | Done — 20 TPS input-driven ground physics and collision-checked human predictions; no speed/flight enforcement. |
 | Collision and stepping | Partial — static block shapes and stepping; contextual shapes unsupported. |
-| Sprinting and sneaking | Partial — sprint/sneak state, crouch clearance and edge protection. |
-| Jumping and falling | Partial — client jumps/falls and fall damage; no gravity simulation. |
+| Sprinting and sneaking | Done — ground speed, crouch clearance and sneak edge protection. |
+| Jumping and falling | Done — ground jumps, gravity, air control, jump timing and supported landing effects. |
 | Swimming and crawling | Not started |
 | Climbing | Not started |
-| Movement surfaces and media | Conditional |
+| Movement surfaces and media | Partial — dry friction, slowdown, jump and bounce surfaces, honey sliding and landing modifiers; unsupported media disabled. |
 | Flight permissions | Not started |
 | Movement abilities and attributes | Not started |
 | Teleportation | Done — validated destinations and position corrections. |
-| Initial spawning | Partial — imported map spawn; no team assignment. |
+| Initial spawning | Partial — imported spawn with bounded recovery to nearby clear supported terrain; no team assignment. |
 | Personal respawn points | Partial — per-player destinations; no team assignment. |
 | Death processing | Partial — death state and messages; no drops or match callbacks. |
 | Respawning | Done — same-world respawn/reset; inventory retained. |
@@ -79,7 +79,7 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Eating and drinking | Not started |
 | Status effects | Not started |
 | Splash and lingering effects | Conditional |
-| Environmental damage | Partial — fall and void damage. |
+| Environmental damage | Partial — fall damage with supported surface modifiers, void damage and block suffocation. |
 | Air and exposure state | Not started |
 | Death prevention | Not started |
 | Enchantment effects | Conditional |
@@ -134,14 +134,14 @@ Update this tracker when feature support changes. Packet definitions, static cli
 
 | Feature | Progress |
 | --- | --- |
-| Block states | Partial — imported states and terrain/shape queries; no mutation. |
+| Block states | Partial — imported states, authoritative queries and bounded game-owned terrain edits; no saving. |
 | Block placement | Not started |
 | Block breaking | Not started |
 | Break feedback | Not started |
 | Block drops | Conditional |
-| Interaction validation | Not started |
-| Predicted-action correction | Not started |
-| Neighbor and shape updates | Not started |
+| Interaction validation | Partial — disabled digging and item/block use rejected and corrected; no enabled block interactions. |
+| Predicted-action correction | Partial — block states and sequence acknowledgements restore rejected edits; collision corrections resend nearby terrain. |
+| Neighbor and shape updates | Partial — sand/gravel support changes; no general shape updates. |
 | Block entities | Not started |
 | Doors, trapdoors, and gates | Not started |
 | Beds and respawn anchors | Conditional |
@@ -161,14 +161,14 @@ Update this tracker when feature support changes. Packet definitions, static cli
 
 | Feature | Progress |
 | --- | --- |
-| Game ticking | Done — 120 TPS simulation. |
-| Scheduled block ticks | Not started |
+| Game ticking | Done — 20 TPS simulation; 120 Hz deferred to future performance work. |
+| Scheduled block ticks | Partial — delayed sand/gravel falls and stack support changes. |
 | Scheduled fluid ticks | Conditional |
 | Random ticks | Conditional |
 | Block-entity ticking | Not started |
-| Entity ticking | Partial — players only. |
+| Entity ticking | Partial — players and falling sand/gravel. |
 | Fluid simulation | Conditional |
-| Falling blocks | Conditional |
+| Falling blocks | Partial — sand, red sand and gravel fall and settle on supported static terrain; unsuccessful landings discard with drops disabled. Contextual geometry and special entity motion media are unavailable. |
 | Fire | Conditional |
 | Explosions | Conditional |
 | Lighting | Not started |
@@ -206,7 +206,7 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Structure generation | Excluded |
 | Features and decoration | Excluded |
 | World presets | Excluded |
-| Chunk streaming | Partial — read-only terrain; no block entities or real lighting. |
+| Chunk streaming | Partial — imported terrain plus current edits, including reloads; no block entities or real lighting. |
 | Chunk batch feedback | Done |
 | View distance | Done |
 | Simulation distance | Not started |
@@ -240,13 +240,13 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Feature | Progress |
 | --- | --- |
 | Entity identity and lifecycle | Partial — human players only. |
-| Entity tracking | Partial — players only. |
-| Entity synchronization | Partial — players only. |
-| Entity physics | Not started |
+| Entity tracking | Partial — players and falling sand/gravel, gated by delivered terrain. |
+| Entity synchronization | Partial — players and falling sand/gravel. |
+| Entity physics | Partial — player ground motion and sand/gravel falls; other movement media and entity types unavailable. |
 | Entity interaction | Not started |
 | Living-entity attributes | Not started |
 | Natural spawning | Excluded |
-| Explicit spawning | Partial — human joins and respawns; no other entities. |
+| Explicit spawning | Partial — human joins/respawns and sand/gravel falls from terrain edits. |
 | Despawning and persistence | Not started |
 | Mob decisions | Excluded |
 | Pathfinding and navigation | Excluded |
@@ -328,7 +328,7 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Command suggestions | Not started |
 | Command permissions | Not started |
 | Selectors and execution contexts | Excluded |
-| World and entity manipulation | Partial — player teleport, health and inventory changes. |
+| World and entity manipulation | Partial — player teleport, health, inventory and game-owned block changes. |
 | Data inspection and modification | Not started |
 | Command storage | Excluded |
 | Scoreboard logic and triggers | Not started |
@@ -410,7 +410,7 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Independent mutable match worlds | Not started |
 | Reset and teardown | Not started |
 | Arena audience isolation | Not started |
-| Supported-content validation | Partial — unknown block states rejected; no full content validation. |
+| Supported-content validation | Partial — unknown states, unsupported movement contacts and invalid destinations rejected; no complete arena-content validation. |
 | Map preparation and navigation anchors | Not started |
 | Live creative arena editor | Conditional |
 
@@ -420,7 +420,7 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | --- | --- |
 | Native bot participants | Not started |
 | Bot identity and visual representation | Not started |
-| Shared action/rule path | Partial — human movement/inventory/lifecycle; no bots. |
+| Shared action/rule path | Partial — human movement/inventory/lifecycle and owner-driven ground inputs; no bot participants. |
 | Perception and short-term memory | Not started |
 | Humanlike decisions and reaction timing | Not started |
 | Bot combat and item use | Not started |

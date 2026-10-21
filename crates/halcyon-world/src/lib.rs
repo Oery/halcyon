@@ -7,12 +7,27 @@ use thiserror::Error;
 
 pub use loader::{LoadedWorld, load_dir};
 pub use terrain::{
-    Aabb, BlockKind, BlockStateId, COLLISION_MAX_OFFSET, COLLISION_MIN_OFFSET, MAX_BLOCK_Y,
-    MIN_BLOCK_Y, SECTION_COUNT, Section, StateInfo, TerrainFlags, collision_catalog_bytes,
-    state_info, try_state_info,
+    Aabb, BlockKind, BlockProperties, BlockStateId, COLLISION_MAX_OFFSET, COLLISION_MIN_OFFSET,
+    MAX_BLOCK_Y, MIN_BLOCK_Y, MotionInfo, SECTION_COUNT, Section, StateInfo, Surface, TerrainFlags,
+    block_properties, collision_catalog_bytes, motion_info, state_info, try_state_info,
 };
 
 use std::sync::Arc;
+
+/// Authoritative block queries shared by imported terrain and arena overlays.
+pub trait BlockView {
+    fn block_at(&self, x: i32, y: i32, z: i32) -> Option<BlockStateId>;
+    fn contains_column(&self, x: i32, z: i32) -> bool;
+}
+
+impl BlockView for World {
+    fn block_at(&self, x: i32, y: i32, z: i32) -> Option<BlockStateId> {
+        World::block_at(self, x, y, z)
+    }
+    fn contains_column(&self, x: i32, z: i32) -> bool {
+        World::contains_column(self, x, z)
+    }
+}
 
 #[derive(Error, Debug)]
 pub enum LoadError {
