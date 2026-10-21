@@ -6,6 +6,8 @@ Halcyon is a Minecraft Java-edition minigame server built from scratch in Rust. 
 
 Supporting very large bot populations is a core design requirement. The server must be highly efficient and scale vertically, making effective use of the CPU cores and memory available on a single machine.
 
+The target authoritative simulation rate is **120 TPS for worlds with up to 100 players**, counting humans and bots together, giving each simulation step an approximately **8.33 ms** deadline. This is a per-world performance target; the server may host multiple worlds and a larger total population. Preserve supported vanilla mechanics and their real-time timing; a higher scheduling rate must not make gameplay run six times faster. Network publication, bot decisions, and maintenance may have independent cadences. Budget for future gameplay systems and measure tail latency and missed deadlines, rather than spending the full deadline on basic player replication. Extremely crowded lobbies need a separately measured service budget; maintaining 120 TPS with 1,000 players in one lobby is not a current requirement. The existing 50 ms lobby publication loop is the current implementation, not the target simulation clock.
+
 Halcyon does not aim for full feature parity with the official Minecraft server. Implement only the Minecraft features required by Halcyon's minigames, bots, and player experience. Design each feature around those needs rather than reproducing vanilla internals.
 
 Implementation principles:

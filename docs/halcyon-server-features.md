@@ -2,7 +2,7 @@
 
 This document evaluates every entry in the [vanilla feature inventory](vanilla-server-features.md), preserving its 295 feature names, ordering, and 17 categories. Sections 18–22 add capabilities specific to Halcyon. The baseline is Java Edition **26.3**. These are proposed product and engineering choices, not a list of completed features or a commitment to implement everything marked Include immediately.
 
-The intended platform supports combat, building, movement, and party games, including games populated by humanlike bots. Maps are imported; game logic is written in Rust. Running existing vanilla command-block or data-pack minigames is not a compatibility goal. No particular minigame lineup or numerical population target has been selected.
+The intended platform supports combat, building, movement, and party games, including games populated by humanlike bots. Maps are imported; game logic is written in Rust. Running existing vanilla command-block or data-pack minigames is not a compatibility goal. The performance target is 120 TPS for worlds with up to 100 players, counting humans and bots together. No particular minigame lineup or total server population target has been selected.
 
 **Redstone is explicitly out of scope and will not be reimplemented.** This excludes power generation and propagation, circuit components, powered block behavior, pistons, and vanilla redstone/automation machinery. Rust game handlers may react directly to player interactions or control arena state. Manual block interactions, audio, and non-redstone TNT mechanics are assessed separately; supporting them does not imply circuit support.
 
@@ -71,6 +71,8 @@ One release-mode run on 2026-10-21 produced the following results. Each case use
 | 1,024 | Dense | 16,368 | 3.35 ms | 4.71 ms |
 | 4,096 | Sparse | 16 | 123.8 µs | 132.9 µs |
 | 4,096 | Dense | 65,520 | 18.37 ms | 25.64 ms |
+
+These fixtures represent records in one lobby/world with only 16 observer sinks, not the same number of connected clients as player records. Halcyon's target simulation rate is 120 TPS for worlds with up to 100 total human and bot players, an approximately 8.33 ms deadline. Against that deadline, the dense 1,024-record mean of 3.35 ms consumes about 40% and its p95 of 4.71 ms about 57%, before networking and future gameplay systems. Those larger fixtures exceed the per-world target population. The current 50 ms publication interval does not demonstrate 120 TPS simulation. A 1,000-player lobby maintaining 120 TPS is not a current requirement; representative matches need substantial headroom for gameplay.
 
 For the dense 1,024-record case, estimated registry/player payload capacity was 451,666 bytes and observer payload capacity across all 16 sinks was 4,891,448 bytes. The dense 4,096-record case used 1,809,490 and 19,306,160 bytes respectively. These estimates count container payload capacities and retained data, sharing profile payloads once per player; they exclude hash controls, reference-count headers and allocator overhead and are not RSS measurements.
 
@@ -241,7 +243,7 @@ Conditional behavior is not activated merely because its block exists in an impo
 
 | Feature | Recommendation | Code size | Use case / rationale |
 | --- | --- | --- | --- |
-| Game ticking | Include | Medium | Authoritative gameplay needs a shared tick timeline; keep match timers distinct from connection deadlines. |
+| Game ticking | Include | Medium | Target 120 TPS authoritative simulation for worlds with up to 100 players, counting humans and bots together, with an approximately 8.33 ms deadline and headroom for gameplay systems. Preserve supported vanilla mechanics and real-time timing; keep publication, bot decisions, maintenance, and connection deadlines on appropriate independent schedules. |
 | Scheduled block ticks | Include | Medium | Reuse a queue for delayed supported non-redstone block behavior; scheduling does not imply circuit-component support. |
 | Scheduled fluid ticks | Conditional | Small | Add when fluids are enabled; the queue can reuse scheduling, but fluid simulation is a separate Large dependency. |
 | Random ticks | Conditional | Medium | Add when an enabled mechanic depends on vanilla random updates; the sampler does not implement crop growth or decay itself. |
@@ -562,6 +564,8 @@ These are deliberately substantial Includes: they directly deliver Halcyon's sta
 | Rankings, economy, and unlock systems | Conditional | Large | Add specific systems only when game design requires them; a broad platform does not automatically need a shop economy or ranked ladder. |
 
 ## 22. Scheduling and operational foundations
+
+The target authoritative simulation rate is **120 TPS for worlds with up to 100 players**, counting humans and bots together. The total server population may be larger across multiple worlds; this performance target does not set a server-wide admission limit. Increasing scheduling frequency must preserve supported vanilla mechanics and their real-time durations. Simulation, observer publication, bot decisions, and maintenance need explicit clock boundaries; a timer-constant change alone does not establish correct 120 TPS gameplay. Measure representative arena populations through 100 players, realistic observer counts and tail latency with future mechanics included. Distribute independent arenas across cores as that runtime is implemented. Extremely crowded lobbies may use a separate service budget; no requirement to maintain 120 TPS with 1,000 players in one lobby is established here.
 
 | Feature | Recommendation | Code size | Use case / rationale |
 | --- | --- | --- | --- |
