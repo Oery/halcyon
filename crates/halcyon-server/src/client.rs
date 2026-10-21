@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::{
+    chunks::{self, ChunkTracker},
     error::Error,
     lifecycle::{Keepalive, LOGIN_TIMEOUT, LoginProgress},
     packet::read_packet,
@@ -44,8 +45,7 @@ pub struct Client {
     pub pos: PlayerPosition,
     pub pending_teleport: Option<i32>,
     pub next_teleport_id: i32,
-    pub sent_chunks: std::collections::HashSet<(i32, i32)>,
-    pub view_distance: i32,
+    pub chunks: ChunkTracker,
     pub packet_buffer: Vec<u8>,
     login_deadline: Instant,
 }
@@ -76,8 +76,7 @@ impl Client {
             pos: PlayerPosition::default(),
             pending_teleport: None,
             next_teleport_id: 0,
-            sent_chunks: std::collections::HashSet::new(),
-            view_distance: 32,
+            chunks: ChunkTracker::new(now),
             packet_buffer: Vec::with_capacity(INITIAL_BUFFER),
             login_deadline: now + LOGIN_TIMEOUT,
         }
@@ -156,6 +155,8 @@ impl Client {
             if let Some(id) = self.keepalive.tick(now)? {
                 self.send(&PlayKeepAlive { id }).await?;
             }
+            let deadline = self.operation_deadline();
+            with_deadline(deadline, chunks::send_pending(self)).await?;
         } else if now >= self.login_deadline {
             return Err(Error::Timeout);
         }
@@ -203,7 +204,12 @@ impl Client {
                 }
                 buf.resize(size, 0);
             }
-            let wake = self.deadline();
+            let mut wake = self.deadline();
+            if self.ctx.state == State::Play
+                && let Some(deadline) = self.chunks.deadline()
+            {
+                wake = wake.min(deadline);
+            }
             let read = future::or(async { Some(self.stream.read(&mut buf[len..]).await) }, async {
                 Timer::new(wake.saturating_duration_since(Instant::now())).await;
                 None

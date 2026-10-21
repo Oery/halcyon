@@ -1,7 +1,8 @@
+use std::time::Instant;
+
 use mc_protocol::packets::client::{
-    ChunkBatchFinished, GameEvent, PLAYER_ENTITY_ID, PlayerAbilities, PlayerInfoUpdate,
-    SetCenterChunk, SetDefaultSpawnPosition, SetEntityMetadata, SetHealth, SyncPlayerPosition,
-    UnloadChunk,
+    GameEvent, PLAYER_ENTITY_ID, PlayerAbilities, PlayerInfoUpdate, SetDefaultSpawnPosition,
+    SetEntityMetadata, SetHealth, SyncPlayerPosition,
 };
 use mc_protocol::packets::{Packets, Payload};
 use mc_protocol::types::ProfileProperty;
@@ -88,6 +89,11 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
         }
         Packets::PlayClientInformation(p) => {
             client.ctx.skin_parts = p.skin_parts.0;
+            client.chunks.set_view_distance(p.render_distance);
+            client.chunks.reconcile(
+                &client.server.lobby,
+                ((client.pos.x.floor() as i32) >> 4, (client.pos.z.floor() as i32) >> 4),
+            );
             client
                 .send(&SetEntityMetadata {
                     entity_id: PLAYER_ENTITY_ID,
@@ -96,7 +102,9 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
                 .await?;
         }
         Packets::PlayKeepAliveResponse(p) => client.keepalive.acknowledge(p.id)?,
-        Packets::ChunkBatchReceived(_) => {}
+        Packets::ChunkBatchReceived(p) => {
+            client.chunks.acknowledge(p.chunks_per_tick, Instant::now())?
+        }
         Packets::ClientTickEnd(_) | Packets::PlayerLoaded(_) => {}
         _ => {}
     };
@@ -110,116 +118,7 @@ fn pack_block_pos(x: i32, y: i32, z: i32) -> i64 {
     (((x & 0x3FFFFFF) as i64) << 38) | (((z & 0x3FFFFFF) as i64) << 12) | ((y & 0xFFF) as i64)
 }
 
-async fn send_chunk(
-    client: &mut Client,
-    chunk: &std::sync::Arc<halcyon_world::Chunk>,
-) -> Result<(), Error> {
-    let server = std::sync::Arc::clone(&client.server);
-    let frame = server
-        .packets
-        .chunks
-        .get(&(chunk.x, chunk.z))
-        .ok_or_else(|| std::io::Error::other("missing cached chunk"))?;
-    client.send_chunk_parts(&frame.header, &frame.data, &server.packets.chunk_suffix).await
-}
-
-async fn send_empty_chunk(client: &mut Client, x: i32, z: i32) -> Result<(), Error> {
-    let server = std::sync::Arc::clone(&client.server);
-    let cache = &server.packets;
-    client.packet_buffer.clear();
-    client.packet_buffer.extend_from_slice(&cache.empty.header);
-    let offset = cache.empty_coordinates;
-    client.packet_buffer[offset..offset + 4].copy_from_slice(&x.to_be_bytes());
-    client.packet_buffer[offset + 4..offset + 8].copy_from_slice(&z.to_be_bytes());
-    client.send_buffered_chunk(&cache.empty.data, &cache.chunk_suffix).await
-}
-
-/// Desired chunk set: view-distance square around `(cx, cz)`, intersected
-/// with loaded chunks.
-fn wanted_chunks(
-    lobby: &halcyon_world::World,
-    cx: i32,
-    cz: i32,
-    view_distance: i32,
-) -> Vec<std::sync::Arc<halcyon_world::Chunk>> {
-    let mut out = Vec::new();
-    for dz in -view_distance..=view_distance {
-        for dx in -view_distance..=view_distance {
-            if let Some(chunk) = lobby.get(cx + dx, cz + dz) {
-                out.push(std::sync::Arc::clone(chunk));
-            }
-        }
-    }
-    out.sort_by_key(|c| {
-        let dx = c.x - cx;
-        let dz = c.z - cz;
-        dx * dx + dz * dz
-    });
-    out
-}
-
-/// Reconcile `sent_chunks` with the wanted set around the player's new
-/// chunk, plus a 1-wide ring of empty padding so edge chunks have the
-/// neighbors the client needs to mesh them. Unload far chunks first, then
-/// `SetCenterChunk` + one batch for newly visible chunks.
-async fn stream_chunks_around(client: &mut Client, cx: i32, cz: i32) -> Result<(), Error> {
-    let wanted = wanted_chunks(&client.server.lobby, cx, cz, client.view_distance);
-    let wanted_set: std::collections::HashSet<(i32, i32)> =
-        wanted.iter().map(|c| (c.x, c.z)).collect();
-    // Padding ring: neighbors of wanted chunks that aren't wanted (or
-    // loaded) themselves. Sorted nearest-first so the ground under the
-    // player resolves before the horizon.
-    let mut ring: Vec<(i32, i32)> = {
-        let mut ring_set = std::collections::HashSet::new();
-        for &(x, z) in &wanted_set {
-            for dz in -1..=1 {
-                for dx in -1..=1 {
-                    let n = (x + dx, z + dz);
-                    if !wanted_set.contains(&n) {
-                        ring_set.insert(n);
-                    }
-                }
-            }
-        }
-        let mut ring: Vec<(i32, i32)> = ring_set.into_iter().collect();
-        ring.sort_by_key(|&(x, z)| (x - cx) * (x - cx) + (z - cz) * (z - cz));
-        ring
-    };
-    let mut keep: std::collections::HashSet<(i32, i32)> = wanted_set.clone();
-    keep.extend(ring.iter().copied());
-
-    let mut gone: Vec<(i32, i32)> = client.sent_chunks.difference(&keep).copied().collect();
-    gone.sort_unstable();
-    for (x, z) in &gone {
-        client.sent_chunks.remove(&(*x, *z));
-        client.send(&UnloadChunk { chunk_x: *x, chunk_z: *z }).await?;
-    }
-
-    let fresh: Vec<_> =
-        wanted.into_iter().filter(|c| !client.sent_chunks.contains(&(c.x, c.z))).collect();
-    ring.retain(|pos| !client.sent_chunks.contains(pos));
-    if fresh.is_empty() && ring.is_empty() && gone.is_empty() {
-        return Ok(());
-    }
-    eprintln!("stream: center {cx},{cz}: +{} +ring{} -{}", fresh.len(), ring.len(), gone.len());
-    if fresh.is_empty() && ring.is_empty() {
-        return Ok(());
-    }
-    client.send(&SetCenterChunk { chunk_x: cx, chunk_z: cz }).await?;
-    client.send(&mc_protocol::packets::client::ChunkBatchStart).await?;
-    for chunk in &fresh {
-        send_chunk(client, chunk).await?;
-        client.sent_chunks.insert((chunk.x, chunk.z));
-    }
-    for &(x, z) in &ring {
-        send_empty_chunk(client, x, z).await?;
-        client.sent_chunks.insert((x, z));
-    }
-    client.send(&ChunkBatchFinished { batch_size: (fresh.len() + ring.len()) as i32 }).await?;
-    Ok(())
-}
-
-/// Apply a validated move; stream chunks when the chunk column changes.
+/// Apply a validated move; queue chunks when the chunk column changes.
 async fn move_player(
     client: &mut Client,
     x: f64,
@@ -244,7 +143,7 @@ async fn move_player(
     let cx = (x.floor() as i32) >> 4;
     let cz = (z.floor() as i32) >> 4;
     if (cx, cz) != (old_cx, old_cz) {
-        stream_chunks_around(client, cx, cz).await?;
+        client.chunks.reconcile(&client.server.lobby, (cx, cz));
     }
     Ok(())
 }
@@ -282,7 +181,6 @@ pub async fn enter_play(client: &mut Client) -> Result<(), Error> {
     let (sx, sy, sz, yaw, pitch) = client.server.lobby.spawn;
     let scx = (sx.floor() as i32) >> 4;
     let scz = (sz.floor() as i32) >> 4;
-    client.send(&SetCenterChunk { chunk_x: scx, chunk_z: scz }).await?;
     client.send(&GameEvent { event: 13, value: 0.0 }).await?;
     client
         .send(&SetDefaultSpawnPosition {
@@ -300,7 +198,7 @@ pub async fn enter_play(client: &mut Client) -> Result<(), Error> {
     client.pos.z = sz;
     client.pos.yaw = yaw;
     client.pos.pitch = pitch;
-    stream_chunks_around(client, scx, scz).await?;
+    client.chunks.reconcile(&client.server.lobby, (scx, scz));
 
     client
         .send(&SyncPlayerPosition {

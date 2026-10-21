@@ -8,6 +8,7 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
     match pkt {
         Packets::ClientInformation(p) => {
             client.ctx.skin_parts = p.skin_parts.0;
+            client.chunks.set_view_distance(p.render_distance);
         }
         Packets::ConfigPluginMessage(_) | Packets::ConfigKnownPacks(_) => {}
         Packets::AcknowledgeFinish(_) => {
@@ -16,7 +17,15 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
             }
             // Entity ID 0 is vanilla's unassigned sentinel (Entity.getId
             // throws on 0); the Default uses 1.
-            client.send(&PlayLogin::default()).await?;
+            client
+                .send(&PlayLogin {
+                    // Advertise the server cap so later client settings can
+                    // raise their effective radius without stale login limits.
+                    view_distance: crate::chunks::MAX_VIEW_DISTANCE,
+                    simulation_distance: crate::chunks::MAX_VIEW_DISTANCE,
+                    ..PlayLogin::default()
+                })
+                .await?;
             super::play::enter_play(client).await?;
             client.ctx.state = mc_protocol::State::Play;
             return Ok(());

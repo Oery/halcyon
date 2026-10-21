@@ -7,6 +7,7 @@ use crate::server::Server;
 
 mod auth;
 mod cache;
+mod chunks;
 mod client;
 mod encryption;
 mod error;
