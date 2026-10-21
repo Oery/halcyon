@@ -4,7 +4,6 @@ use syn::{Data, DataStruct, DeriveInput, Field, Fields, Type, parse_macro_input}
 
 mod attrs;
 mod format;
-mod utils;
 
 use crate::attrs::PacketAttributes;
 use crate::format::Format;
@@ -120,7 +119,7 @@ fn impl_payload_len(data: &DataStruct) -> proc_macro2::TokenStream {
 // FIXME: state field
 #[proc_macro_attribute]
 pub fn packet(attr: TokenStream, input: TokenStream) -> TokenStream {
-    let PacketAttributes { id, origin: _, state } = parse_macro_input!(attr as PacketAttributes);
+    let PacketAttributes { id, state } = parse_macro_input!(attr as PacketAttributes);
     let item = parse_macro_input!(input as DeriveInput);
     let name = &item.ident;
 

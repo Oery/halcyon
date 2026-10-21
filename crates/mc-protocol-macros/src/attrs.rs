@@ -5,7 +5,6 @@ use crate::State;
 
 pub struct PacketAttributes {
     pub id: i32,
-    pub origin: Origin,
     pub state: State,
 }
 
@@ -29,12 +28,12 @@ impl Parse for PacketAttributes {
         input.parse::<syn::Token![,]>()?;
 
         let origin_ident = input.parse::<syn::Ident>()?;
-        let origin = match origin_ident.to_string().as_str() {
+        let _origin = match origin_ident.to_string().as_str() {
             "Client" => Origin::Client,
             "Server" => Origin::Server,
             _ => panic!("Invalid Origin"),
         };
 
-        Ok(PacketAttributes { id, origin, state })
+        Ok(PacketAttributes { id, state })
     }
 }

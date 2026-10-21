@@ -44,7 +44,7 @@ impl<'p> PacketWriter<'p> for VarInt {
 
         while (val & !0x7F) != 0 {
             len += 1;
-            val = val >> 7;
+            val >>= 7;
         }
 
         len

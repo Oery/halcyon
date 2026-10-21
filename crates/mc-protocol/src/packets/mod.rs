@@ -123,6 +123,8 @@ impl<'p> Packets<'p> {
     }
 }
 
+// These traits deliberately support local, non-Send transports (Glommio).
+#[allow(async_fn_in_trait)]
 pub trait PacketWriter<'p>: Sized {
     fn read(buf: &mut &'p [u8]) -> DecodeResult<Self>;
 
@@ -131,6 +133,7 @@ pub trait PacketWriter<'p>: Sized {
     fn body_len(&self) -> usize;
 }
 
+#[allow(async_fn_in_trait)]
 pub trait Payload<'p>: Sized {
     const ID: VarInt;
     const STATE: State;
@@ -143,7 +146,7 @@ pub trait Payload<'p>: Sized {
     where
         W: AsyncWrite + Unpin;
 
-    async fn write_packet<'a, W>(&self, w: &mut W) -> EncodeResult
+    async fn write_packet<W>(&self, w: &mut W) -> EncodeResult
     where
         W: AsyncWrite + Unpin,
     {
