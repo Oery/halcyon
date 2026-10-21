@@ -55,6 +55,29 @@ pub struct PlayerSnapshot {
     pub revision: u64,
 }
 
+#[derive(Clone, Copy, Default)]
+pub struct ObserverMetrics {
+    pub visible: usize,
+    pub roster: usize,
+    pub queued_bytes: usize,
+    pub queued_frames: usize,
+    pub high_water_bytes: usize,
+    pub coalesced: u64,
+    pub sent_bytes: u64,
+}
+
+impl ObserverMetrics {
+    fn accumulate(&mut self, observer: Self) {
+        self.visible = self.visible.saturating_add(observer.visible);
+        self.roster = self.roster.saturating_add(observer.roster);
+        self.queued_bytes = self.queued_bytes.saturating_add(observer.queued_bytes);
+        self.queued_frames = self.queued_frames.saturating_add(observer.queued_frames);
+        self.high_water_bytes = self.high_water_bytes.max(observer.high_water_bytes);
+        self.coalesced = self.coalesced.saturating_add(observer.coalesced);
+        self.sent_bytes = self.sent_bytes.saturating_add(observer.sent_bytes);
+    }
+}
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum AdmissionError {
     #[error("the lobby is full")]
@@ -110,6 +133,7 @@ struct Input {
     changed: Signal,
     owner: Rc<Signal>,
     coalesced: Cell<u64>,
+    observer_metrics: Cell<ObserverMetrics>,
 }
 
 impl Input {
@@ -122,6 +146,7 @@ impl Input {
             changed: Signal::default(),
             owner,
             coalesced: Cell::new(0),
+            observer_metrics: Cell::new(ObserverMetrics::default()),
         }
     }
 }
@@ -151,6 +176,10 @@ impl Session {
 
     pub fn publish_skin_parts(&self, skin_parts: u8) {
         self.input.skin_parts.set(Some(skin_parts));
+    }
+
+    pub fn record_observer(&self, metrics: ObserverMetrics) {
+        self.input.observer_metrics.set(metrics);
     }
 
     pub fn poll_changed(&self, cx: &mut Context<'_>) -> Poll<()> {
@@ -568,8 +597,12 @@ async fn run_owner(
                 overruns += u64::from(elapsed > TICK_INTERVAL);
                 if diagnostics && Instant::now() >= report_at {
                     let registry = registry.borrow();
+                    let mut observers = ObserverMetrics::default();
+                    for player in registry.players.values().filter(|player| player.active) {
+                        observers.accumulate(player.input.observer_metrics.get());
+                    }
                     eprintln!(
-                        "lobby: players={} reserved={} ticks={} max_tick_us={} overruns={} registration_slice_peak={} registration_queue={} registration_queue_peak={} coalesced={} sent_bytes={} slow_clients={}",
+                        "lobby: players={} reserved={} ticks={} max_tick_us={} overruns={} registration_slice_peak={} registration_queue={} registration_queue_peak={} coalesced={} sent_bytes={} slow_clients={} visible_edges={} roster_entries={} queued_bytes={} queued_frames={} observer_high_water_bytes={} observer_coalesced={} observer_sent_bytes={}",
                         registry.active_count(),
                         registry.players.len(),
                         ticks,
@@ -580,7 +613,14 @@ async fn run_owner(
                         metrics.registration_peak.replace(0),
                         registry.coalesced,
                         metrics.sent_bytes.get(),
-                        metrics.slow_clients.get()
+                        metrics.slow_clients.get(),
+                        observers.visible,
+                        observers.roster,
+                        observers.queued_bytes,
+                        observers.queued_frames,
+                        observers.high_water_bytes,
+                        observers.coalesced,
+                        observers.sent_bytes,
                     );
                     report_at = Instant::now() + Duration::from_secs(5);
                     ticks = 0;
