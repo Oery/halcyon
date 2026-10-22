@@ -218,6 +218,34 @@ fn survey_raised_water() {
     }
 }
 
+/// Gold pressure plates (checkpoints): where they are, sorted by height.
+#[test]
+#[ignore = "opt-in survey of a real map for navigation work"]
+fn survey_checkpoints() {
+    let world = load_world();
+    let plates: std::collections::HashSet<u16> = halcyon_world::blockstates::BLOCK_STATES
+        .iter()
+        .filter(|(key, _)| key.starts_with("minecraft:light_weighted_pressure_plate"))
+        .map(|&(_, id)| id as u16)
+        .collect();
+    let mut nav = NavService::new(Budget::Unlimited);
+    let mut found = Vec::new();
+    for x in -128..=128 {
+        for z in -228..=28 {
+            for y in halcyon_world::MIN_BLOCK_Y..halcyon_world::MAX_BLOCK_Y {
+                if world.block_at(x, y, z).is_some_and(|id| plates.contains(&id)) {
+                    found.push([x, y, z]);
+                }
+            }
+        }
+    }
+    found.sort_by_key(|c| c[1]);
+    for cell in &found {
+        eprintln!("  plate {cell:?} stand={:?}", nav.stand(&world, *cell).map(|s| s.feet_y));
+    }
+    eprintln!("{} gold plates", found.len());
+}
+
 /// Why lily pads near spawn are or are not navigation nodes.
 #[test]
 #[ignore = "opt-in survey of a real map for navigation work"]
@@ -345,9 +373,17 @@ fn geometric_route() {
     for _ in 0..40 {
         settle.step(&world, crate::movement::MovementInput::default());
     }
-    let start = super::stand::cell_of(settle.transform());
+    // HALCYON_ROUTE_FROM / HALCYON_ROUTE_TO ("x,y,z") examine one leg, such
+    // as between two checkpoints.
+    let cell = |name: &str| {
+        let text = std::env::var(name).ok()?;
+        let mut parts = text.split(',').map(|p| p.trim().parse::<i32>().ok());
+        Some([parts.next()??, parts.next()??, parts.next()??])
+    };
+    let start = cell("HALCYON_ROUTE_FROM").unwrap_or(super::stand::cell_of(settle.transform()));
     let mut nav = NavService::new(Budget::Unlimited);
-    let goal = nav.detect_goal(&world, start, 128).expect("goal");
+    let goal =
+        cell("HALCYON_ROUTE_TO").or_else(|| nav.detect_goal(&world, start, 128)).expect("goal");
     let started = std::time::Instant::now();
     // Dijkstra-ish weighted search over candidate estimates.
     let mut open = BinaryHeap::new();
