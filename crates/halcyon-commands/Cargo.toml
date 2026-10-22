@@ -1,0 +1,8 @@
+[package]
+name = "halcyon-commands"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+halcyon-commands-macros = { version = "0.1.0", path = "../halcyon-commands-macros" }

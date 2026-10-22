@@ -39,6 +39,7 @@ pub struct PlayerAction {
 
 impl PlayerAction {
     // 26.3 added CHANGE_DESTROY_DIRECTION; older versions' action ordinals differ.
+    pub const START_DESTROY_BLOCK: i32 = 0;
     pub const DROP_ALL_ITEMS: i32 = 4;
     pub const DROP_ITEM: i32 = 5;
     pub const SWAP_ITEM_WITH_OFFHAND: i32 = 7;
@@ -56,6 +57,12 @@ pub struct PlayerCommand {
 
 #[packet(Play, 0x2B, Server)]
 pub struct PlayerInput {
+    pub flags: u8,
+}
+
+#[packet(Play, 0x28, Server)]
+pub struct PlayerAbilitiesRequest {
+    /// The client may only request the flying bit (0x02).
     pub flags: u8,
 }
 

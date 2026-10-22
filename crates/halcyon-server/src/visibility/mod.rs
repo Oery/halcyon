@@ -4,7 +4,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 
 use mc_protocol::error::EncodeError;
+use mc_protocol::packets::client::PlayerInfoGameMode;
 use mc_protocol::packets::client::PlayerInfoRemove;
+use mc_protocol::types::GameMode;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -53,6 +55,7 @@ struct Rendered {
 
 enum Delivery {
     RosterAdd(Vec<(i32, Uuid)>),
+    RosterModes(Vec<(i32, GameMode)>),
     RosterRemove(i32),
     Spawn(PlayerSnapshot),
     Remove(i32),
@@ -63,6 +66,7 @@ impl Delivery {
     fn id(&self) -> i32 {
         match self {
             Self::RosterAdd(entries) => entries.first().map_or(0, |(id, _)| *id),
+            Self::RosterModes(entries) => entries.first().map_or(0, |(id, _)| *id),
             Self::RosterRemove(entity_id) | Self::Remove(entity_id) => *entity_id,
             Self::Spawn(player) | Self::Move(player) => player.entity_id,
         }
@@ -79,6 +83,9 @@ struct Frame {
 #[derive(Default)]
 pub struct Observer {
     roster: HashMap<i32, Uuid>,
+    /// Missing entries have the client's initial Survival mode.
+    roster_modes: HashMap<i32, GameMode>,
+    pending_modes: HashSet<i32>,
     rendered: HashMap<i32, Rendered>,
     latest: HashMap<i32, PlayerSnapshot>,
     motion_waiting: VecDeque<i32>,
@@ -197,6 +204,7 @@ impl Observer {
         }
 
         // Tab membership is independent of terrain and includes the local player.
+        let batches_before = self.roster_batches;
         while self.roster_batches < ROSTER_BATCHES_PER_PUBLICATION {
             let mut entries = Vec::new();
             let mut bodies = Vec::new();
@@ -233,6 +241,33 @@ impl Observer {
                 delivery: Delivery::RosterAdd(entries),
                 unload_barrier: false,
             })?;
+        }
+
+        if roster_changed || batches_before != self.roster_batches {
+            // Mode changes are rare roster events, independent of entity visibility.
+            // In-flight updates retain their delivered baseline until fully sent.
+            let modes: Vec<_> = registry
+                .players()
+                .filter(|player| {
+                    let id = player.entity_id;
+                    (self.roster.contains_key(&id) || self.pending_roster.contains(&id))
+                        && !self.pending_modes.contains(&id)
+                        && self.roster_modes.get(&id).copied().unwrap_or_default()
+                            != player.game_mode
+                })
+                .map(|player| (player.entity_id, player.profile.uuid, player.game_mode))
+                .collect();
+            for batch in modes.chunks(ROSTER_BATCH_ENTRIES) {
+                let players: Vec<_> = batch.iter().map(|(_, uuid, mode)| (*uuid, *mode)).collect();
+                self.push(Frame {
+                    bytes: encode(&PlayerInfoGameMode { players: &players })?,
+                    frames: 1,
+                    delivery: Delivery::RosterModes(
+                        batch.iter().map(|(id, _, mode)| (*id, *mode)).collect(),
+                    ),
+                    unload_barrier: false,
+                })?;
+            }
         }
 
         // Ordinary movement looks up only the cached nearby identities. It does
@@ -409,6 +444,7 @@ impl Observer {
         use std::mem::size_of;
         size_of::<Self>()
             + self.roster.capacity() * size_of::<(i32, Uuid)>()
+            + self.roster_modes.capacity() * size_of::<(i32, GameMode)>()
             + self.rendered.capacity() * size_of::<(i32, Rendered)>()
             + self.latest.capacity() * size_of::<(i32, PlayerSnapshot)>()
             + self.resident.capacity() * size_of::<Column>()
@@ -420,6 +456,7 @@ impl Observer {
                 * size_of::<i32>()
             + (self.reliable.capacity() + self.priority.capacity()) * size_of::<Frame>()
             + (self.pending_roster.capacity()
+                + self.pending_modes.capacity()
                 + self.pending_spawns.capacity()
                 + self.pending_removals.capacity()
                 + self.pending_departures.capacity()
@@ -432,6 +469,18 @@ impl Observer {
                 .chain(self.priority.iter())
                 .filter(|frame| !matches!(frame.delivery, Delivery::RosterAdd(_)))
                 .map(|frame| frame.bytes.len())
+                .sum::<usize>()
+            + self
+                .active
+                .iter()
+                .chain(self.reliable.iter())
+                .chain(self.priority.iter())
+                .map(|frame| match &frame.delivery {
+                    Delivery::RosterModes(entries) => {
+                        entries.capacity() * size_of::<(i32, GameMode)>()
+                    }
+                    _ => 0,
+                })
                 .sum::<usize>()
     }
 

@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use mc_protocol::packets::Packets;
 use mc_protocol::packets::client::{
-    GameEvent, PlayerAbilities, SetDefaultSpawnPosition, SetEntityMetadata, SetHealth,
+    GameEvent, SetDefaultSpawnPosition, SetEntityMetadata, SetHealth,
 };
 use mc_protocol::packets::server::PlayerAction as PlayerActionPacket;
 
@@ -12,6 +12,10 @@ use crate::inventory::InventoryAction;
 
 pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), Error> {
     match pkt {
+        Packets::ChatCommand(p) => crate::commands::execute(p.command, client).await?,
+        Packets::CommandSuggestion(p) => {
+            crate::commands::suggest(p.text, p.transaction_id, client).await?;
+        }
         Packets::ConfirmTeleportation(p) => {
             if client.pending_teleport == Some(p.teleport_id) {
                 if !p.x.is_finite()
@@ -102,6 +106,11 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
                 client.propose_position();
             }
         }
+        Packets::PlayerAbilitiesRequest(p) => {
+            if let Some(session) = &client.session {
+                session.submit(crate::player::PlayerAction::SetFlying(p.flags & 0x02 != 0));
+            }
+        }
         Packets::PlayerCommand(p) => {
             if p.entity_id != client.entity_id()? {
                 return Ok(());
@@ -134,6 +143,18 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
             }
         }
         Packets::PlayerAction(p) => {
+            if p.action == PlayerActionPacket::START_DESTROY_BLOCK {
+                if p.face > 5 {
+                    return Err(Error::InvalidPlayerData);
+                }
+                let broken = crate::interaction::BlockBreak {
+                    sequence: p.sequence,
+                    pos: crate::arena::unpack(p.location),
+                };
+                if client.session.as_ref().is_some_and(|session| session.break_block(broken)) {
+                    return Ok(());
+                }
+            }
             if let Some(session) = &client.session {
                 match p.action {
                     PlayerActionPacket::DROP_ALL_ITEMS | PlayerActionPacket::DROP_ITEM => {
@@ -145,8 +166,7 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
                     _ => {}
                 }
             }
-            // Disabled digging still has client-side predictions. Acknowledge
-            // their sequence and restore authority rather than leaving ghost air.
+            // Restore unsupported digging and overflowed predictions before acknowledging.
             if matches!(p.action, 0..=3) {
                 client.resync_blocks([crate::arena::unpack(p.location)]).await?;
                 client
@@ -281,6 +301,8 @@ async fn send_skin(client: &mut Client) -> Result<(), Error> {
     Ok(())
 }
 pub async fn enter_play(client: &mut Client) -> Result<(), Error> {
+    let server = client.server.clone();
+    client.send_encoded(&server.packets.commands).await?;
     send_skin(client).await?;
     let crate::lobby::Transform { x: sx, y: sy, z: sz, yaw, pitch, .. } = client.pos;
     let scx = (sx.floor() as i32) >> 4;
@@ -294,7 +316,7 @@ pub async fn enter_play(client: &mut Client) -> Result<(), Error> {
             pitch,
         })
         .await?;
-    client.send(&PlayerAbilities { flags: 0x00, flying_speed: 0.05, fov_modifier: 0.1 }).await?;
+    client.send_abilities().await?;
     client.send(&SetHealth { health: 20.0, food: 20, saturation: 5.0 }).await?;
 
     client.chunks.reconcile(&client.server.lobby, (scx, scz));

@@ -118,6 +118,7 @@ pub struct MovementState {
     sprinting: bool,
     fall_distance: f64,
     powder_walk: bool,
+    flying: bool,
     pub motion: MotionState,
     colliders: Vec<Aabb>,
     step_heights: Vec<f64>,
@@ -190,6 +191,7 @@ impl MovementState {
             sprinting: false,
             fall_distance: 0.0,
             powder_walk: false,
+            flying: false,
             motion: MotionState::default(),
             colliders: Vec::with_capacity(64),
             step_heights: Vec::with_capacity(16),
@@ -218,6 +220,14 @@ impl MovementState {
 
     pub fn set_powder_snow_walk(&mut self, enabled: bool) {
         self.powder_walk = enabled;
+    }
+
+    pub fn set_flying(&mut self, enabled: bool) {
+        if self.flying != enabled {
+            self.fall_distance = 0.0;
+            self.motion = MotionState::default();
+        }
+        self.flying = enabled;
     }
 
     fn shape_context(&self, descending: bool) -> ShapeContext {
@@ -410,14 +420,21 @@ impl MovementState {
             } else if !water.touching() && climbing(terrain, self.transform) {
                 self.fall_distance = 0.0;
             }
-            let swimming = proposal.sprinting
+            let swimming = !self.flying
+                && proposal.sprinting
                 && water.touching()
                 && (self.swimming || (water.eyes && water.feet));
-            let pose = select_pose(self.transform, proposal.sneaking, swimming, &self.colliders);
+            let pose = select_pose(
+                self.transform,
+                proposal.sneaking && !self.flying,
+                swimming,
+                &self.colliders,
+            );
             let height = pose_height(pose);
             let bounds = player_box_with_height(self.transform, height);
             let mut requested = delta;
-            if proposal.sneaking
+            if !self.flying
+                && proposal.sneaking
                 && pose != PlayerPose::Swimming
                 && delta[1] <= 0.0
                 && (self.transform.on_ground
@@ -473,7 +490,7 @@ impl MovementState {
             } else {
                 InsideEffects::default()
             };
-            if water.touching() || water_after.touching() {
+            if self.flying || water.touching() || water_after.touching() {
                 self.fall_distance = 0.0;
             } else if resolved[1] < 0.0 {
                 self.fall_distance -= f64::from(resolved[1] as f32);
@@ -503,7 +520,7 @@ impl MovementState {
             self.sneaking = proposal.sneaking;
             self.pose = select_pose(
                 accepted,
-                proposal.sneaking,
+                proposal.sneaking && !self.flying,
                 swimming && water_after.touching(),
                 &self.colliders,
             );

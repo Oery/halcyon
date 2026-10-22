@@ -11,6 +11,14 @@ use crate::inventory::InventorySlot;
 use crate::lobby::{Profile, Session, Transform};
 
 impl Client {
+    pub async fn send_abilities(&mut self) -> Result<(), Error> {
+        self.send(&mc_protocol::packets::client::PlayerAbilities {
+            flags: self.game_mode.ability_flags(),
+            flying_speed: 0.05,
+            fov_modifier: 0.1,
+        })
+        .await
+    }
     pub fn entity_id(&self) -> Result<i32, Error> {
         self.session.as_ref().map(Session::entity_id).ok_or(Error::UnexpectedResponse)
     }
@@ -73,17 +81,22 @@ impl Client {
     ) -> Result<(), Error> {
         use crate::lifecycle::{DamageKind, TELEPORT_TIMEOUT};
         use mc_protocol::packets::client::{
-            CombatKill, GameEvent, PlayerAbilities, Respawn, SetContainerContent, SetContainerSlot,
-            SetCursorItem, SetHealth, SetHeldItemResponse, SyncPlayerPosition,
+            CombatKill, GameEvent, Respawn, SetContainerContent, SetContainerSlot, SetCursorItem,
+            SetHealth, SetHeldItemResponse, SyncPlayerPosition,
         };
         use mc_protocol::types::Nbt;
+        let mode_changed =
+            update.game_mode.is_some_and(|mode| mode.current != self.game_mode.current);
+        if let Some(mode) = update.game_mode {
+            self.game_mode = mode;
+        }
         if update.respawn {
             self.send(&Respawn {
                 dimension_type: 0,
                 dimension_name: "minecraft:overworld",
                 hashed_seed: 0,
-                game_mode: 0,
-                previous_game_mode: 0,
+                game_mode: self.game_mode.current as i32,
+                previous_game_mode: self.game_mode.previous.map_or(0, |mode| mode as i32 + 1),
                 is_debug: false,
                 is_flat: false,
                 death_location: None,
@@ -97,7 +110,12 @@ impl Client {
                 update.teleport.map_or(self.pos.chunk(), |teleport| teleport.destination.chunk());
             self.chunks.resend_center(&self.server.lobby, center);
             self.send(&GameEvent { event: 13, value: 0.0 }).await?;
-            self.send(&PlayerAbilities { flags: 0, flying_speed: 0.05, fov_modifier: 0.1 }).await?;
+        }
+        if mode_changed {
+            self.send(&GameEvent { event: 3, value: self.game_mode.current as i32 as f32 }).await?;
+        }
+        if update.game_mode.is_some() || update.respawn {
+            self.send_abilities().await?;
         }
         if let Some(position) = update.block_resync {
             self.resync_blocks(crate::world_sync::resync_cells(position)).await?;

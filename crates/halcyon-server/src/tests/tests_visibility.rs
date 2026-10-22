@@ -15,6 +15,7 @@ pub(super) fn player(id: i32, x: f64, revision: u64) -> PlayerSnapshot {
     let info =
         encode(&PlayerInfoUpdate { uuid, username: &username, properties: Vec::new() }).unwrap();
     PlayerSnapshot {
+        game_mode: Default::default(),
         entity_id: id,
         profile: Rc::new(Profile { uuid, username, info }),
         transform: Transform { x, y: 64.0, z: 1.0, ..Transform::default() },
@@ -76,6 +77,47 @@ fn drain(observer: &mut Observer) -> Vec<(i32, Vec<u8>)> {
     assert_eq!(observer.queued_bytes(), 0);
     assert_eq!(observer.queued_frames(), 0);
     out
+}
+
+#[test]
+fn roster_modes_follow_delivered_baselines_even_without_resident_terrain() {
+    use mc_protocol::types::GameMode;
+    let mut far = player(1, 160.0, 1);
+    far.game_mode = GameMode::Spectator;
+    let mut observer = Observer::default();
+    let registry = Registry::from_snapshots(vec![far.clone()], 1);
+    observer.reconcile(&registry, 0, &HashSet::new()).unwrap();
+    // A second mode replaces authority while the first admission is in flight.
+    far.game_mode = GameMode::Creative;
+    let registry = Registry::from_snapshots(vec![far.clone()], 2);
+    observer.reconcile(&registry, 0, &HashSet::new()).unwrap();
+    let initial = drain(&mut observer);
+    assert_eq!(initial.len(), 2);
+    assert_eq!(&initial[0].1[..2], &[0x09, 1]);
+    assert_eq!(initial[1].0, PlayerInfoUpdate::ID.0);
+    assert_eq!(&initial[1].1[..2], &[0x04, 1]);
+    assert_eq!(initial[1].1.last(), Some(&3));
+    assert_eq!(observer.roster_modes[&1], GameMode::Spectator);
+    // Delivery schedules reconciliation even if authority stops changing.
+    observer.reconcile(&registry, 0, &HashSet::new()).unwrap();
+    let correction = drain(&mut observer);
+    assert_eq!(correction.len(), 1);
+    assert_eq!(correction[0].1.last(), Some(&1));
+    assert_eq!(observer.roster_modes[&1], GameMode::Creative);
+    assert_eq!(observer.visible_count(), 0);
+
+    let mut late = Observer::default();
+    late.reconcile(&registry, 0, &HashSet::new()).unwrap();
+    drain(&mut late);
+    assert_eq!(late.roster_modes[&1], GameMode::Creative);
+
+    far.game_mode = GameMode::Survival;
+    let registry = Registry::from_snapshots(vec![far], 3);
+    observer.reconcile(&registry, 0, &HashSet::new()).unwrap();
+    assert_eq!(drain(&mut observer)[0].1.last(), Some(&0));
+    assert!(!observer.roster_modes.contains_key(&1));
+    observer.reconcile(&registry, 0, &HashSet::new()).unwrap();
+    assert!(drain(&mut observer).is_empty());
 }
 
 #[test]

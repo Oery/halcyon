@@ -30,6 +30,7 @@ const INITIAL_BUFFER: usize = 1_024;
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct Client {
+    pub game_mode: crate::player::GameModeState,
     pub stream: ClientStream<TcpStream>,
     pub ctx: Context,
     pub server: Arc<Server>,
@@ -71,6 +72,7 @@ impl Client {
     pub fn new(stream: TcpStream, server: Arc<Server>, lobby: Lobby) -> Self {
         let now = Instant::now();
         Self {
+            game_mode: Default::default(),
             stream: ClientStream::new(stream),
             ctx: Context::default(),
             server,

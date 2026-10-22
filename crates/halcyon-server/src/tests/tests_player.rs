@@ -1,5 +1,109 @@
 use super::*;
 
+#[test]
+fn creative_flight_is_requested_revoked_and_reset_with_authoritative_abilities() {
+    use glommio::channels::oneshot;
+    let world = ground_world(&[]);
+    let mut player = PlayerState::new(Transform { x: 8.5, y: 64.0, z: 8.5, ..Default::default() });
+    player.life.rules.protected = false;
+    let mut proposals = ProposalQueue::default();
+    let mut actions = ActionQueue::default();
+    let now = Instant::now();
+    actions.push(0, PlayerAction::SetFlying(true));
+    let (update, _) = player.advance(&world, &mut proposals, &mut actions, now, false);
+    assert_eq!(update.game_mode.unwrap().ability_flags(), 0);
+    let (reply, _) = oneshot::oneshot();
+    actions.push(0, PlayerAction::SetGameMode { mode: GameMode::Creative, reply });
+    actions.push(0, PlayerAction::SetFlying(true));
+    actions.push(
+        0,
+        PlayerAction::Damage(Damage { kind: DamageKind::Game, amount: 30.0, source: None }),
+    );
+    let (update, _) = player.advance(&world, &mut proposals, &mut actions, now, false);
+    assert_eq!(update.game_mode.unwrap().ability_flags(), 0x0f);
+    assert!(player.game_mode.flying);
+    assert_eq!(player.life.health(), 20.0);
+    actions.push(0, PlayerAction::Reset);
+    let (update, _) = player.advance(&world, &mut proposals, &mut actions, now, false);
+    assert!(update.respawn);
+    assert!(!update.game_mode.unwrap().flying);
+    assert_eq!(update.game_mode.unwrap().ability_flags(), 0x0d);
+    let teleport = update.teleport.unwrap();
+    player.life.confirm(teleport.id);
+    actions.push(1, PlayerAction::SetFlying(true));
+    let (reply, _) = oneshot::oneshot();
+    actions.push(1, PlayerAction::SetGameMode { mode: GameMode::Survival, reply });
+    let (update, _) = player.advance(&world, &mut proposals, &mut actions, now, false);
+    assert_eq!(update.game_mode.unwrap().ability_flags(), 0);
+    assert!(!player.game_mode.flying);
+}
+
+#[test]
+fn game_mode_changes_are_authoritative_coalesced_and_retained_on_respawn() {
+    use futures_lite::future::block_on;
+    use glommio::channels::oneshot;
+    let world = ground_world(&[]);
+    let spawn = Transform { x: 8.5, y: 64.0, z: 8.5, ..Default::default() };
+    let mut player = PlayerState::new(spawn);
+    let mut actions = ActionQueue::default();
+    let mut proposals = ProposalQueue::default();
+    let mut merged = PlayerUpdate::default();
+    for mode in [GameMode::Creative, GameMode::Spectator] {
+        let (reply, response) = oneshot::oneshot();
+        assert!(actions.push(0, PlayerAction::SetGameMode { mode, reply }));
+        assert_ne!(player.game_mode.current, mode);
+        let (update, _) =
+            player.advance(&world, &mut proposals, &mut actions, Instant::now(), false);
+        assert_eq!(block_on(response).unwrap(), Ok(()));
+        merged.merge(update);
+    }
+    assert_eq!(
+        merged.game_mode.unwrap(),
+        GameModeState {
+            current: GameMode::Spectator,
+            previous: Some(GameMode::Creative),
+            flying: false
+        }
+    );
+    let (reply, response) = oneshot::oneshot();
+    actions.push(0, PlayerAction::SetGameMode { mode: GameMode::Spectator, reply });
+    let (update, _) = player.advance(&world, &mut proposals, &mut actions, Instant::now(), false);
+    assert_eq!(block_on(response).unwrap(), Ok(()));
+    assert!(update.game_mode.is_none());
+    assert_eq!(player.game_mode.previous, Some(GameMode::Creative));
+
+    actions.push(0, PlayerAction::Reset);
+    let (reply, response) = oneshot::oneshot();
+    actions.push(0, PlayerAction::SetGameMode { mode: GameMode::Survival, reply });
+    let (update, _) = player.advance(&world, &mut proposals, &mut actions, Instant::now(), false);
+    assert_eq!(block_on(response).unwrap(), Err(PlayerActionError::StaleLife));
+    assert!(update.respawn);
+    assert_eq!(update.game_mode, merged.game_mode);
+    assert_eq!(player.game_mode.current, GameMode::Spectator);
+    // Switching identity does not replace the protected lobby's gameplay rules.
+    assert!(player.life.rules.protected);
+}
+
+#[test]
+fn a_pending_teleport_rejects_game_mode_actions_without_mutation() {
+    use glommio::channels::oneshot;
+    let mut player = PlayerState::new(Transform::default());
+    player.life.teleport(Transform::default()).unwrap();
+    let mut actions = ActionQueue::default();
+    let (reply, response) = oneshot::oneshot();
+    actions.push(0, PlayerAction::SetGameMode { mode: GameMode::Creative, reply });
+    let (update, _) = player.advance(
+        &empty_world(),
+        &mut ProposalQueue::default(),
+        &mut actions,
+        Instant::now(),
+        false,
+    );
+    assert_eq!(futures_lite::future::block_on(response).unwrap(), Err(PlayerActionError::NotReady));
+    assert!(update.game_mode.is_none());
+    assert_eq!(player.game_mode, GameModeState::default());
+}
+
 fn empty_world() -> World {
     World::from_loaded(halcyon_world::LoadedWorld {
         chunks: Vec::new(),

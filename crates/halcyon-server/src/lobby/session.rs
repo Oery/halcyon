@@ -9,7 +9,7 @@ use mc_protocol::packets::client::InteractionHand;
 use mc_protocol::types::ItemStack;
 
 use super::{ObserverMetrics, Transform};
-use crate::interaction::{BlockUse, UseQueue};
+use crate::interaction::{BlockBreak, BlockInteraction, BlockQueue, BlockUse};
 use crate::inventory::InventoryAction;
 use crate::lifecycle::{Damage, PlayerRules};
 use crate::movement::{MovementProposal, ProposalQueue};
@@ -50,7 +50,7 @@ pub(super) struct Input {
     pub(super) transform: Cell<Option<Transform>>,
     pub(super) proposals: RefCell<ProposalQueue>,
     pub(super) actions: RefCell<ActionQueue>,
-    pub(super) uses: RefCell<UseQueue>,
+    pub(super) block_actions: RefCell<BlockQueue>,
     pub(super) accepted: Cell<Transform>,
     pub(super) generation: Cell<u64>,
     pub(super) ready: Cell<bool>,
@@ -74,7 +74,7 @@ impl Input {
             transform: Cell::new(None),
             proposals: RefCell::new(ProposalQueue::default()),
             actions: RefCell::new(ActionQueue::default()),
-            uses: RefCell::new(UseQueue::default()),
+            block_actions: RefCell::new(BlockQueue::default()),
             accepted: Cell::new(Transform::default()),
             generation: Cell::new(0),
             ready: Cell::new(false),
@@ -152,7 +152,17 @@ impl Session {
 
     /// The owner acknowledges the sequence once the use is accepted or rejected.
     pub fn use_block(&self, used: BlockUse) -> bool {
-        self.input.uses.borrow_mut().push(used)
+        self.input
+            .block_actions
+            .borrow_mut()
+            .push(self.input.generation.get(), BlockInteraction::Use(used))
+    }
+
+    pub fn break_block(&self, broken: BlockBreak) -> bool {
+        self.input
+            .block_actions
+            .borrow_mut()
+            .push(self.input.generation.get(), BlockInteraction::Break(broken))
     }
 
     pub fn inventory(&self, action: InventoryAction) {

@@ -126,6 +126,11 @@ pub struct ChatAcknowledgement {
     pub message_count: i32,
 }
 
+#[packet(Play, 0x07, Server)]
+pub struct ChatCommand<'p> {
+    pub command: &'p str,
+}
+
 #[packet(Play, 0x0D, Server)]
 pub struct ClientTickEnd;
 
