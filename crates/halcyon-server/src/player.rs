@@ -15,7 +15,7 @@ use crate::inventory::{
 };
 use crate::lifecycle::{Damage, DamageKind, DamageResult, PlayerLife, PlayerRules, Teleport};
 use crate::lobby::Transform;
-use crate::movement::{Advance, GroundInput, MovementState, ProposalQueue};
+use crate::movement::{Advance, MovementInput, MovementState, ProposalQueue};
 
 const ACTIONS_PER_STEP: usize = 4;
 const MAX_ACTIONS: usize = 32;
@@ -31,7 +31,7 @@ pub enum PlayerAction {
     Reset,
     Inventory(InventoryAction),
     /// Trusted owner input; None returns to client-predicted movement.
-    Drive(Option<GroundInput>),
+    Drive(Option<MovementInput>),
     EditInventory {
         edit: InventoryEdit,
         reply: glommio::channels::oneshot::Sender<Result<ItemStack, InventoryEditError>>,
@@ -160,7 +160,7 @@ pub struct PlayerState {
     pub life: PlayerLife,
     pub inventory: Inventory,
     pub equipment: Rc<[ItemStack; 6]>,
-    ground_input: Option<GroundInput>,
+    movement_input: Option<MovementInput>,
     resync_after: Option<Instant>,
 }
 
@@ -171,7 +171,7 @@ impl PlayerState {
             life: PlayerLife::new(transform),
             inventory: Inventory::default(),
             equipment: Rc::new(std::array::from_fn(|_| ItemStack::default())),
-            ground_input: None,
+            movement_input: None,
             resync_after: None,
         }
     }
@@ -187,19 +187,19 @@ impl PlayerState {
             && let Some(teleport) = self.life.teleport(transform)
         {
             self.movement.reset(transform);
-            self.ground_input = None;
+            self.movement_input = None;
             proposals.clear();
             update.teleport = Some(teleport);
         }
     }
 
-    /// Synchronize to already-resolved authority, preserving its valid crouch
+    /// Synchronize to already-resolved authority, preserving its valid compact
     /// pose and fall baseline. A standing-only teleport check could reject a
     /// correction inside a low tunnel and silently leave the client desynced.
     fn correct_movement(&mut self, proposals: &mut ProposalQueue, update: &mut PlayerUpdate) {
         if let Some(teleport) = self.life.teleport(self.movement.transform()) {
             self.movement.motion = Default::default();
-            self.ground_input = None;
+            self.movement_input = None;
             proposals.clear();
             update.teleport = Some(teleport);
         }
@@ -240,8 +240,8 @@ impl PlayerState {
             if died {
                 update.death = Some(damage);
                 self.inventory.cancel_drag();
-                self.ground_input = None;
-                self.movement.motion = Default::default();
+                self.movement_input = None;
+                self.movement.reset(self.movement.transform());
             }
         }
     }
@@ -339,10 +339,10 @@ impl PlayerState {
                         && input
                             .is_none_or(|input| input.yaw.is_finite() && input.pitch.is_finite())
                     {
-                        if self.ground_input.is_some() != input.is_some() {
+                        if self.movement_input.is_some() != input.is_some() {
                             self.movement.motion = Default::default();
                         }
-                        self.ground_input = input;
+                        self.movement_input = input;
                         proposals.clear();
                     }
                 }
@@ -365,7 +365,7 @@ impl PlayerState {
             proposals.clear();
             return (update, None);
         }
-        let movement = if let Some(input) = self.ground_input {
+        let movement = if let Some(input) = self.movement_input {
             proposals.clear();
             Some(self.movement.step(world, input))
         } else if proposals.is_empty() {

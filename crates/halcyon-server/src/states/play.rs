@@ -91,7 +91,7 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
             }
         }
         Packets::PlayerInput(p) => {
-            let input = crate::movement::GroundInput::from_flags(
+            let input = crate::movement::MovementInput::from_flags(
                 p.flags,
                 client.proposed.yaw,
                 client.proposed.pitch,

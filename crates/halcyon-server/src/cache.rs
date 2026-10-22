@@ -98,6 +98,31 @@ impl PacketCache {
                 tags: tags.into_iter().map(|name| Tag { name, entries: vec![] }).collect(),
             }
         }));
+        // Client current calculation must use the same block membership as
+        // the owner's fluid catalog. Keep the existing block tags in this group.
+        tagged
+            .iter_mut()
+            .find(|registry| registry.registry == "minecraft:block")
+            .expect("configuration includes built-in block tags")
+            .tags
+            .push(Tag {
+                name: "minecraft:blocks_fluid_flow",
+                entries: mc_protocol::data::builtin_tags::BLOCKS_FLUID_FLOW
+                    .iter()
+                    .copied()
+                    .map(VarInt)
+                    .collect(),
+            });
+        // Built-in fluid registry IDs, verified against the official 26.3 client:
+        // empty=0, flowing_water=1, water=2, flowing_lava=3, lava=4.
+        // Missing fluid tags make the vanilla client treat water as air.
+        tagged.push(TaggedRegistry {
+            registry: "minecraft:fluid",
+            tags: vec![
+                Tag { name: "minecraft:water", entries: vec![VarInt(2), VarInt(1)] },
+                Tag { name: "minecraft:lava", entries: vec![VarInt(4), VarInt(3)] },
+            ],
+        });
         configuration.push(encode(&UpdateTags { registries: tagged }).await?);
         configuration.push(encode(&FinishConfiguration).await?);
 

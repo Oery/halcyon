@@ -55,6 +55,16 @@ pub struct AddTransientBlock {
 /// The player entry in the Minecraft Java 26.3 entity-type registry.
 pub const PLAYER_ENTITY_TYPE: i32 = 159;
 
+/// Supported live player poses in protocol 777. Crawling uses Swimming without
+/// the entity's active-swimming flag; death is encoded separately from health.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PlayerPose {
+    #[default]
+    Standing = 0,
+    Swimming = 3,
+    Crouching = 5,
+}
+
 /// Protocol 777 Entity/LivingEntity/Avatar metadata, checked against the target
 /// client's accessors: flags 0, pose 6, health 9, displayed skin parts 16.
 #[derive(Debug)]
@@ -62,8 +72,8 @@ pub struct PlayerStateMetadata {
     pub entity_id: i32,
     pub skin_parts: u8,
     pub sneaking: bool,
-    /// The crouching pose can persist under a ceiling after Shift is released.
-    pub crouching: bool,
+    pub pose: PlayerPose,
+    pub swimming: bool,
     pub sprinting: bool,
     pub health: f32,
 }
@@ -84,18 +94,14 @@ impl<'p> Payload<'p> for PlayerStateMetadata {
         VarInt(self.entity_id).write(w).await?;
         0u8.write(w).await?;
         VarInt(0).write(w).await?;
-        ((u8::from(self.sneaking) << 1) | (u8::from(self.sprinting) << 3)).write(w).await?;
+        ((u8::from(self.sneaking) << 1)
+            | (u8::from(self.sprinting) << 3)
+            | (u8::from(self.swimming) << 4))
+            .write(w)
+            .await?;
         6u8.write(w).await?;
         VarInt(20).write(w).await?;
-        VarInt(if self.health <= 0.0 {
-            7
-        } else if self.crouching {
-            5
-        } else {
-            0
-        })
-        .write(w)
-        .await?;
+        VarInt(if self.health <= 0.0 { 7 } else { self.pose as i32 }).write(w).await?;
         9u8.write(w).await?;
         VarInt(3).write(w).await?;
         self.health.write(w).await?;

@@ -109,13 +109,17 @@ fn encode_indirect_section(ids: &[u32], anvil: &[i64], out: &mut Vec<u8>) {
     }
     let anvil_bpe = bits_for_palette(palette_len);
     let mut nonzero = 0u16;
+    let mut fluids = 0u16;
     for i in 0..4096 {
-        if ids.get(read_packed(anvil, anvil_bpe, i) as usize).copied().unwrap_or(0) != 0 {
+        let id = ids[read_packed(anvil, anvil_bpe, i) as usize] as BlockStateId;
+        if id != 0 {
             nonzero += 1;
         }
+        fluids += u16::from(crate::state_info(id).flags.has_fluid());
     }
     out.extend_from_slice(&nonzero.to_be_bytes());
-    out.extend_from_slice(&0u16.to_be_bytes()); // fluid count unknown; 0
+    // 26.3's client skips fluid interaction in sections reporting zero fluids.
+    out.extend_from_slice(&fluids.to_be_bytes());
     out.push(bpe as u8);
     write_varint(palette_len as u32, out);
     for id in ids {
@@ -147,8 +151,13 @@ pub(super) fn encode_air_section(out: &mut Vec<u8>) {
 fn encode_single_valued(ids: &[u32], out: &mut Vec<u8>) {
     let id = ids.first().copied().unwrap_or(0);
     let nonzero = if id == 0 { 0u16 } else { 4096u16 };
+    let fluids = if crate::state_info(id as BlockStateId).flags.has_fluid() {
+        4096u16
+    } else {
+        0u16
+    };
     out.extend_from_slice(&nonzero.to_be_bytes());
-    out.extend_from_slice(&0u16.to_be_bytes()); // fluid count
+    out.extend_from_slice(&fluids.to_be_bytes());
     out.push(0x00);
     write_varint(id, out);
 }

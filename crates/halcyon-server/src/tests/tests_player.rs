@@ -36,29 +36,33 @@ fn ground_world(obstacles: &[(usize, usize, usize, u16)]) -> World {
 }
 
 #[test]
-fn corrections_preserve_crouch_authority_inside_low_clearance() {
-    use crate::movement::MovementProposal;
-    // A top slab leaves 1.5 blocks of clearance; the adjacent block is a wall.
-    let world = ground_world(&[(8, 1, 8, 15250), (9, 0, 8, 1)]);
-    let spawn = Transform { x: 8.5, y: 64.0, z: 8.5, ..Default::default() };
-    let mut player = PlayerState::new(spawn);
-    let mut proposals = ProposalQueue::default();
-    let mut actions = ActionQueue::default();
-    proposals.push(MovementProposal { transform: spawn, sneaking: true, sprinting: false });
-    player.advance(&world, &mut proposals, &mut actions, Instant::now(), false);
-    assert!(player.movement.crouching());
-    proposals.push(MovementProposal {
-        transform: Transform { x: 9.0, ..spawn },
-        sneaking: false,
-        sprinting: false,
-    });
-    let (update, movement) =
+fn corrections_preserve_compact_authority_inside_low_clearance() {
+    use crate::movement::{MovementProposal, PlayerPose};
+    // Top slab: crouching clearance. Full ceiling: crawling clearance.
+    // An adjacent wall triggers the existing authoritative correction path.
+    for (ceiling, pose) in [(15250, PlayerPose::Crouching), (1, PlayerPose::Swimming)] {
+        let world = ground_world(&[(8, 1, 8, ceiling), (9, 0, 8, 1)]);
+        let spawn = Transform { x: 8.5, y: 64.0, z: 8.5, ..Default::default() };
+        let mut player = PlayerState::new(spawn);
+        let mut proposals = ProposalQueue::default();
+        let mut actions = ActionQueue::default();
+        proposals.push(MovementProposal { transform: spawn, sneaking: true, sprinting: false });
         player.advance(&world, &mut proposals, &mut actions, Instant::now(), false);
-    assert!(movement.unwrap().correction);
-    assert_eq!(update.teleport.unwrap().destination, player.movement.transform());
-    assert!(player.movement.crouching());
-    assert!(!player.movement.sneaking());
-    assert!(proposals.is_empty());
+        assert_eq!(player.movement.pose(), pose);
+        proposals.push(MovementProposal {
+            transform: Transform { x: 9.0, ..spawn },
+            sneaking: false,
+            sprinting: false,
+        });
+        let (update, movement) =
+            player.advance(&world, &mut proposals, &mut actions, Instant::now(), false);
+        assert!(movement.unwrap().correction);
+        assert_eq!(update.teleport.unwrap().destination, player.movement.transform());
+        assert_eq!(player.movement.pose(), pose);
+        assert!(!player.movement.swimming());
+        assert!(!player.movement.sneaking());
+        assert!(proposals.is_empty());
+    }
 }
 
 #[test]
@@ -145,7 +149,7 @@ fn driven_motion_and_queued_inputs_end_at_teleport_and_life_boundaries() {
     let world = ground_world(&[]);
     let spawn = Transform { x: 8.5, y: 64.0, z: 8.5, on_ground: true, ..Default::default() };
     let mut player = PlayerState::new(spawn);
-    let input = GroundInput { forward: true, jumping: true, ..Default::default() };
+    let input = MovementInput { forward: true, jumping: true, ..Default::default() };
     let mut actions = ActionQueue::default();
     let mut proposals = ProposalQueue::default();
     let now = Instant::now();
@@ -159,7 +163,7 @@ fn driven_motion_and_queued_inputs_end_at_teleport_and_life_boundaries() {
     }
     let (update, _) = player.advance(&world, &mut proposals, &mut actions, now, false);
     assert_eq!(player.movement.motion.velocity, [0.0; 3]);
-    assert!(player.ground_input.is_none());
+    assert!(player.movement_input.is_none());
     assert!(actions.pending.is_empty());
     player.life.confirm(update.teleport.unwrap().id);
     player.advance(&world, &mut proposals, &mut actions, now, false);
@@ -171,7 +175,7 @@ fn driven_motion_and_queued_inputs_end_at_teleport_and_life_boundaries() {
     let (update, _) = player.advance(&world, &mut proposals, &mut actions, now, false);
     assert!(update.respawn);
     assert_eq!(player.movement.motion.velocity, [0.0; 3]);
-    assert!(player.ground_input.is_none());
+    assert!(player.movement_input.is_none());
     player.life.confirm(update.teleport.unwrap().id);
     player.life.rules.protected = false;
     actions.push(player.life.generation, PlayerAction::Drive(Some(input)));
@@ -181,10 +185,10 @@ fn driven_motion_and_queued_inputs_end_at_teleport_and_life_boundaries() {
     );
     player.advance(&world, &mut proposals, &mut actions, now, false);
     assert!(!player.life.alive());
-    assert!(player.ground_input.is_none());
+    assert!(player.movement_input.is_none());
     assert_eq!(player.movement.motion.velocity, [0.0; 3]);
     let (update, _) = player.advance(&world, &mut proposals, &mut actions, now, true);
     assert!(update.respawn && player.life.alive());
-    assert!(player.ground_input.is_none());
+    assert!(player.movement_input.is_none());
     assert_eq!(player.movement.motion.velocity, [0.0; 3]);
 }

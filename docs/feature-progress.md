@@ -41,9 +41,9 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Collision and stepping | Partial — static block shapes and stepping; contextual shapes unsupported. |
 | Sprinting and sneaking | Done — ground speed, crouch clearance and sneak edge protection. |
 | Jumping and falling | Done — ground jumps, gravity, air control, jump timing and supported landing effects. |
-| Swimming and crawling | Not started |
+| Swimming and crawling | Done — water travel, sprint swimming, currents, shoreline exits and swim/crawl pose transitions; air and drowning remain unavailable. |
 | Climbing | Not started |
-| Movement surfaces and media | Partial — dry friction, slowdown, jump and bounce surfaces, honey sliding and landing modifiers; unsupported media disabled. |
+| Movement surfaces and media | Partial — dry surfaces, honey sliding, landing modifiers and water, including aquatic plants and supported waterlogged geometry; lava, bubble columns, climbing and webs disabled. |
 | Flight permissions | Not started |
 | Movement abilities and attributes | Not started |
 | Teleportation | Done — validated destinations and position corrections. |
@@ -52,7 +52,7 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Death processing | Partial — death state and messages; no drops or match callbacks. |
 | Respawning | Done — same-world respawn/reset; inventory retained. |
 | Dimension transitions | Not started |
-| Player poses and actions | Partial — standing, crouching and dying. |
+| Player poses and actions | Partial — standing, crouching, swimming/crawling and dying. |
 | End completion flow | Excluded |
 
 ## 3. Combat and survival
@@ -242,7 +242,7 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Entity identity and lifecycle | Partial — human players only. |
 | Entity tracking | Partial — players and falling sand/gravel, gated by delivered terrain. |
 | Entity synchronization | Partial — players and falling sand/gravel. |
-| Entity physics | Partial — player ground motion and sand/gravel falls; other movement media and entity types unavailable. |
+| Entity physics | Partial — player ground/water motion, swimming/crawling and sand/gravel falls; other movement media and entity types unavailable. |
 | Entity interaction | Not started |
 | Living-entity attributes | Not started |
 | Natural spawning | Excluded |
@@ -420,7 +420,7 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | --- | --- |
 | Native bot participants | Not started |
 | Bot identity and visual representation | Not started |
-| Shared action/rule path | Partial — human movement/inventory/lifecycle and owner-driven ground inputs; no bot participants. |
+| Shared action/rule path | Partial — human movement/inventory/lifecycle and owner-driven ground/water inputs; no bot participants. |
 | Perception and short-term memory | Not started |
 | Humanlike decisions and reaction timing | Not started |
 | Bot combat and item use | Not started |

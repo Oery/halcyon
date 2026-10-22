@@ -31,6 +31,7 @@ impl Terrain for Map {
 
     fn cell(&self, x: i32, y: i32, z: i32) -> Option<TerrainCell> {
         self.blocks.get(&(x, y, z)).map(|&(shapes, uncertain)| TerrainCell {
+            fluid: Default::default(),
             shapes,
             uncertain,
             contextual: false,
@@ -184,10 +185,10 @@ fn crouch_stays_below_ceiling_and_edge_backoff_keeps_support() {
         sneaking: true,
         sprinting: false,
     }));
-    assert!(state.advance_with(&map, &mut queue).crouching);
+    assert_eq!(state.advance_with(&map, &mut queue).pose, PlayerPose::Crouching);
     propose(&mut queue, position(0.5, 1.0, 0.5));
     let result = state.advance_with(&map, &mut queue);
-    assert!(result.crouching);
+    assert_eq!(result.pose, PlayerPose::Crouching);
     assert!(!result.sneaking);
 
     let mut map = Map::default();

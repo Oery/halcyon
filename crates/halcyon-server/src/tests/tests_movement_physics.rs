@@ -15,6 +15,7 @@ impl Terrain for Plane<'_> {
             _ => return None,
         };
         Some(TerrainCell {
+            fluid: halcyon_world::fluid_info(id),
             shapes: state_info(id).collision_boxes(),
             uncertain: false,
             contextual: false,
@@ -107,7 +108,7 @@ fn owner_driven_ground_trajectories_match_the_target_client() {
             8
         };
         for tick in 0..steps {
-            let input = GroundInput {
+            let input = MovementInput {
                 forward: !falling && !(mode == "stop" && tick >= 4),
                 jumping: matches!(mode, "jump" | "sprint_jump" | "ceiling") && tick == 0,
                 sprinting: matches!(mode, "sprint" | "sprint_jump"),
@@ -143,7 +144,7 @@ fn landing_modifiers_honey_slides_and_sneak_suppression_are_shared() {
     let mut damage = None;
     for _ in 0..14 {
         let result = state
-            .step_with(&Plane(14379, ""), GroundInput { sneaking: true, ..Default::default() });
+            .step_with(&Plane(14379, ""), MovementInput { sneaking: true, ..Default::default() });
         damage = result.landed_fall_damage.or(damage);
     }
     assert_eq!(damage, Some(1.0));
@@ -156,7 +157,7 @@ fn landing_modifiers_honey_slides_and_sneak_suppression_are_shared() {
     }
     state.reset(Transform { x: 1.24, y: 3.0, z: 0.5, ..Default::default() });
     state.motion.velocity[1] = -0.5;
-    let result = state.step_with(&map, GroundInput::default());
+    let result = state.step_with(&map, MovementInput::default());
     assert!(!result.correction);
     assert!((state.motion.velocity[1] - (-0.13 * AIR_DRAG)).abs() < 1e-12);
     assert_eq!(state.fall_distance, 0.0);

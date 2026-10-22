@@ -7,7 +7,8 @@ fn player_metadata_uses_the_target_clients_serializer_ids() {
             entity_id: 1,
             skin_parts: 0x7f,
             sneaking: true,
-            crouching: true,
+            pose: PlayerPose::Crouching,
+            swimming: false,
             sprinting: true,
             health: 20.0,
         };
@@ -20,6 +21,20 @@ fn player_metadata_uses_the_target_clients_serializer_ids() {
         packet.write_payload(&mut bytes).await.unwrap();
         assert_eq!(bytes[3], 0x08);
         assert_eq!(bytes[6], 5);
+        let packet = PlayerStateMetadata { pose: PlayerPose::Swimming, swimming: true, ..packet };
+        bytes.clear();
+        packet.write_payload(&mut bytes).await.unwrap();
+        assert_eq!(bytes[3], 0x18);
+        assert_eq!(bytes[6], 3);
+        let packet = PlayerStateMetadata { swimming: false, ..packet };
+        bytes.clear();
+        packet.write_payload(&mut bytes).await.unwrap();
+        assert_eq!(bytes[3], 0x08);
+        assert_eq!(bytes[6], 3);
+        let packet = PlayerStateMetadata { health: 0.0, ..packet };
+        bytes.clear();
+        packet.write_payload(&mut bytes).await.unwrap();
+        assert_eq!(bytes[6], 7);
     });
 }
 

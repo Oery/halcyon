@@ -20,7 +20,8 @@ pub(super) fn player(id: i32, x: f64, revision: u64) -> PlayerSnapshot {
         transform: Transform { x, y: 64.0, z: 1.0, ..Transform::default() },
         skin_parts: 0x7f,
         sneaking: false,
-        crouching: false,
+        pose: Default::default(),
+        swimming: false,
         sprinting: false,
         health: 20.0,
         equipment: Rc::new(std::array::from_fn(|_| mc_protocol::types::ItemStack::default())),
@@ -40,6 +41,29 @@ fn packets(mut bytes: &[u8]) -> Vec<(i32, Vec<u8>)> {
         bytes = &bytes[length..];
     }
     out
+}
+
+#[test]
+fn swimming_and_crawling_publish_independent_flags_and_pose_changes() {
+    use mc_protocol::packets::client::{PlayerPose, PlayerStateMetadata};
+    let standing = player(1, 0.5, 0);
+    let mut swimming = standing.clone();
+    swimming.pose = PlayerPose::Swimming;
+    swimming.swimming = true;
+    let frame = movement_frame(swimming.clone(), &rendered(&standing)).unwrap().unwrap();
+    let encoded = packets(&frame.bytes);
+    assert_eq!(encoded.len(), 1);
+    assert_eq!(encoded[0].0, PlayerStateMetadata::ID.0);
+    assert_eq!(encoded[0].1[3] & 16, 16);
+    assert_eq!(encoded[0].1[6], 3);
+    let mut crawling = swimming.clone();
+    crawling.swimming = false;
+    let frame = movement_frame(crawling.clone(), &rendered(&swimming)).unwrap().unwrap();
+    let encoded = packets(&frame.bytes);
+    assert_eq!(encoded[0].1[3] & 16, 0);
+    assert_eq!(encoded[0].1[6], 3);
+    let frame = movement_frame(standing, &rendered(&crawling)).unwrap().unwrap();
+    assert_eq!(packets(&frame.bytes)[0].1[6], 0);
 }
 
 fn drain(observer: &mut Observer) -> Vec<(i32, Vec<u8>)> {

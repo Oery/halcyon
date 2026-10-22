@@ -1,4 +1,4 @@
-//! Java 26.3 ground travel, using vanilla's discrete 50-ms movement units.
+//! Java 26.3 ground and water travel in discrete 50-ms movement units.
 //! Defaults only: food is fixed, item use/effects/attribute modifiers are disabled.
 use std::sync::OnceLock;
 
@@ -18,7 +18,7 @@ pub fn shared_motion_bytes() -> usize {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-pub struct GroundInput {
+pub struct MovementInput {
     pub forward: bool,
     pub backward: bool,
     pub left: bool,
@@ -30,7 +30,7 @@ pub struct GroundInput {
     pub pitch: f32,
 }
 
-impl GroundInput {
+impl MovementInput {
     pub fn from_flags(flags: u8, yaw: f32, pitch: f32) -> Self {
         Self {
             forward: flags & 1 != 0,
@@ -124,7 +124,7 @@ impl MovementState {
     /// Advances owner-driven motion without requiring a client position packet.
     /// Humans continue through `advance`: applying physics again to their
     /// predictions would double gravity, friction, and surface impulses.
-    pub fn step(&mut self, world: &impl BlockView, input: GroundInput) -> Advance {
+    pub fn step(&mut self, world: &impl BlockView, input: MovementInput) -> Advance {
         self.step_with(world, input)
     }
 
@@ -136,7 +136,7 @@ impl MovementState {
         result
     }
 
-    fn step_with(&mut self, terrain: &impl Terrain, input: GroundInput) -> Advance {
+    fn step_with(&mut self, terrain: &impl Terrain, input: MovementInput) -> Advance {
         if !input.yaw.is_finite() || !input.pitch.is_finite() {
             return self.blocked(0, false);
         }
@@ -148,21 +148,36 @@ impl MovementState {
         match collect_colliders(
             terrain,
             query,
-            inflate(player_box(self.transform, input.sneaking || self.crouching), 0.02),
+            inflate(player_box_with_height(self.transform, pose_height(self.pose)), 0.02),
             &mut self.colliders,
             &mut cells,
         ) {
             Some(false) => {}
             unsupported => return self.blocked(cells, unsupported == Some(true)),
         }
-        let crouching = input.sneaking
-            || (self.crouching && self.colliders.iter().any(|shape| intersects(standing, *shape)));
-        self.transform.on_ground &=
-            supported(player_box(self.transform, crouching), POSITION_TOLERANCE, &self.colliders);
+        let Some(water) = water_contact(terrain, self.transform, self.pose, true, &mut cells)
+        else {
+            return self.blocked(cells, false);
+        };
+        let wants_sprint = input.sprinting && input.forward && !input.backward;
+        let swimming =
+            wants_sprint && water.touching() && (self.swimming || (water.eyes && water.feet));
+        let pose = select_pose(self.transform, input.sneaking, swimming, &self.colliders);
+        let crouching = pose == PlayerPose::Crouching;
+        let slow = crouching || (pose == PlayerPose::Swimming && !water.touching());
+        self.transform.on_ground &= supported(
+            player_box_with_height(self.transform, pose_height(pose)),
+            POSITION_TOLERANCE,
+            &self.colliders,
+        );
         let ground = influencing_surface(terrain, self.transform, 0.500001);
         let feet = feet_surface(terrain, self.transform);
-        let sprinting = input.sprinting && input.forward && !input.backward && !crouching;
+        let sprinting = wants_sprint
+            && (!slow
+                || water.eyes
+                || (pose == PlayerPose::Swimming && self.sprinting && !input.sneaking));
         let mut velocity = self.motion.velocity;
+        water.push(&mut velocity);
         if horizontal_distance(velocity) < 9e-6 {
             velocity[0] = 0.0;
             velocity[2] = 0.0;
@@ -175,7 +190,12 @@ impl MovementState {
             self.motion.jump_delay = 0;
         }
         let [sin, cos] = sin_cos(input.yaw);
-        if input.jumping && self.transform.on_ground && self.motion.jump_delay == 0 {
+        if water.touching() && input.sneaking {
+            velocity[1] -= f64::from(0.04f32);
+        }
+        if water.touching() && input.jumping && (!self.transform.on_ground || water.height > 0.4) {
+            velocity[1] += f64::from(0.04f32);
+        } else if input.jumping && self.transform.on_ground && self.motion.jump_delay == 0 {
             let jump = 0.42f32 * if feet.jump == 1.0 { ground.jump } else { feet.jump };
             velocity[1] = velocity[1].max(f64::from(jump));
             if sprinting {
@@ -185,7 +205,9 @@ impl MovementState {
             self.motion.jump_delay = 10;
         }
         let friction = if self.transform.on_ground { ground.friction } else { 1.0 };
-        let speed = if self.transform.on_ground {
+        let speed = if water.touching() {
+            0.02
+        } else if self.transform.on_ground {
             let speed = if sprinting { 0.13f32 } else { 0.1f32 };
             if f64::from(friction) > 0.6 {
                 speed * (0.21600002 / (friction * friction * friction))
@@ -197,9 +219,15 @@ impl MovementState {
         } else {
             0.02
         };
-        let [x, z] = input.direction(crouching).map(|n| n * f64::from(speed));
+        let [x, z] = input.direction(slow).map(|n| n * f64::from(speed));
         velocity[0] += x * cos - z * sin;
         velocity[2] += z * cos + x * sin;
+        if swimming {
+            let look_y = -sin_cos(input.pitch)[0];
+            if look_y <= 0.0 || input.jumping || water.high {
+                velocity[1] += (look_y - velocity[1]) * if look_y < -0.2 { 0.085 } else { 0.06 };
+            }
+        }
         let old = self.transform;
         let proposal = MovementProposal {
             transform: Transform {
@@ -213,7 +241,7 @@ impl MovementState {
             sneaking: input.sneaking,
             sprinting,
         };
-        let result = self.resolve(terrain, std::iter::once(proposal), false, cells);
+        let mut result = self.resolve(terrain, std::iter::once(proposal), false, cells);
         if result.correction {
             self.motion = MotionState::default();
             return result;
@@ -231,8 +259,7 @@ impl MovementState {
                 0.0
             };
             if bounce > 0.0 {
-                // 26.3 restitutes the remaining fraction of the movement step,
-                // including partial gravity and drag before the impact.
+                // Entity.move restitution applies before either travel drag.
                 let fraction = (result.transform.y - old.y) / velocity[1];
                 velocity[1] = (fraction * GRAVITY - velocity[1])
                     * (1.0 + fraction * (AIR_DRAG - 1.0))
@@ -240,6 +267,54 @@ impl MovementState {
             } else {
                 velocity[1] = 0.0;
             }
+        }
+        if water.touching() {
+            let falling = velocity[1] <= 0.0;
+            let drag = f64::from(if sprinting { 0.9f32 } else { 0.8f32 });
+            velocity[0] *= drag;
+            velocity[2] *= drag;
+            velocity[1] *= f64::from(0.8f32);
+            if !sprinting {
+                velocity[1] = if falling
+                    && (velocity[1] - 0.005).abs() >= 0.003
+                    && (velocity[1] - GRAVITY / 16.0).abs() < 0.003
+                {
+                    -0.003
+                } else {
+                    velocity[1] - GRAVITY / 16.0
+                };
+            }
+            if result.collisions[0] || result.collisions[2] {
+                let delta = [
+                    velocity[0],
+                    velocity[1] + f64::from(0.6f32) - result.transform.y + old.y,
+                    velocity[2],
+                ];
+                let bounds = translate(
+                    player_box_with_height(result.transform, pose_height(result.pose)),
+                    delta,
+                );
+                if !self.colliders.iter().any(|shape| intersects(bounds, *shape)) {
+                    let destination = Transform {
+                        x: result.transform.x + delta[0],
+                        y: result.transform.y + delta[1],
+                        z: result.transform.z + delta[2],
+                        ..result.transform
+                    };
+                    if let Some(destination_water) = water_contact(
+                        terrain,
+                        destination,
+                        result.pose,
+                        false,
+                        &mut result.collision_cells,
+                    ) && !destination_water.touching()
+                    {
+                        velocity[1] = f64::from(0.3f32);
+                    }
+                }
+            }
+            self.motion.velocity = velocity;
+            return result;
         }
         let ground_after = influencing_surface(terrain, result.transform, 0.500001);
         let feet_after = feet_surface(terrain, result.transform);
@@ -252,7 +327,7 @@ impl MovementState {
         velocity[0] *= speed_factor * drag;
         velocity[2] *= speed_factor * drag;
         velocity[1] = (velocity[1] - GRAVITY) * AIR_DRAG;
-        if honey_slide(terrain, result.transform, (velocity[1] / AIR_DRAG) + GRAVITY) {
+        if honey_slide(terrain, result.transform, result.pose, (velocity[1] / AIR_DRAG) + GRAVITY) {
             let old_y = velocity[1] / AIR_DRAG + GRAVITY;
             if old_y < -0.13 {
                 let scale = -0.05 / old_y;

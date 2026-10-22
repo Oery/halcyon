@@ -1,4 +1,4 @@
-//! Bounded collision queries and dry-surface contact rules.
+//! Bounded collision queries, pose clearance and supported surface contacts.
 
 use halcyon_world::{
     Aabb, BlockView, MAX_BLOCK_Y, MIN_BLOCK_Y, MotionInfo, Surface, motion_info, state_info,
@@ -66,11 +66,16 @@ pub(super) fn landing_damage(distance: f64, surface: MotionInfo, sneaking: bool)
 
 /// Honey's inset collision shape leaves a narrow inside-block contact along
 /// its sides. Sliding is not climbing and is supported for dry honey blocks.
-pub(super) fn honey_slide(terrain: &impl Terrain, position: Transform, delta_y: f64) -> bool {
+pub(super) fn honey_slide(
+    terrain: &impl Terrain,
+    position: Transform,
+    pose: super::PlayerPose,
+    delta_y: f64,
+) -> bool {
     if position.on_ground || delta_y >= -0.08 {
         return false;
     }
-    let bounds = player_box(position, true);
+    let bounds = super::player_box_with_height(position, super::pose_height(pose));
     for x in bounds.min[0].floor() as i32..=bounds.max[0].floor() as i32 {
         for z in bounds.min[2].floor() as i32..=bounds.max[2].floor() as i32 {
             for y in bounds.min[1].floor() as i32..=bounds.max[1].floor() as i32 {
@@ -89,6 +94,7 @@ pub(super) fn honey_slide(terrain: &impl Terrain, position: Transform, delta_y: 
 }
 
 pub(super) struct TerrainCell {
+    pub(super) fluid: halcyon_world::FluidInfo,
     pub(super) shapes: &'static [Aabb],
     pub(super) uncertain: bool,
     pub(super) contextual: bool,
@@ -110,6 +116,7 @@ impl<T: BlockView> Terrain for T {
         let info = state_info(id);
         let motion = motion_info(id);
         Some(TerrainCell {
+            fluid: halcyon_world::fluid_info(id),
             shapes: info.collision_boxes(),
             uncertain: motion.surface == Surface::Unsupported,
             contextual: info.contextual_geometry(),

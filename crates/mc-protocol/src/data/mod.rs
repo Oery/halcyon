@@ -1,3 +1,4 @@
+pub mod builtin_tags;
 pub mod config;
 pub mod items;
 pub mod motd;

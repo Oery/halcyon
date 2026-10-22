@@ -1,7 +1,7 @@
-//! Shared, bounded ground collision for predictions and server-driven motion.
+//! Shared, bounded ground/water collision and poses for predictions and inputs.
 //!
 //! Client coordinates remain proposals checked against geometry and stance;
-//! owner-driven inputs use the same resolver with fixed-step ground physics.
+//! owner-driven inputs use the same resolver with fixed-step travel physics.
 //! Human movement does not enforce speed, flight or jump trajectories.
 use std::collections::VecDeque;
 
@@ -14,6 +14,10 @@ use crate::lobby::Transform;
 mod collision;
 mod physics;
 mod terrain;
+mod water;
+
+pub use mc_protocol::packets::client::PlayerPose;
+use water::water_contact;
 
 use collision::{
     back_off_edges, collide, expand_towards, horizontal_distance, inflate, intersects, player_box,
@@ -21,7 +25,7 @@ use collision::{
 };
 #[cfg(test)]
 pub use physics::shared_motion_bytes;
-pub use physics::{GroundInput, MotionState};
+pub use physics::{MotionState, MovementInput};
 use terrain::{
     Terrain, TerrainCell, collect_colliders, ground_contact, honey_slide, landing_damage,
 };
@@ -87,7 +91,8 @@ impl ProposalQueue {
 pub struct Advance {
     pub transform: Transform,
     pub sneaking: bool,
-    pub crouching: bool,
+    pub pose: PlayerPose,
+    pub swimming: bool,
     pub sprinting: bool,
     pub changed: bool,
     pub correction: bool,
@@ -104,7 +109,8 @@ pub struct Advance {
 pub struct MovementState {
     transform: Transform,
     sneaking: bool,
-    crouching: bool,
+    pose: PlayerPose,
+    swimming: bool,
     sprinting: bool,
     fall_distance: f64,
     pub motion: MotionState,
@@ -172,7 +178,8 @@ impl MovementState {
         Self {
             transform,
             sneaking: false,
-            crouching: false,
+            pose: PlayerPose::Standing,
+            swimming: false,
             sprinting: false,
             fall_distance: 0.0,
             motion: MotionState::default(),
@@ -189,8 +196,12 @@ impl MovementState {
         self.sneaking
     }
 
-    pub fn crouching(&self) -> bool {
-        self.crouching
+    pub fn pose(&self) -> PlayerPose {
+        self.pose
+    }
+
+    pub fn swimming(&self) -> bool {
+        self.swimming
     }
 
     pub fn sprinting(&self) -> bool {
@@ -200,7 +211,7 @@ impl MovementState {
     /// Vanilla's thin eye-level envelope, rather than the entire player body.
     /// Existing solid overlaps do not forbid movement out of a settled block.
     pub fn suffocating(&self, world: &impl BlockView) -> bool {
-        let eye = self.transform.y + f64::from(if self.crouching { 1.27f32 } else { 1.62f32 });
+        let eye = self.transform.y + eye_height(self.pose);
         let radius = f64::from(0.6f32 * 0.8f32) / 2.0;
         let eyes = Aabb {
             min: [self.transform.x - radius, eye - 0.5e-6, self.transform.z - radius],
@@ -233,7 +244,8 @@ impl MovementState {
         transform.on_ground = false;
         self.transform = transform;
         self.sneaking = false;
-        self.crouching = false;
+        self.pose = PlayerPose::Standing;
+        self.swimming = false;
         self.sprinting = false;
         self.fall_distance = 0.0;
         self.motion = MotionState::default();
@@ -281,12 +293,14 @@ impl MovementState {
     ) -> Advance {
         let old_transform = self.transform;
         let old_sneaking = self.sneaking;
-        let old_crouching = self.crouching;
+        let old_pose = self.pose;
+        let old_swimming = self.swimming;
         let old_sprinting = self.sprinting;
         let mut result = Advance {
             transform: self.transform,
             sneaking: self.sneaking,
-            crouching: self.crouching,
+            pose: self.pose,
+            swimming: self.swimming,
             sprinting: self.sprinting,
             changed: false,
             correction: false,
@@ -316,7 +330,7 @@ impl MovementState {
             query.max[1] += STEP_HEIGHT;
             let contact = inflate(
                 expand_towards(
-                    player_box(self.transform, proposal.sneaking || self.crouching),
+                    player_box_with_height(self.transform, pose_height(self.pose)),
                     delta,
                 ),
                 0.02,
@@ -336,13 +350,25 @@ impl MovementState {
                 result.correction = true;
                 break;
             }
-            let crouching = proposal.sneaking
-                || (self.crouching
-                    && self.colliders.iter().any(|shape| intersects(standing, *shape)));
-            let height = if crouching { SNEAKING_HEIGHT } else { STANDING_HEIGHT };
+            let Some(water) = water_contact(
+                terrain,
+                self.transform,
+                self.pose,
+                false,
+                &mut result.collision_cells,
+            ) else {
+                result.correction = true;
+                break;
+            };
+            let swimming = proposal.sprinting
+                && water.touching()
+                && (self.swimming || (water.eyes && water.feet));
+            let pose = select_pose(self.transform, proposal.sneaking, swimming, &self.colliders);
+            let height = pose_height(pose);
             let bounds = player_box_with_height(self.transform, height);
             let mut requested = delta;
             if proposal.sneaking
+                && pose != PlayerPose::Swimming
                 && delta[1] <= 0.0
                 && (self.transform.on_ground
                     || (self.fall_distance < STEP_HEIGHT
@@ -375,7 +401,15 @@ impl MovementState {
             }
             let ground = ground_contact(terrain, accepted);
             result.ground = ground.map_or_else(MotionInfo::default, |contact| contact.motion);
-            if resolved[1] < 0.0 {
+            let Some(water_after) =
+                water_contact(terrain, accepted, pose, false, &mut result.collision_cells)
+            else {
+                result.correction = true;
+                break;
+            };
+            if water.touching() || water_after.touching() {
+                self.fall_distance = 0.0;
+            } else if resolved[1] < 0.0 {
                 self.fall_distance -= f64::from(resolved[1] as f32);
             } else if resolved[1] > 0.0 {
                 self.fall_distance = 0.0;
@@ -389,12 +423,18 @@ impl MovementState {
                 }
                 self.fall_distance = 0.0;
             }
-            if honey_slide(terrain, accepted, resolved[1]) {
+            if honey_slide(terrain, accepted, pose, resolved[1]) {
                 self.fall_distance = 0.0;
             }
             self.transform = accepted;
             self.sneaking = proposal.sneaking;
-            self.crouching = crouching;
+            self.pose = select_pose(
+                accepted,
+                proposal.sneaking,
+                swimming && water_after.touching(),
+                &self.colliders,
+            );
+            self.swimming = swimming && water_after.touching();
             self.sprinting = proposal.sprinting;
             result.correction = prediction
                 && delta
@@ -407,14 +447,54 @@ impl MovementState {
         }
         result.transform = self.transform;
         result.sneaking = self.sneaking;
-        result.crouching = self.crouching;
+        result.pose = self.pose;
+        result.swimming = self.swimming;
         result.sprinting = self.sprinting;
         result.changed = self.transform != old_transform
             || self.sneaking != old_sneaking
-            || self.crouching != old_crouching
+            || self.pose != old_pose
+            || self.swimming != old_swimming
             || self.sprinting != old_sprinting;
         result
     }
+}
+
+fn pose_height(pose: PlayerPose) -> f64 {
+    match pose {
+        PlayerPose::Standing => STANDING_HEIGHT,
+        PlayerPose::Crouching => SNEAKING_HEIGHT,
+        PlayerPose::Swimming => 0.6f32 as f64,
+    }
+}
+
+fn eye_height(pose: PlayerPose) -> f64 {
+    f64::from(match pose {
+        PlayerPose::Standing => 1.62f32,
+        PlayerPose::Crouching => 1.27f32,
+        PlayerPose::Swimming => 0.4f32,
+    })
+}
+
+fn select_pose(
+    position: Transform,
+    sneaking: bool,
+    swimming: bool,
+    colliders: &[Aabb],
+) -> PlayerPose {
+    let desired = if swimming {
+        PlayerPose::Swimming
+    } else if sneaking {
+        PlayerPose::Crouching
+    } else {
+        PlayerPose::Standing
+    };
+    for pose in [desired, PlayerPose::Crouching, PlayerPose::Swimming] {
+        let bounds = player_box_with_height(position, pose_height(pose));
+        if !colliders.iter().any(|shape| intersects(bounds, *shape)) {
+            return pose;
+        }
+    }
+    desired
 }
 
 #[cfg(test)]

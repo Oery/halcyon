@@ -6,8 +6,59 @@ use std::mem::size_of;
 mod data;
 #[path = "falling_data.rs"]
 mod falling_data;
+#[path = "fluid_data.rs"]
+mod fluid_data;
 #[path = "motion_data.rs"]
 mod motion_data;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FluidKind {
+    #[default]
+    Empty,
+    Water,
+    Lava,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FluidInfo {
+    pub kind: FluidKind,
+    pub amount: u8,
+    pub falling: bool,
+    /// Fluid support does not enable the block's other movement effects.
+    pub supported: bool,
+    pub blocks_flow: bool,
+    /// Sturdy horizontal faces in target Direction.Plane order: N, E, S, W.
+    pub flow_faces: u8,
+    pub down_face: bool,
+    dry_state: BlockStateId,
+}
+
+impl FluidInfo {
+    pub fn own_height(self) -> f32 {
+        f32::from(self.amount) / 9.0
+    }
+}
+
+pub fn fluid_info(id: BlockStateId) -> FluidInfo {
+    let bits = fluid_data::FLUIDS[id as usize];
+    let amount = (bits & 15) as u8;
+    FluidInfo {
+        kind: if amount == 0 {
+            FluidKind::Empty
+        } else if bits & 32 == 0 {
+            FluidKind::Water
+        } else {
+            FluidKind::Lava
+        },
+        amount,
+        falling: bits & 16 != 0,
+        supported: amount != 0 && bits & 64 == 0,
+        blocks_flow: bits & (1 << 24) != 0,
+        flow_faces: ((bits >> 25) & 15) as u8,
+        down_face: bits & (1 << 29) != 0,
+        dry_state: (bits >> 8) as u16,
+    }
+}
 
 #[derive(Clone, Copy)]
 pub struct BlockProperties(u8);
@@ -73,13 +124,21 @@ impl Default for MotionInfo {
     }
 }
 
-/// Special dry surfaces are enabled only with authoritative static geometry.
-/// Other uncertain contexts (fluids, climbables, webs, dynamic shapes) cannot
-/// acquire support merely because their representative shape is empty.
+/// Water keeps the dry block's surface properties and static geometry. Other
+/// uncertain contexts (lava, climbables, webs, dynamic shapes) cannot acquire
+/// support merely because their representative shape is empty.
 pub fn motion_info(id: BlockStateId) -> MotionInfo {
     let state = state_info(id);
-    if state.flags.has_fluid() || state.contextual_geometry() {
+    if state.contextual_geometry() {
         return MotionInfo { surface: Surface::Unsupported, ..MotionInfo::default() };
+    }
+    if state.flags.has_fluid() {
+        let fluid = fluid_info(id);
+        return if fluid.kind == FluidKind::Water && fluid.supported {
+            motion_info(fluid.dry_state)
+        } else {
+            MotionInfo { surface: Surface::Unsupported, ..MotionInfo::default() }
+        };
     }
     motion_data::special_motion(id).unwrap_or_else(|| MotionInfo {
         surface: if state.uncertain_motion() {
@@ -177,7 +236,10 @@ pub fn state_info(id: BlockStateId) -> &'static StateInfo {
 /// Shared catalog payload, counted once across all worlds. Excludes text keys,
 /// executable code, allocator overhead, and OS resident-memory measurements.
 pub fn collision_catalog_bytes() -> usize {
-    size_of_val(data::STATES) + size_of_val(data::SHAPES) + size_of_val(data::BOXES)
+    size_of_val(data::STATES)
+        + size_of_val(data::SHAPES)
+        + size_of_val(data::BOXES)
+        + size_of_val(fluid_data::FLUIDS)
 }
 
 /// Uniform sections retain one state, dense sections use an eight-KiB direct

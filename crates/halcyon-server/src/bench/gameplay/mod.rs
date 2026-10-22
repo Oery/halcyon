@@ -28,10 +28,17 @@ const DEADLINE_NS: u128 = 1_000_000_000 / crate::simulation::SIMULATION_HZ as u1
 const WRITER_ROUNDS: usize = 16;
 
 pub(super) fn terrain(spread: bool, steps: bool) -> World {
-    make_terrain(spread, steps, false)
+    make_terrain(spread, steps, false, Medium::Dry)
 }
 
-fn make_terrain(spread: bool, steps: bool, surfaces: bool) -> World {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Medium {
+    Dry,
+    Water,
+    Crawl,
+}
+
+fn make_terrain(spread: bool, steps: bool, surfaces: bool, medium: Medium) -> World {
     let stone = block_state_id("minecraft:stone").unwrap() as u16;
     let slab =
         block_state_id("minecraft:stone_slab[type=bottom,waterlogged=false]").unwrap() as u16;
@@ -66,6 +73,16 @@ fn make_terrain(spread: bool, steps: bool, surfaces: bool) -> World {
                 layer[8 * 16 + 9] = slab;
                 sections[8] = Section::from_states(layer);
             }
+            if medium != Medium::Dry {
+                let water = block_state_id("minecraft:water[level=0]").unwrap() as u16;
+                let mut layer = Box::new([0; 4096]);
+                if medium == Medium::Water {
+                    layer[..8 * 256].fill(water);
+                } else {
+                    layer[256..512].fill(stone);
+                }
+                sections[8] = Section::from_states(layer);
+            }
             LoadedChunk { x, z, data: vec![], heights: [0; 37], wire_bytes: 0, sections }
         })
         .collect();
@@ -86,10 +103,16 @@ struct Scenario {
     churn: bool,
     driven: bool,
     falling: bool,
+    medium: Medium,
 }
 
 async fn measure(case: Scenario, paced: bool) -> Value {
-    let world = make_terrain(case.spread, case.steps, case.driven);
+    let world = make_terrain(
+        case.spread,
+        case.steps,
+        case.driven && case.medium == Medium::Dry,
+        case.medium,
+    );
     let mut registry = Registry::default();
     let mut inputs = Vec::with_capacity(PLAYERS);
     let mut receivers = Vec::with_capacity(PLAYERS);
@@ -110,7 +133,7 @@ async fn measure(case: Scenario, paced: bool) -> Value {
             } else {
                 8.5
             },
-            y: 64.0,
+            y: if case.medium == Medium::Water { 66.0 } else { 64.0 },
             z: 8.5,
             ..Default::default()
         };
@@ -171,6 +194,8 @@ async fn measure(case: Scenario, paced: bool) -> Value {
     let mut skipped = 0;
     let mut corrections = 0;
     let mut cells = 0;
+    let mut swimming_steps = 0;
+    let mut crawling_steps = 0;
     let mut queue_peak = 0;
     let mut peak_pending_motions = 0;
     let mut max_revision_lag = 0;
@@ -214,7 +239,7 @@ async fn measure(case: Scenario, paced: bool) -> Value {
                 if case.driven {
                     input.actions.borrow_mut().push(
                         input.generation.get(),
-                        PlayerAction::Drive(Some(crate::movement::GroundInput {
+                        PlayerAction::Drive(Some(crate::movement::MovementInput {
                             forward: true,
                             yaw: tick as f32 * 12.0,
                             jumping: tick % 40 == 0,
@@ -258,6 +283,15 @@ async fn measure(case: Scenario, paced: bool) -> Value {
             let metrics = registry.simulate(&world, now, &mut notices);
             cells += metrics.collision_cells;
             corrections += metrics.corrections;
+            if case.medium != Medium::Dry {
+                for player in registry.players.values() {
+                    swimming_steps += usize::from(player.state.movement.swimming());
+                    crawling_steps += usize::from(
+                        player.state.movement.pose() == crate::movement::PlayerPose::Swimming
+                            && !player.state.movement.swimming(),
+                    );
+                }
+            }
             notices.clear();
         }
         let sim_ns = simulation_start.elapsed().as_nanos() as u64;
@@ -335,6 +369,12 @@ async fn measure(case: Scenario, paced: bool) -> Value {
         .zip(&lateness)
         .filter(|(cpu, late)| u128::from(**cpu) + u128::from(**late) > DEADLINE_NS)
         .count();
+    if case.medium == Medium::Water {
+        assert!(swimming_steps >= samples * PLAYERS / 2);
+    }
+    if case.medium == Medium::Crawl {
+        assert!(crawling_steps >= samples * PLAYERS / 2);
+    }
     let result = json!({
         "scenario": case.name,
         "players": PLAYERS,
@@ -350,6 +390,8 @@ async fn measure(case: Scenario, paced: bool) -> Value {
         "skipped_steps": skipped,
         "corrections": corrections,
         "collision_cells": cells,
+        "swimming_player_steps": swimming_steps,
+        "crawling_player_steps": crawling_steps,
         "queue_peak_frames": queue_peak,
         "peak_pending_motions": peak_pending_motions,
         "max_revision_lag": max_revision_lag,
@@ -358,6 +400,7 @@ async fn measure(case: Scenario, paced: bool) -> Value {
         "terrain_bytes": world.terrain_bytes,
         "registry_payload_bytes": registry.capacity_payload_bytes(),
         "shared_motion_payload_bytes": crate::movement::shared_motion_bytes(),
+        "shared_terrain_catalog_bytes": halcyon_world::collision_catalog_bytes(),
         "world_observer_payload_bytes": receivers.iter().map(|r|r.world_observer.capacity_payload_bytes()).sum::<usize>(),
         "sent_bytes": receivers.iter().map(|receiver| receiver.stream.inner.bytes).sum::<u64>(),
     });
@@ -398,6 +441,26 @@ fn gameplay_world_benchmark() {
         let mut cases = Vec::new();
         for case in [
             Scenario {
+                name: "crowded_water_swimming",
+                spread: false,
+                input_period: 1,
+                steps: false,
+                churn: false,
+                driven: true,
+                falling: false,
+                medium: Medium::Water,
+            },
+            Scenario {
+                name: "crowded_dry_crawling",
+                spread: false,
+                input_period: 1,
+                steps: false,
+                churn: false,
+                driven: true,
+                falling: false,
+                medium: Medium::Crawl,
+            },
+            Scenario {
                 name: "idle",
                 spread: false,
                 input_period: 0,
@@ -405,6 +468,7 @@ fn gameplay_world_benchmark() {
                 churn: false,
                 driven: false,
                 falling: false,
+                medium: Medium::Dry,
             },
             Scenario {
                 name: "spread_20hz",
@@ -414,6 +478,7 @@ fn gameplay_world_benchmark() {
                 churn: false,
                 driven: false,
                 falling: false,
+                medium: Medium::Dry,
             },
             Scenario {
                 name: "crowded_20hz",
@@ -423,6 +488,7 @@ fn gameplay_world_benchmark() {
                 churn: false,
                 driven: false,
                 falling: false,
+                medium: Medium::Dry,
             },
             Scenario {
                 name: "crowded_ground_surfaces",
@@ -432,6 +498,7 @@ fn gameplay_world_benchmark() {
                 churn: false,
                 driven: true,
                 falling: false,
+                medium: Medium::Dry,
             },
             Scenario {
                 name: "steps_equipment_lifecycle",
@@ -441,6 +508,7 @@ fn gameplay_world_benchmark() {
                 churn: true,
                 driven: false,
                 falling: false,
+                medium: Medium::Dry,
             },
             Scenario {
                 name: "crowded_falling_blocks",
@@ -450,6 +518,7 @@ fn gameplay_world_benchmark() {
                 churn: false,
                 driven: false,
                 falling: true,
+                medium: Medium::Dry,
             },
         ] {
             cases.push(measure(case, false).await);
@@ -471,6 +540,7 @@ fn gameplay_scheduler_benchmark() {
                 churn: true,
                 driven: true,
                 falling: true,
+                medium: Medium::Dry,
             },
             true,
         )

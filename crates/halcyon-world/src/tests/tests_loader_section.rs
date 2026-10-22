@@ -109,3 +109,29 @@ fn single_valued_encodes_air() {
     encode_single_valued(&[1], &mut out);
     assert_eq!(out, vec![0x10, 0x00, 0x00, 0x00, 0x00, 0x01]);
 }
+
+#[test]
+fn imported_fluid_counts_match_retained_water_lava_and_waterlogged_states() {
+    let water = block_state_id("minecraft:water[level=0]").unwrap();
+    let lava = block_state_id("minecraft:lava[level=0]").unwrap();
+    let wet_slab = block_state_id("minecraft:oak_slab[type=bottom,waterlogged=true]").unwrap();
+    for id in [water, lava, wet_slab] {
+        let mut wire = Vec::new();
+        encode_single_valued(&[id], &mut wire);
+        assert_eq!(&wire[..4], &[0x10, 0, 0x10, 0]);
+    }
+    let packed = vec![0x3210_3210_3210_3210i64; 256];
+    let mut wire = Vec::new();
+    encode_indirect_section(&[0, water, lava, wet_slab], &packed, &mut wire);
+    assert_eq!(u16::from_be_bytes([wire[0], wire[1]]), 3072);
+    assert_eq!(u16::from_be_bytes([wire[2], wire[3]]), 3072);
+    // The complete loader must retain both counts when adding the biome data.
+    let mut wire = Vec::new();
+    let section = test_section(
+        &["minecraft:air", "minecraft:kelp_plant"],
+        Some(vec![0x1010_1010_1010_1010; 256]),
+    );
+    let terrain = encode_section("water", &section, &mut wire, &mut 0).unwrap();
+    assert_eq!(u16::from_be_bytes([wire[2], wire[3]]), 2048);
+    assert!(crate::state_info(terrain.block_at(1, 0, 0)).flags.has_fluid());
+}

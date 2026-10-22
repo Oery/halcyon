@@ -118,7 +118,7 @@ impl Session {
     /// Trusted gameplay API for future server-driven participants. Network
     /// PlayerInput packets do not opt human sessions into a second simulation.
     #[allow(dead_code)]
-    pub fn drive(&self, input: Option<crate::movement::GroundInput>) -> bool {
+    pub fn drive(&self, input: Option<crate::movement::MovementInput>) -> bool {
         self.ready() && self.submit(PlayerAction::Drive(input))
     }
 

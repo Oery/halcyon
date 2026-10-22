@@ -8,9 +8,14 @@ fn info(key: &str) -> &'static StateInfo {
 #[test]
 fn catalog_matches_versioned_registry() {
     assert_eq!(data::STATES.len(), crate::blockstates::BLOCK_STATES.len());
+    assert_eq!(fluid_data::FLUIDS.len(), data::STATES.len());
     assert_eq!(size_of::<StateInfo>(), 4);
     for &(_, id) in crate::blockstates::BLOCK_STATES {
         assert!(try_state_info(id.try_into().unwrap()).is_some());
+        let fluid = fluid_info(id as u16);
+        assert_eq!(fluid.kind != FluidKind::Empty, state_info(id as u16).flags.has_fluid());
+        assert!(fluid.amount <= 8);
+        assert!(!fluid.supported || fluid.kind == FluidKind::Water);
     }
     for state in data::STATES {
         for shape in state.collision_boxes() {
@@ -62,7 +67,7 @@ fn ground_profiles_match_target_surface_properties_and_keep_media_disabled() {
     );
     assert_eq!(
         motion("minecraft:small_dripleaf[facing=west,half=lower,waterlogged=true]").surface,
-        Surface::Unsupported
+        Surface::Ordinary
     );
     for key in [
         "minecraft:ice",
@@ -74,7 +79,6 @@ fn ground_profiles_match_target_surface_properties_and_keep_media_disabled() {
         assert_ne!(motion(key).surface, Surface::Unsupported, "{key}");
     }
     for key in [
-        "minecraft:water[level=0]",
         "minecraft:cobweb",
         "minecraft:powder_snow",
         "minecraft:ladder[facing=north,waterlogged=false]",

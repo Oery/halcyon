@@ -20,7 +20,8 @@ pub(super) fn rendered(player: &PlayerSnapshot) -> Rendered {
         skin_parts: player.skin_parts,
         revision: player.revision,
         sneaking: player.sneaking,
-        crouching: player.crouching,
+        pose: player.pose,
+        swimming: player.swimming,
         sprinting: player.sprinting,
         health: player.health,
         equipment: player.equipment.clone(),
@@ -144,7 +145,8 @@ pub(super) fn movement_frame(
     }
     if player.skin_parts != previous.skin_parts
         || player.sneaking != previous.sneaking
-        || player.crouching != previous.crouching
+        || player.pose != previous.pose
+        || player.swimming != previous.swimming
         || player.sprinting != previous.sprinting
         || player.health != previous.health
     {
@@ -173,7 +175,8 @@ fn metadata(player: &PlayerSnapshot) -> PlayerStateMetadata {
         entity_id: player.entity_id,
         skin_parts: player.skin_parts,
         sneaking: player.sneaking,
-        crouching: player.crouching,
+        pose: player.pose,
+        swimming: player.swimming,
         sprinting: player.sprinting,
         health: player.health,
     }

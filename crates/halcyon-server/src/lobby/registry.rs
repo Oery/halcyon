@@ -207,7 +207,8 @@ impl Registry {
                     skin_parts,
                     revision: 0,
                     sneaking: false,
-                    crouching: false,
+                    pose: Default::default(),
+                    swimming: false,
                     sprinting: false,
                     health: 20.0,
                     equipment: Rc::new(std::array::from_fn(|_| ItemStack::default())),
@@ -328,13 +329,15 @@ impl Registry {
             let old_column = player.snapshot.transform.chunk();
             let mut player_changed = false;
             let sneaking = player.state.movement.sneaking();
-            let crouching = player.state.movement.crouching();
+            let pose = player.state.movement.pose();
+            let swimming = player.state.movement.swimming();
             let sprinting = player.state.movement.sprinting();
             let health = player.state.life.health();
             let visible = player.state.life.visible(now);
             let generation = player.state.life.generation;
             if player.snapshot.sneaking != sneaking
-                || player.snapshot.crouching != crouching
+                || player.snapshot.pose != pose
+                || player.snapshot.swimming != swimming
                 || player.snapshot.sprinting != sprinting
                 || player.snapshot.health != health
                 || player.snapshot.visible != visible
@@ -347,7 +350,8 @@ impl Registry {
                     self.spatial_revision = self.spatial_revision.wrapping_add(1);
                 }
                 player.snapshot.sneaking = sneaking;
-                player.snapshot.crouching = crouching;
+                player.snapshot.pose = pose;
+                player.snapshot.swimming = swimming;
                 player.snapshot.sprinting = sprinting;
                 player.snapshot.health = health;
                 player.snapshot.visible = visible;

@@ -2,6 +2,47 @@ use super::*;
 use mc_protocol::types::Heightmap;
 
 #[test]
+fn configuration_preserves_tags_and_identifies_both_water_fluid_types() {
+    futures_lite::future::block_on(async {
+        let world = halcyon_world::World::from_loaded(halcyon_world::LoadedWorld {
+            chunks: vec![],
+            spawn: (0.0, 0.0, 0.0, 0.0, 0.0),
+            missing_blocks: 0,
+            remapped_biomes: 0,
+        });
+        let cache = PacketCache::new(&world).await.unwrap();
+        let mut found = false;
+        for frame in &cache.configuration {
+            let mut payload = frame.as_ref();
+            VarInt::read(&mut payload).unwrap();
+            if VarInt::read(&mut payload).unwrap().0 != UpdateTags::ID.0 {
+                continue;
+            }
+            let tags = UpdateTags::decode_payload(&mut payload).unwrap();
+            assert!(payload.is_empty());
+            assert!(tags.registries.iter().any(|r| r.registry == "minecraft:damage_type"));
+            let blocks = tags.registries.iter().find(|r| r.registry == "minecraft:block").unwrap();
+            assert!(blocks.tags.iter().any(|tag| tag.name == "minecraft:infiniburn_overworld"));
+            let flow =
+                blocks.tags.iter().find(|tag| tag.name == "minecraft:blocks_fluid_flow").unwrap();
+            assert!(flow.entries.iter().any(|id| id.0 == 1)); // stone, a block ID rather than state ID
+            assert!(!flow.entries.iter().any(|id| id.0 == 0)); // air
+            let fluid = tags.registries.iter().find(|r| r.registry == "minecraft:fluid").unwrap();
+            let water = fluid.tags.iter().find(|tag| tag.name == "minecraft:water").unwrap();
+            assert_eq!(water.entries.iter().map(|id| id.0).collect::<Vec<_>>(), [2, 1]);
+            let lava = fluid.tags.iter().find(|tag| tag.name == "minecraft:lava").unwrap();
+            assert_eq!(lava.entries.iter().map(|id| id.0).collect::<Vec<_>>(), [4, 3]);
+            assert_eq!(
+                tags.registries.iter().filter(|r| r.registry == "minecraft:fluid").count(),
+                1
+            );
+            found = true;
+        }
+        assert!(found);
+    });
+}
+
+#[test]
 fn shared_chunk_parts_match_the_packet_codec() {
     futures_lite::future::block_on(async {
         let data = [1, 2, 3];
