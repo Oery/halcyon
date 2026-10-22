@@ -473,4 +473,5 @@ pub(crate) fn test_world() -> World {
 }
 
 #[cfg(test)]
+#[path = "tests/tests_arena.rs"]
 mod tests;

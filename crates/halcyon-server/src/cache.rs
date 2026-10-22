@@ -126,4 +126,5 @@ impl PacketCache {
 }
 
 #[cfg(test)]
+#[path = "tests/tests_cache.rs"]
 mod tests;

@@ -238,4 +238,5 @@ impl PacketWriter<'_> for ItemStack {
 }
 
 #[cfg(test)]
+#[path = "../tests/tests_types_item.rs"]
 mod tests;

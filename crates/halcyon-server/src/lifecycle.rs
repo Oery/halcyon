@@ -272,4 +272,5 @@ impl Keepalive {
 }
 
 #[cfg(test)]
+#[path = "tests/tests_lifecycle.rs"]
 mod tests;

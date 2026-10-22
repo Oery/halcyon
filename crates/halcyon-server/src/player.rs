@@ -38,6 +38,7 @@ pub enum PlayerAction {
 }
 
 #[cfg(test)]
+#[path = "tests/tests_player.rs"]
 mod tests;
 
 /// Deliberate game-owned changes; replacing a loadout intentionally replaces its cursor too.

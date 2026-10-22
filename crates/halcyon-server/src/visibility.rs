@@ -426,6 +426,7 @@ impl Observer {
 }
 
 #[cfg(test)]
+#[path = "tests/tests_visibility.rs"]
 mod tests;
 
 #[cfg(test)]

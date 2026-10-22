@@ -43,4 +43,5 @@ impl HandshakeIntent {
 }
 
 #[cfg(test)]
+#[path = "tests/tests_state.rs"]
 mod tests;

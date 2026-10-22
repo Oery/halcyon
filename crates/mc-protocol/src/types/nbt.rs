@@ -114,4 +114,5 @@ impl PacketWriter<'_> for Nbt<'_> {
 }
 
 #[cfg(test)]
+#[path = "../tests/tests_types_nbt.rs"]
 mod tests;

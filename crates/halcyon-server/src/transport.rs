@@ -131,4 +131,5 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for ClientStream<S> {
 }
 
 #[cfg(test)]
+#[path = "tests/tests_transport.rs"]
 mod tests;

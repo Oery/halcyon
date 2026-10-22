@@ -215,4 +215,5 @@ pub async fn send_pending(client: &mut Client) -> Result<(), Error> {
 }
 
 #[cfg(test)]
+#[path = "tests/tests_chunks.rs"]
 mod tests;

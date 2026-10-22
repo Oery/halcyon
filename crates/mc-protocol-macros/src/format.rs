@@ -45,4 +45,5 @@ impl From<&Vec<Attribute>> for Format {
 }
 
 #[cfg(test)]
+#[path = "tests/tests_format.rs"]
 mod tests;

@@ -188,4 +188,5 @@ pub trait Payload<'p>: Sized {
 }
 
 #[cfg(test)]
+#[path = "../tests/tests_packets.rs"]
 mod tests;

@@ -263,4 +263,5 @@ pub fn resync_cells(position: crate::lobby::Transform) -> impl Iterator<Item = B
 }
 
 #[cfg(test)]
+#[path = "tests/tests_world_sync.rs"]
 mod tests;

@@ -192,4 +192,5 @@ fn write_varint(mut v: u32, out: &mut Vec<u8>) {
 }
 
 #[cfg(test)]
+#[path = "../tests/tests_loader_section.rs"]
 mod tests;

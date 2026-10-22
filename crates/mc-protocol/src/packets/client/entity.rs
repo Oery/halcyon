@@ -479,4 +479,5 @@ impl<'p> Payload<'p> for PlayerInfoRemove<'_> {
 }
 
 #[cfg(test)]
+#[path = "../../tests/tests_packets_client_entity.rs"]
 mod tests;

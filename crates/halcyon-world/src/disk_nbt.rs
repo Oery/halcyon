@@ -199,4 +199,5 @@ fn read_payload(buf: &mut &[u8], ty: u8) -> Result<DiskNbt, String> {
 }
 
 #[cfg(test)]
+#[path = "tests/tests_disk_nbt.rs"]
 mod tests;

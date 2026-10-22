@@ -95,4 +95,5 @@ pub fn ciphers(shared_secret: &[u8; 16]) -> Result<(Crypter, Crypter), ErrorStac
 }
 
 #[cfg(test)]
+#[path = "../tests/tests_encryption.rs"]
 mod tests;

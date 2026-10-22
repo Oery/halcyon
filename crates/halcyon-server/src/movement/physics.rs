@@ -5,6 +5,7 @@ use std::sync::OnceLock;
 use super::*;
 
 #[cfg(test)]
+#[path = "../tests/tests_movement_physics.rs"]
 mod tests;
 
 const GRAVITY: f64 = 0.08;

@@ -176,4 +176,5 @@ impl<'p> Payload<'p> for ClickContainer {
 }
 
 #[cfg(test)]
+#[path = "../../tests/tests_packets_server_gameplay.rs"]
 mod tests;

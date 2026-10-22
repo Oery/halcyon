@@ -234,4 +234,5 @@ impl Lobby {
 mod gameplay_benchmarks;
 
 #[cfg(test)]
+#[path = "tests/tests_lobby.rs"]
 mod tests;

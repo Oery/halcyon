@@ -45,4 +45,5 @@ pub fn read_packet<'p>(
 }
 
 #[cfg(test)]
+#[path = "tests/tests_packet.rs"]
 mod tests;

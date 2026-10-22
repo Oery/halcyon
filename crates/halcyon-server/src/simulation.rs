@@ -61,4 +61,5 @@ impl SimulationClock {
 }
 
 #[cfg(test)]
+#[path = "tests/tests_simulation.rs"]
 mod tests;

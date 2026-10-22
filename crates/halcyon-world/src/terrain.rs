@@ -222,4 +222,5 @@ impl Section {
 }
 
 #[cfg(test)]
+#[path = "tests/tests_terrain.rs"]
 mod tests;
