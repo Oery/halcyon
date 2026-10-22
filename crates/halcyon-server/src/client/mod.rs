@@ -196,7 +196,7 @@ impl Client {
             {
                 wake = wake.min(deadline);
             }
-            if self.observer.queued_frames() > 0 || self.world_observer.pending_work() {
+            if self.observer.has_pending() || self.world_observer.pending_work() {
                 wake = wake.min(Instant::now());
             }
             let read = future::or(

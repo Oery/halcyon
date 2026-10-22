@@ -354,6 +354,8 @@ fn continuously_moving_players_share_a_limited_writer_budget() {
             observer.frame_sent();
         }
         assert_eq!(observer.motion_waiting.len(), observer.latest.len());
+        // Leftover motion must keep the writer awaking for another slice.
+        assert!(observer.has_pending());
     }
     assert!(observer.rendered.values().all(|player| player.transform.x > 1.0));
 }

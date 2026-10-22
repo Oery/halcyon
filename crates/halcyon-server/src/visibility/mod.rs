@@ -328,6 +328,12 @@ impl Observer {
         self.queued_frames
     }
 
+    /// Queued frames or coalesced motion still waiting for a writer budget.
+    /// Motion is encoded lazily, so it is not counted in `queued_frames`.
+    pub fn has_pending(&self) -> bool {
+        self.queued_frames > 0 || !self.motion_waiting.is_empty()
+    }
+
     pub fn next_frame_count(&self) -> usize {
         self.active.as_ref().map_or(0, |frame| frame.frames)
     }

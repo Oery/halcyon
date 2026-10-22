@@ -12,7 +12,8 @@ fn status(online: usize) -> StatusPacket<'static> {
             version: Version { name: "halcyon-server", protocol: 777 },
             description: Description { text: "hello world!" },
             players: Players {
-                max: crate::lobby::MAX_PLAYERS as i32,
+                // The lobby has no player cap; always advertise room for one more.
+                max: online.saturating_add(1) as i32,
                 online: online as i32,
                 sample: vec![],
             },

@@ -416,9 +416,11 @@ Update this tracker when feature support changes. Packet definitions, static cli
 
 ## 20. Native bots and humanlike play
 
+Design expectations and layered architecture: [bots.md](bots.md).
+
 | Feature | Progress |
 | --- | --- |
-| Native bot participants | Not started |
+| Native bot participants | Partial — `HALCYON_BOTS=<n>` spawns lobby bots through the human session path; placeholder wander behavior, no navigation. |
 | Bot identity and visual representation | Not started |
 | Shared action/rule path | Partial — human movement/inventory/lifecycle and owner-driven ground/water inputs; no bot participants. |
 | Perception and short-term memory | Not started |

@@ -192,9 +192,6 @@ impl Registry {
         if self.uuids.contains(&profile.uuid) {
             return Err(AdmissionError::DuplicateUuid);
         }
-        if self.players.len() >= MAX_PLAYERS {
-            return Err(AdmissionError::Full);
-        }
         let entity_id = self.last_entity_id.checked_add(1).ok_or(AdmissionError::IdExhausted)?;
         self.last_entity_id = entity_id;
         self.uuids.insert(profile.uuid);

@@ -17,7 +17,6 @@ pub use registry::Registry;
 pub use session::Session;
 use session::{Input, Signal};
 
-pub const MAX_PLAYERS: usize = 1_024;
 const REGISTRATION_CAPACITY: usize = 256;
 const REGISTRATIONS_PER_SLICE: usize = 64;
 
@@ -99,8 +98,6 @@ impl ObserverMetrics {
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum AdmissionError {
-    #[error("the lobby is full")]
-    Full,
     #[error("this account is already connected")]
     DuplicateUuid,
     #[error("the lobby registration queue is full")]
