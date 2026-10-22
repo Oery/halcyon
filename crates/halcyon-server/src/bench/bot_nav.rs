@@ -12,6 +12,18 @@ use crate::bot::sim::SimBot;
 use crate::lobby::Transform;
 use serde_json::{Value, json};
 
+/// The terrain overlay as the live lobby has it once loose blocks settle:
+/// floating sand and gravel fall at startup.
+fn settled(world: &halcyon_world::World) -> crate::arena::Arena {
+    let mut arena = crate::arena::Arena::default();
+    arena.initialize(world).expect("arena");
+    let mut id = 0;
+    for _ in 0..400 {
+        arena.step(world, &mut id);
+    }
+    arena
+}
+
 fn load_world() -> halcyon_world::World {
     let path = std::env::var_os("HALCYON_TERRAIN_WORLD").map_or_else(
         || {
@@ -89,6 +101,8 @@ fn survey_map() {
 #[ignore = "opt-in survey of a real map for navigation work"]
 fn survey_layers() {
     let world = load_world();
+    let arena = settled(&world);
+    let view = arena.view(&world);
     let names = block_names();
     let at = std::env::var("HALCYON_SURVEY_AT").unwrap_or_else(|_| "0,54,-45".into());
     let mut parts = at.split(',').map(|p| p.trim().parse::<i32>().unwrap());
@@ -108,7 +122,7 @@ fn survey_layers() {
         for z in cz - radius..=cz + radius {
             let mut row = String::new();
             for x in cx - radius..=cx + radius {
-                let id = world.block_at(x, y, z).unwrap_or(0);
+                let id = view.block_at(x, y, z).unwrap_or(0);
                 let name = names.get(&u32::from(id)).copied().unwrap_or("?");
                 let base = name.split('[').next().unwrap().trim_start_matches("minecraft:");
                 let boxes = halcyon_world::state_info(id).collision_boxes();
@@ -168,11 +182,18 @@ fn survey_box() {
     let min = parse("HALCYON_BOX_MIN", "2,52,-47");
     let max = parse("HALCYON_BOX_MAX", "7,60,-41");
     let mut nav = NavService::new(Budget::Unlimited);
+    // HALCYON_BOX_LIVE: the terrain as the live lobby has it once settled.
+    let arena = if std::env::var("HALCYON_BOX_LIVE").is_ok() {
+        settled(&world)
+    } else {
+        crate::arena::Arena::default()
+    };
+    let view = arena.view(&world);
     for y in (min[1]..=max[1]).rev() {
         for z in min[2]..=max[2] {
             for x in min[0]..=max[0] {
-                let id = world.block_at(x, y, z).unwrap_or(0);
-                let stand = nav.stand(&world, [x, y, z]).map(|s| s.feet_y);
+                let id = view.block_at(x, y, z).unwrap_or(0);
+                let stand = nav.stand(&view, [x, y, z]).map(|s| s.feet_y);
                 if id != 0 || stand.is_some() {
                     let name = names[&u32::from(id)].trim_start_matches("minecraft:");
                     eprintln!("  [{x},{y},{z}] {name} stand={stand:?}");
@@ -297,7 +318,7 @@ fn trace_bot() {
     let level = env_or("HALCYON_TRACE_LEVEL", 100) as u8;
     let every = env_or("HALCYON_TRACE_EVERY", 10);
     let mut bot = SimBot::new(BotProfile::new(level), 1, at);
-    let mut arena = crate::arena::Arena::default();
+    let mut arena = settled(&world);
     for tick in 0..env_or("HALCYON_BENCH_TICKS", 600) {
         step_with_doors(&mut bot, &mut nav, &mut arena, &world);
         if tick % every == 0 {
@@ -520,6 +541,8 @@ fn survey_lily_pads() {
 fn trace_edge() {
     use super::follow::{EdgeRun, Execution, Obs, Status};
     let world = load_world();
+    let arena = settled(&world);
+    let view = arena.view(&world);
     let cell = |name: &str, default: [i32; 3]| {
         std::env::var(name)
             .ok()
@@ -532,16 +555,18 @@ fn trace_edge() {
     let from = cell("HALCYON_TRACE_FROM", [0, 52, -78]);
     let to = cell("HALCYON_TRACE_TO", [-2, 52, -77]);
     let mut nav = NavService::new(Budget::Unlimited);
-    let here = nav.stand(&world, from).expect("from is standable");
-    let there = nav.stand(&world, to).expect("to is standable");
+    let here = nav.stand(&view, from).expect("from is standable");
+    let there = nav.stand(&view, to).expect("to is standable");
     // Trace the graph's own candidate for this pair when there is one.
     let candidate = nav
         .graph
-        .candidates(&world, from)
+        .candidates(&view, from)
         .and_then(|found| found.iter().find(|c| c.to == to).copied());
     eprintln!("candidate {candidate:?}");
     let (kind, via) = candidate.map_or((EdgeKind::Jump, None), |c| (c.kind, c.via));
-    for (runup, takeoff, sprint) in [(0.3f32, 0.6f32, true), (0.0, 0.2, false)] {
+    let runup: f32 = std::env::var("HALCYON_TRACE_RUNUP").map_or(0.3, |r| r.parse().unwrap());
+    let takeoff: f32 = std::env::var("HALCYON_TRACE_TAKEOFF").map_or(0.6, |r| r.parse().unwrap());
+    for (runup, takeoff, sprint) in [(runup, takeoff, true)] {
         let edge = Edge {
             to,
             to_feet: there.feet_y,
@@ -563,7 +588,7 @@ fn trace_edge() {
         for tick in 0..80 {
             let position = state.transform();
             let (intent, status) = run.tick(&Obs { position, velocity });
-            let advance = state.step(&world, intent.exact());
+            let advance = state.step(&view, intent.exact());
             let now = state.transform();
             eprintln!(
                 "  t={tick} pos=({:.3},{:.3},{:.3}) ground={} status={status:?} fwd={} back={} jump={} sprint={} correction={} uncertain={} collisions={:?}",
@@ -997,7 +1022,7 @@ fn spire_climb_scenario() {
         .collect();
     let started = std::time::Instant::now();
     let mut slowest_tick = std::time::Duration::ZERO;
-    let mut arena = crate::arena::Arena::default();
+    let mut arena = settled(&world);
     for tick in 1..=limit {
         let tick_started = std::time::Instant::now();
         for bot in &mut bots {
@@ -1055,5 +1080,59 @@ fn spire_climb_scenario() {
     });
     if let Some(path) = std::env::var_os("HALCYON_BENCH_REPORT") {
         std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+    }
+}
+
+/// Every jump plan between two cells on the settled terrain, with outcomes.
+#[test]
+#[ignore = "opt-in survey of a real map for navigation work"]
+fn jump_grid() {
+    let world = load_world();
+    let arena = settled(&world);
+    let view = arena.view(&world);
+    let parse = |name: &str, default: &str| {
+        let text = std::env::var(name).unwrap_or_else(|_| default.into());
+        let parts: Vec<i32> = text.split(',').map(|p| p.trim().parse().unwrap()).collect();
+        [parts[0], parts[1], parts[2]]
+    };
+    let from = parse("HALCYON_TRACE_FROM", "-21,90,-43");
+    let to = parse("HALCYON_TRACE_TO", "-21,90,-38");
+    let mut nav = NavService::new(Budget::Unlimited);
+    let here = nav.stand(&view, from).expect("from is standable");
+    let there = nav.stand(&view, to).expect("to is standable");
+    let [ax, az] = super::stand::centre(from);
+    let [bx, bz] = super::stand::centre(to);
+    let distance = (bx - ax).hypot(bz - az);
+    let dir = [(bx - ax) / distance, (bz - az) / distance];
+    let rim = here.rim(dir) as f32;
+    let back = here.rim([-dir[0], -dir[1]]) as f32;
+    let runway = nav.graph.runway(&view, from, here, dir, back);
+    eprintln!("rim {rim} back {back} runway {runway} distance {distance}");
+    let candidate = nav
+        .graph
+        .candidates(&view, from)
+        .and_then(|found| found.iter().find(|c| c.to == to).copied());
+    eprintln!("candidate {candidate:?}");
+    eprintln!("validated {:?}", candidate.and_then(|c| nav.graph.validate(&view, from, &c)));
+    let hop = std::env::var("HALCYON_TRACE_HOP").is_ok();
+    for runup in (0..=60).map(|k| k as f32 * 0.05).filter(|&r| r <= runway + 0.01) {
+        for takeoff in [rim + 0.2, rim + 0.29] {
+            let edge = Edge {
+                to,
+                to_feet: there.feet_y,
+                kind: EdgeKind::Jump,
+                plan: Plan { runup, takeoff, sprint: true, hop },
+                ticks: 0,
+                robustness: 0.0,
+                via: None,
+                damage: 0.0,
+            };
+            let out =
+                nav.graph.simulate(&view, from, here, edge, super::follow::Execution::IDEAL, false);
+            eprintln!(
+                "runup {runup:.1} takeoff {takeoff:.2}: ticks {:?} closest {:.2} furthest {:.2}",
+                out.ticks, out.closest, out.furthest
+            );
+        }
     }
 }

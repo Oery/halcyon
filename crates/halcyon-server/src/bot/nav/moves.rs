@@ -40,11 +40,16 @@ const MAX_BOUNCE_CANDIDATES: usize = 24;
 /// Run-ups longer than the own cell, for jumps that need full speed.
 const MID_RUNUP: f32 = 1.5;
 const LONG_RUNUP: f32 = 2.5;
-const RUNWAY_STEP: f32 = 0.25;
+const RUNWAY_STEP: f32 = 0.1;
+/// How far a run-up may start past the floor's back edge: feet overhang the
+/// edge as a player's do, short of the 0.3 half-width that still holds them.
+const RUNWAY_OVERHANG: f32 = 0.22;
 /// Run-up for a hop: room to sprint, jump once and land before the rim.
 const HOP_RUNUP: f32 = 5.0;
 /// Hop run-ups tried, a fraction of a sprint step apart.
-const HOP_PHASES: usize = 8;
+const HOP_PHASES: usize = 12;
+/// The shortest runway a hop is tried from.
+const MIN_HOP_RUNUP: f32 = 1.5;
 /// Run-up shortenings tried after a near miss, a fraction of a sprint step each.
 const PHASE_SHIFTS: [f32; 4] = [0.21, 0.14, 0.07, 0.035];
 
@@ -535,9 +540,10 @@ impl NavGraph {
         };
         // Probe with the farthest-reaching plan: if even it lands well short,
         // no plan can succeed. It is a feasibility check, never a preference.
-        let longest: &[f32] = if long { &[LONG_RUNUP, MID_RUNUP, 0.3] } else { &[0.3] };
-        let farthest = longest.iter().copied().find(|&r| runup_ok(r)).unwrap_or(0.0);
-        let hop = long && runway >= HOP_RUNUP;
+        // The whole runway, when it is shorter than the long run-up.
+        let full = runway.min(LONG_RUNUP);
+        let farthest = if long { full } else { full.min(0.3) };
+        let hop = long && runway >= MIN_HOP_RUNUP;
         let probe = Plan { runup: farthest, takeoff: rim + 0.2, sprint: true, hop: false };
         let probed = self.simulate(view, from, here, edge_for(probe), Execution::IDEAL, false);
         if probed.ticks.is_none() && probed.closest > 1.0 && probed.furthest + 1.0 < distance {
@@ -547,7 +553,7 @@ impl NavGraph {
         // ones, which only win when nothing simpler is as reliable.
         let sprints: [bool; 2] = if long { [true, false] } else { [false, true] };
         let runups: &[f32] = if long {
-            &[0.3, 0.0, MID_RUNUP, LONG_RUNUP]
+            &[0.3, 0.0, MID_RUNUP, full, LONG_RUNUP]
         } else {
             &[0.0, 0.3]
         };
@@ -578,10 +584,15 @@ impl NavGraph {
         }
         // Momentum from a hop is the last resort, for the longest jumps.
         if hop {
-            let hopping = Plan { runup: HOP_RUNUP, takeoff: rim + 0.2, sprint: true, hop: true };
+            // From as far back as the runway allows: on a short one the hop
+            // starts nearly from a stand, as players chain them on small ledges.
+            let start = runway.min(HOP_RUNUP);
+            let hopping = Plan { runup: start, takeoff: rim + 0.2, sprint: true, hop: true };
             // The hop must land just short of the rim: try several phases.
             plans.extend(
-                (0..HOP_PHASES).map(|k| Plan { runup: HOP_RUNUP - k as f32 * 0.07, ..hopping }),
+                (0..HOP_PHASES)
+                    .map(|k| Plan { runup: start - k as f32 * 0.07, ..hopping })
+                    .filter(|plan| plan.runup >= MIN_HOP_RUNUP),
             );
         }
         let mut best: Option<Edge> = None;
@@ -627,11 +638,13 @@ impl NavGraph {
         // Within the own cell the support's rim bounds it; beyond, floors.
         for step in 1..=(HOP_RUNUP / RUNWAY_STEP) as i32 {
             let distance = step as f32 * RUNWAY_STEP;
-            let x = cx - dir[0] * f64::from(distance);
-            let z = cz - dir[1] * f64::from(distance);
+            // The front of the footprint is what must stay over the floor.
+            let held = f64::from(distance - RUNWAY_OVERHANG);
+            let x = cx - dir[0] * held;
+            let z = cz - dir[1] * held;
             let cell = [x.floor() as i32, from[1], z.floor() as i32];
             let floor = if cell == from {
-                distance <= back + 0.2
+                distance <= back + RUNWAY_OVERHANG
             } else {
                 self.stand(view, cell).is_some_and(|s| (s.feet_y - here.feet_y).abs() < 0.01)
             };
