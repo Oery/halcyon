@@ -98,21 +98,33 @@ impl PacketCache {
                 tags: tags.into_iter().map(|name| Tag { name, entries: vec![] }).collect(),
             }
         }));
-        // Client current calculation must use the same block membership as
-        // the owner's fluid catalog. Keep the existing block tags in this group.
+        // Client movement must recognize the same supported blocks as the owner.
+        // Keep the existing block tags in this group.
         tagged
             .iter_mut()
             .find(|registry| registry.registry == "minecraft:block")
             .expect("configuration includes built-in block tags")
             .tags
-            .push(Tag {
-                name: "minecraft:blocks_fluid_flow",
-                entries: mc_protocol::data::builtin_tags::BLOCKS_FLUID_FLOW
-                    .iter()
-                    .copied()
-                    .map(VarInt)
-                    .collect(),
-            });
+            .extend([
+                Tag {
+                    name: "minecraft:blocks_fluid_flow",
+                    entries: mc_protocol::data::builtin_tags::BLOCKS_FLUID_FLOW
+                        .iter()
+                        .copied()
+                        .map(VarInt)
+                        .collect(),
+                },
+                Tag {
+                    name: "minecraft:climbable",
+                    // Built-in block IDs verified against the official 26.3 client:
+                    // ladder, vine, weeping/twisting vines and plants, cave vines and plant.
+                    // Scaffolding remains unsupported by the owner.
+                    entries: [266, 416, 968, 969, 970, 971, 1225, 1226]
+                        .into_iter()
+                        .map(VarInt)
+                        .collect(),
+                },
+            ]);
         // Built-in fluid registry IDs, verified against the official 26.3 client:
         // empty=0, flowing_water=1, water=2, flowing_lava=3, lava=4.
         // Missing fluid tags make the vanilla client treat water as air.

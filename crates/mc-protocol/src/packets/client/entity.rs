@@ -66,7 +66,7 @@ pub enum PlayerPose {
 }
 
 /// Protocol 777 Entity/LivingEntity/Avatar metadata, checked against the target
-/// client's accessors: flags 0, pose 6, health 9, displayed skin parts 16.
+/// client's accessors: flags 0, pose 6, hand states 8, health 9, displayed skin parts 16.
 #[derive(Debug)]
 pub struct PlayerStateMetadata {
     pub entity_id: i32,
@@ -75,6 +75,8 @@ pub struct PlayerStateMetadata {
     pub pose: PlayerPose,
     pub swimming: bool,
     pub sprinting: bool,
+    /// The hand of an item being used (eating, blocking, drawing).
+    pub using: Option<super::InteractionHand>,
     pub health: f32,
 }
 
@@ -83,7 +85,7 @@ impl<'p> Payload<'p> for PlayerStateMetadata {
     const STATE: State = State::Play;
 
     fn payload_len(&self) -> EncodeResult<usize> {
-        Ok(VarInt(self.entity_id).body_len() + 16)
+        Ok(VarInt(self.entity_id).body_len() + 19)
     }
 
     fn decode_payload(_buf: &mut &'p [u8]) -> DecodeResult<Self> {
@@ -102,6 +104,9 @@ impl<'p> Payload<'p> for PlayerStateMetadata {
         6u8.write(w).await?;
         VarInt(20).write(w).await?;
         VarInt(if self.health <= 0.0 { 7 } else { self.pose as i32 }).write(w).await?;
+        8u8.write(w).await?;
+        VarInt(0).write(w).await?;
+        self.using.map_or(0u8, |hand| 0x01 | ((hand as u8) << 1)).write(w).await?;
         9u8.write(w).await?;
         VarInt(3).write(w).await?;
         self.health.write(w).await?;

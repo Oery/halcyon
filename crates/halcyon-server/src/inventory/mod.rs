@@ -88,6 +88,10 @@ impl Inventory {
         }
     }
 
+    pub fn selected(&self) -> HotbarSlot {
+        self.selected
+    }
+
     pub fn equipment(&self) -> [ItemStack; 6] {
         [
             self.slots[self.selected.inventory_slot().index()].clone(),

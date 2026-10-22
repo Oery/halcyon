@@ -113,7 +113,6 @@ A bot is a registry player without a socket:
 Known engine gaps:
 
 - **Activation:** solved without engine changes. Bots request their spawn teleport and confirm it like a client, which activates them.
-- **No arm-swing / entity-animation packet,** and no observer-side hurt animation.
 - **Player Info:** no latency or game-mode fields (tab-list ping).
 - **Skins:** bots have no texture properties.
 

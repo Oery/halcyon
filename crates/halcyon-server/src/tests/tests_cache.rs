@@ -2,7 +2,7 @@ use super::*;
 use mc_protocol::types::Heightmap;
 
 #[test]
-fn configuration_preserves_tags_and_identifies_both_water_fluid_types() {
+fn configuration_preserves_tags_and_identifies_supported_movement_blocks_and_fluids() {
     futures_lite::future::block_on(async {
         let world = halcyon_world::World::from_loaded(halcyon_world::LoadedWorld {
             chunks: vec![],
@@ -27,6 +27,13 @@ fn configuration_preserves_tags_and_identifies_both_water_fluid_types() {
                 blocks.tags.iter().find(|tag| tag.name == "minecraft:blocks_fluid_flow").unwrap();
             assert!(flow.entries.iter().any(|id| id.0 == 1)); // stone, a block ID rather than state ID
             assert!(!flow.entries.iter().any(|id| id.0 == 0)); // air
+            let climbable: Vec<_> =
+                blocks.tags.iter().filter(|tag| tag.name == "minecraft:climbable").collect();
+            assert_eq!(climbable.len(), 1);
+            assert_eq!(
+                climbable[0].entries.iter().map(|id| id.0).collect::<Vec<_>>(),
+                [266, 416, 968, 969, 970, 971, 1225, 1226] // ladder and vine block IDs
+            );
             let fluid = tags.registries.iter().find(|r| r.registry == "minecraft:fluid").unwrap();
             let water = fluid.tags.iter().find(|tag| tag.name == "minecraft:water").unwrap();
             assert_eq!(water.entries.iter().map(|id| id.0).collect::<Vec<_>>(), [2, 1]);

@@ -164,6 +164,15 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
                 return Err(Error::InvalidPlayerData);
             }
             let [x, y, z] = crate::arena::unpack(p.location);
+            let used = crate::interaction::BlockUse {
+                sequence: p.sequence,
+                pos: [x, y, z],
+                cursor: [p.cursor_x, p.cursor_y, p.cursor_z],
+                main_hand: p.hand == 0,
+            };
+            if client.session.as_ref().is_some_and(|session| session.use_block(used)) {
+                return Ok(());
+            }
             client
                 .resync_blocks(crate::world_sync::resync_cells(crate::lobby::Transform {
                     x: f64::from(x) + 0.5,
@@ -192,6 +201,11 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
                 .await?;
             if let Some(session) = &client.session {
                 session.inventory(InventoryAction::Resync);
+            }
+        }
+        Packets::Punch(_) => {
+            if let Some(session) = &client.session {
+                session.swing(mc_protocol::packets::client::InteractionHand::Main);
             }
         }
         Packets::ClientCommand(p) => {

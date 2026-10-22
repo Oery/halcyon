@@ -7,6 +7,7 @@ use std::time::Instant;
 use halcyon_world::BlockView;
 #[cfg(test)]
 use halcyon_world::World;
+use mc_protocol::packets::client::InteractionHand;
 use mc_protocol::types::ItemStack;
 
 use crate::inventory::{
@@ -19,6 +20,8 @@ use crate::movement::{Advance, MovementInput, MovementState, ProposalQueue};
 
 const ACTIONS_PER_STEP: usize = 4;
 const MAX_ACTIONS: usize = 32;
+/// Dropped cells still reach the client through terrain publication.
+const MAX_USED_BLOCKS: usize = 16;
 
 /// Arena hooks deliberately precede the first minigame implementation.
 #[allow(dead_code)]
@@ -32,6 +35,8 @@ pub enum PlayerAction {
     Inventory(InventoryAction),
     /// Trusted owner input; None returns to client-predicted movement.
     Drive(Option<MovementInput>),
+    /// Item use in progress; it ends when the hand's item changes or the life ends.
+    UseItem(Option<InteractionHand>),
     EditInventory {
         edit: InventoryEdit,
         reply: glommio::channels::oneshot::Sender<Result<ItemStack, InventoryEditError>>,
@@ -98,6 +103,10 @@ impl ActionQueue {
 #[derive(Default)]
 pub struct PlayerUpdate {
     pub block_resync: Option<Transform>,
+    /// Cells changed by accepted block uses, resent before `block_ack`.
+    pub used_blocks: Vec<crate::arena::BlockPos>,
+    /// Highest processed block-use sequence; it survives a respawn.
+    pub block_ack: Option<i32>,
     pub teleport: Option<Teleport>,
     pub health: Option<f32>,
     pub damage: Option<Damage>,
@@ -127,6 +136,12 @@ impl PlayerUpdate {
         if newer.block_resync.is_some() {
             self.block_resync = newer.block_resync;
         }
+        for pos in newer.used_blocks {
+            if self.used_blocks.len() < MAX_USED_BLOCKS && !self.used_blocks.contains(&pos) {
+                self.used_blocks.push(pos);
+            }
+        }
+        self.block_ack = self.block_ack.max(newer.block_ack);
         if newer.health.is_some() {
             self.health = newer.health;
         }
@@ -146,6 +161,7 @@ impl PlayerUpdate {
 
     pub fn changed(&self) -> bool {
         self.block_resync.is_some()
+            || self.block_ack.is_some()
             || self.teleport.is_some()
             || self.health.is_some()
             || self.damage.is_some()
@@ -160,6 +176,8 @@ pub struct PlayerState {
     pub life: PlayerLife,
     pub inventory: Inventory,
     pub equipment: Rc<[ItemStack; 6]>,
+    /// The used hand and the selection when its use began.
+    using: Option<(InteractionHand, HotbarSlot)>,
     movement_input: Option<MovementInput>,
     resync_after: Option<Instant>,
 }
@@ -171,9 +189,14 @@ impl PlayerState {
             life: PlayerLife::new(transform),
             inventory: Inventory::default(),
             equipment: Rc::new(std::array::from_fn(|_| ItemStack::default())),
+            using: None,
             movement_input: None,
             resync_after: None,
         }
+    }
+
+    pub fn using(&self) -> Option<InteractionHand> {
+        self.using.map(|(hand, _)| hand)
     }
 
     fn teleport(
@@ -224,6 +247,7 @@ impl PlayerState {
                 self.life.reset();
             }
             update.clear_life_events();
+            self.using = None;
             self.inventory.begin_life();
             update.health = Some(self.life.health());
             update.respawn = true;
@@ -239,6 +263,7 @@ impl PlayerState {
             update.damage = Some(damage);
             if died {
                 update.death = Some(damage);
+                self.using = None;
                 self.inventory.cancel_drag();
                 self.movement_input = None;
                 self.movement.reset(self.movement.transform());
@@ -247,8 +272,15 @@ impl PlayerState {
     }
 
     fn inventory_changed(&mut self, changed: InventoryChange, update: &mut PlayerUpdate) {
-        if changed.equipment_changed {
-            self.equipment = Rc::new(self.inventory.equipment());
+        let previous = changed
+            .equipment_changed
+            .then(|| std::mem::replace(&mut self.equipment, Rc::new(self.inventory.equipment())));
+        // Vanilla stops a use when the hand's item or the held selection changes.
+        if let Some((hand, selected)) = self.using
+            && (previous.is_some_and(|old| old[hand as usize] != self.equipment[hand as usize])
+                || (hand == InteractionHand::Main && selected != self.inventory.selected()))
+        {
+            self.using = None;
         }
         if changed.has_changes() {
             update.inventory_slots |= changed.changed_slots;
@@ -344,6 +376,11 @@ impl PlayerState {
                         }
                         self.movement_input = input;
                         proposals.clear();
+                    }
+                }
+                PlayerAction::UseItem(hand) => {
+                    if self.life.alive() {
+                        self.using = hand.map(|hand| (hand, self.inventory.selected()));
                     }
                 }
                 PlayerAction::EditInventory { edit, reply } => {

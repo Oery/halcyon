@@ -73,8 +73,8 @@ impl Client {
     ) -> Result<(), Error> {
         use crate::lifecycle::{DamageKind, TELEPORT_TIMEOUT};
         use mc_protocol::packets::client::{
-            CombatKill, DamageEvent, GameEvent, PlayerAbilities, Respawn, SetContainerContent,
-            SetContainerSlot, SetCursorItem, SetHealth, SetHeldItemResponse, SyncPlayerPosition,
+            CombatKill, GameEvent, PlayerAbilities, Respawn, SetContainerContent, SetContainerSlot,
+            SetCursorItem, SetHealth, SetHeldItemResponse, SyncPlayerPosition,
         };
         use mc_protocol::types::Nbt;
         if update.respawn {
@@ -102,20 +102,19 @@ impl Client {
         if let Some(position) = update.block_resync {
             self.resync_blocks(crate::world_sync::resync_cells(position)).await?;
         }
+        // Authoritative states must precede the acknowledgement, which ends prediction.
+        if !update.used_blocks.is_empty() {
+            self.resync_blocks(update.used_blocks).await?;
+        }
+        if let Some(sequence_id) = update.block_ack {
+            self.send(&mc_protocol::packets::client::AcknowledgeBlockChange { sequence_id })
+                .await?;
+        }
         if let Some(health) = update.health {
             self.send(&SetHealth { health, food: 20, saturation: 5.0 }).await?;
         }
         if let Some(damage) = update.damage {
-            let source =
-                damage.source.filter(|id| *id > 0).and_then(|id| id.checked_add(1)).unwrap_or(0);
-            self.send(&DamageEvent {
-                entity_id: self.entity_id()?,
-                source_type_id: damage.kind.protocol_id(),
-                source_cause_id: source,
-                source_direct_id: source,
-                source_position: None,
-            })
-            .await?;
+            self.send(&damage.event(self.entity_id()?)).await?;
         }
         if let Some(damage) = update.death {
             let message = match damage.kind {

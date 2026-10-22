@@ -66,6 +66,7 @@ pub struct PlayerSnapshot {
     pub pose: mc_protocol::packets::client::PlayerPose,
     pub swimming: bool,
     pub sprinting: bool,
+    pub using: Option<mc_protocol::packets::client::InteractionHand>,
     pub health: f32,
     pub equipment: Rc<[ItemStack; 6]>,
     pub life_generation: u64,
@@ -156,6 +157,8 @@ impl Lobby {
     ) -> Result<Self, crate::arena::EditError> {
         let mut state = Registry::default();
         state.arena.initialize(&world)?;
+        // Build the shared openings catalog before the first use reaches a tick.
+        halcyon_world::opening(0);
         let registry = Rc::new(RefCell::new(state));
         let (sender, receiver) = local_channel::new_bounded(REGISTRATION_CAPACITY);
         let owner = Rc::new(Signal::default());
@@ -188,6 +191,12 @@ impl Lobby {
             registry.world_actions.push_back(WorldAction { pos, state, reply });
         }
         response.await.map_err(|_| crate::arena::EditError::Unavailable)?
+    }
+
+    /// Game-owned sounds, particles and animations for nearby observers.
+    #[allow(dead_code)]
+    pub fn effects(&self, emit: impl FnOnce(&mut crate::effects::EffectLog)) {
+        emit(&mut self.registry.borrow_mut().effects);
     }
 
     pub fn with_registry<T>(&self, read: impl FnOnce(&Registry) -> T) -> T {

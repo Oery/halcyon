@@ -42,8 +42,8 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Sprinting and sneaking | Done — ground speed, crouch clearance and sneak edge protection. |
 | Jumping and falling | Done — ground jumps, gravity, air control, jump timing and supported landing effects. |
 | Swimming and crawling | Done — water travel, sprint swimming, currents, shoreline exits and swim/crawl pose transitions; air and drowning remain unavailable. |
-| Climbing | Partial — ladders, open trapdoors above matching ladders and the vine family (vines, cave, weeping and twisting vines) climb by pushing or jumping; scaffolding unavailable. |
-| Movement surfaces and media | Partial — dry surfaces, honey sliding, landing modifiers, water and lava travel and ladder climbing (including open trapdoors above matching ladders), with aquatic plants, supported waterlogged geometry and offset bamboo stalks; lava burning, bubble columns, scaffolding and webs unavailable. |
+| Climbing | Partial — ladders, matching open trapdoors above ladders, vines, cave vines, weeping vines and twisting vines; scaffolding unavailable. |
+| Movement surfaces and media | Partial — dry surfaces, honey sliding, landing modifiers, water and lava travel and ladder/vine climbing (including open trapdoors above matching ladders), with aquatic plants, supported waterlogged geometry and offset bamboo stalks; lava burning, bubble columns, scaffolding and webs unavailable. |
 | Flight permissions | Not started |
 | Movement abilities and attributes | Not started |
 | Teleportation | Done — validated destinations and position corrections. |
@@ -52,7 +52,7 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Death processing | Partial — death state and messages; no drops or match callbacks. |
 | Respawning | Done — same-world respawn/reset; inventory retained. |
 | Dimension transitions | Not started |
-| Player poses and actions | Partial — standing, crouching, swimming/crawling and dying. |
+| Player poses and actions | Partial — standing, crouching, swimming/crawling, dying, visible arm swings and item-use hand state. |
 | End completion flow | Excluded |
 
 ## 3. Combat and survival
@@ -139,11 +139,11 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Block breaking | Not started |
 | Break feedback | Not started |
 | Block drops | Conditional |
-| Interaction validation | Partial — disabled digging and item/block use rejected and corrected; no enabled block interactions. |
+| Interaction validation | Partial — door, trapdoor and fence-gate use checks reach, hand and sneaking with held items; digging and other item/block use rejected and corrected. |
 | Predicted-action correction | Partial — block states and sequence acknowledgements restore rejected edits; collision corrections resend nearby terrain. |
 | Neighbor and shape updates | Partial — sand/gravel support changes; no general shape updates. |
 | Block entities | Not started |
-| Doors, trapdoors, and gates | Not started |
+| Doors, trapdoors, and gates | Partial — hand-operated doors, trapdoors and fence gates; water in waterlogged trapdoors does not flow when opened; no sounds for other players. |
 | Beds and respawn anchors | Conditional |
 | Straw beds | Conditional |
 | Signs | Not started |
@@ -298,9 +298,9 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Titles and action bar | Not started |
 | Player HUD state | Partial — health and hotbar; food stays fixed. |
 | Locator bar and waypoints | Not started |
-| Sounds | Not started |
-| Particles | Not started |
-| World and entity events | Partial — player damage and death. |
+| Sounds | Partial — positioned and entity sounds for nearby players, with combat presets; observers hear player hurt sounds. |
+| Particles | Partial — option-free particles for nearby players, with crit, hit, damage-indicator and sweep presets. |
+| World and entity events | Partial — player damage, death, swings and critical-hit animations, shown to other players. |
 | Maps and markers | Conditional |
 | Camera targets | Not started |
 | Dialogs | Not started |

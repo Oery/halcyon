@@ -5,9 +5,11 @@ use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
 
 use glommio::channels::oneshot;
+use mc_protocol::packets::client::InteractionHand;
 use mc_protocol::types::ItemStack;
 
 use super::{ObserverMetrics, Transform};
+use crate::interaction::{BlockUse, UseQueue};
 use crate::inventory::InventoryAction;
 use crate::lifecycle::{Damage, PlayerRules};
 use crate::movement::{MovementProposal, ProposalQueue};
@@ -48,11 +50,14 @@ pub(super) struct Input {
     pub(super) transform: Cell<Option<Transform>>,
     pub(super) proposals: RefCell<ProposalQueue>,
     pub(super) actions: RefCell<ActionQueue>,
+    pub(super) uses: RefCell<UseQueue>,
     pub(super) accepted: Cell<Transform>,
     pub(super) generation: Cell<u64>,
     pub(super) ready: Cell<bool>,
     pub(super) teleport_confirmation: Cell<Option<i32>>,
     pub(super) respawn_requested: Cell<bool>,
+    /// Coalesced hand-swing bitmask; bit index is the `InteractionHand`.
+    pub(super) swings: Cell<u8>,
     pub(super) update: RefCell<PlayerUpdate>,
     pub(super) skin_parts: Cell<Option<u8>>,
     pub(super) changed: Signal,
@@ -69,11 +74,13 @@ impl Input {
             transform: Cell::new(None),
             proposals: RefCell::new(ProposalQueue::default()),
             actions: RefCell::new(ActionQueue::default()),
+            uses: RefCell::new(UseQueue::default()),
             accepted: Cell::new(Transform::default()),
             generation: Cell::new(0),
             ready: Cell::new(false),
             teleport_confirmation: Cell::new(None),
             respawn_requested: Cell::new(false),
+            swings: Cell::new(0),
             update: RefCell::new(PlayerUpdate::default()),
             skin_parts: Cell::new(None),
             changed: Signal::default(),
@@ -143,6 +150,11 @@ impl Session {
         self.input.actions.borrow_mut().push(self.input.generation.get(), action)
     }
 
+    /// The owner acknowledges the sequence once the use is accepted or rejected.
+    pub fn use_block(&self, used: BlockUse) -> bool {
+        self.input.uses.borrow_mut().push(used)
+    }
+
     pub fn inventory(&self, action: InventoryAction) {
         self.submit(PlayerAction::Inventory(action));
     }
@@ -170,6 +182,18 @@ impl Session {
 
     pub fn respawn(&self) {
         self.input.respawn_requested.set(true);
+    }
+
+    /// Show a hand swing to observers. Swings coalesce per simulation step, so
+    /// repeated clicks never compete with actions for queue space.
+    pub fn swing(&self, hand: InteractionHand) {
+        self.input.swings.set(self.input.swings.get() | (1 << hand as u8));
+    }
+
+    /// Start or stop using the item in a hand (eating, blocking, drawing).
+    #[allow(dead_code)]
+    pub fn use_item(&self, hand: Option<InteractionHand>) -> bool {
+        self.submit(PlayerAction::UseItem(hand))
     }
 
     #[allow(dead_code)]

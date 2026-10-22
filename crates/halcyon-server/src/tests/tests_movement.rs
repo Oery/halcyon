@@ -395,3 +395,50 @@ fn ladders_climb_hold_and_continue_through_matching_trapdoors() {
     }
     assert_eq!(state.transform().y, held);
 }
+
+#[test]
+fn vines_accept_client_climbs_and_descents_and_support_input_driven_climbing() {
+    let id = |key: &str| halcyon_world::blockstates::block_state_id(key).unwrap() as u16;
+    for key in [
+        "minecraft:vine[east=false,north=true,south=false,up=false,west=false]",
+        "minecraft:cave_vines[age=0,berries=true]",
+        "minecraft:cave_vines_plant[berries=false]",
+        "minecraft:weeping_vines[age=3]",
+        "minecraft:weeping_vines_plant",
+        "minecraft:twisting_vines[age=25]",
+        "minecraft:twisting_vines_plant",
+    ] {
+        let wall = LadderWall { ladder: id(key), top: None };
+        let mut state = MovementState::new(position(0.5, 2.0, 1.5));
+        let mut queue = ProposalQueue::default();
+        propose(&mut queue, position(0.5, 2.1176, 1.5));
+        let result = state.advance(&wall, &mut queue);
+        assert!(!result.correction && !result.uncertain_motion, "{key}: {result:?}");
+        assert_eq!(result.transform.y, 2.1176);
+
+        let input = MovementInput { forward: true, ..Default::default() };
+        for _ in 0..35 {
+            let result = state.step(&wall, input);
+            assert!(!result.correction && !result.uncertain_motion, "{key}: {result:?}");
+        }
+        assert!(state.transform().y > 5.0, "{key}: {:?}", state.transform());
+        let sneak = MovementInput { sneaking: true, ..Default::default() };
+        for _ in 0..3 {
+            state.step(&wall, sneak);
+        }
+        let held = state.transform().y;
+        for _ in 0..5 {
+            assert!(!state.step(&wall, sneak).correction, "{key}");
+        }
+        assert_eq!(state.transform().y, held, "{key}");
+
+        let mut state = MovementState::new(position(0.5, 6.0, 1.5));
+        for step in 1..=50 {
+            let y = (6.0 - 0.1 * f64::from(step)).max(1.0);
+            propose(&mut queue, position(0.5, y, 1.5));
+            let result = state.advance(&wall, &mut queue);
+            assert!(!result.correction && !result.uncertain_motion, "{key}: {result:?}");
+            assert!(result.landed_fall_damage.is_none_or(|damage| damage == 0.0), "{key}");
+        }
+    }
+}
