@@ -7,6 +7,7 @@ use crate::server::Server;
 
 mod arena;
 mod auth;
+mod bot;
 mod cache;
 mod chunks;
 mod client;
@@ -31,11 +32,15 @@ static ADDR: &str = "127.0.0.1:25565";
 
 #[glommio::main(placement = Fixed(0))]
 async fn main() -> std::io::Result<()> {
-    let lobby = halcyon_world::World::load(std::path::Path::new("worlds/lobby"))
+    let lobby = halcyon_world::World::load(std::path::Path::new("worlds/Parkour Spiral"))
         .map_err(std::io::Error::other)?;
     let server = Arc::new(Server::new(lobby).await.map_err(std::io::Error::other)?);
     let players = lobby::Lobby::spawn(server.lobby.clone(), server.diagnostics)
         .map_err(std::io::Error::other)?;
+
+    // Temporary until matches own bot populations: HALCYON_BOTS=<count>.
+    let bots = std::env::var("HALCYON_BOTS").ok().and_then(|n| n.parse().ok()).unwrap_or(0);
+    bot::spawn(server.clone(), players.clone(), bots, 0x0068_616c_6379_6f6e);
 
     let listener = TcpListener::bind(ADDR)?;
     let mut incoming = listener.incoming();
