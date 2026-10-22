@@ -159,6 +159,8 @@ impl Lobby {
     ) -> Result<Self, crate::arena::EditError> {
         let mut state = Registry::default();
         state.arena.initialize(&world)?;
+        // Build the shared openings catalog before the first use reaches a tick.
+        halcyon_world::opening(0);
         let registry = Rc::new(RefCell::new(state));
         let (sender, receiver) = local_channel::new_bounded(REGISTRATION_CAPACITY);
         let owner = Rc::new(Signal::default());

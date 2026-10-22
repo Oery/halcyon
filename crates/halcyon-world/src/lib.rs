@@ -1,11 +1,13 @@
 pub mod blockstates;
 pub mod disk_nbt;
 pub mod loader;
+pub mod openings;
 pub mod terrain;
 
 use thiserror::Error;
 
 pub use loader::{LoadedWorld, load_dir};
+pub use openings::{Opening, opening};
 pub use terrain::{
     Aabb, BlockKind, BlockProperties, BlockStateId, COLLISION_MAX_OFFSET, COLLISION_MIN_OFFSET,
     Climb, FluidInfo, FluidKind, MAX_BLOCK_Y, MIN_BLOCK_Y, MotionInfo, SECTION_COUNT, Section,

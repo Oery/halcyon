@@ -102,6 +102,14 @@ impl Client {
         if let Some(position) = update.block_resync {
             self.resync_blocks(crate::world_sync::resync_cells(position)).await?;
         }
+        // Authoritative states must precede the acknowledgement, which ends prediction.
+        if !update.used_blocks.is_empty() {
+            self.resync_blocks(update.used_blocks).await?;
+        }
+        if let Some(sequence_id) = update.block_ack {
+            self.send(&mc_protocol::packets::client::AcknowledgeBlockChange { sequence_id })
+                .await?;
+        }
         if let Some(health) = update.health {
             self.send(&SetHealth { health, food: 20, saturation: 5.0 }).await?;
         }

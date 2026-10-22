@@ -12,6 +12,7 @@ mod chunks;
 mod client;
 mod encryption;
 mod error;
+mod interaction;
 mod inventory;
 mod lifecycle;
 mod lobby;

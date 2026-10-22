@@ -139,11 +139,11 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Block breaking | Not started |
 | Break feedback | Not started |
 | Block drops | Conditional |
-| Interaction validation | Partial — disabled digging and item/block use rejected and corrected; no enabled block interactions. |
+| Interaction validation | Partial — door, trapdoor and fence-gate use checks reach, hand and sneaking with held items; digging and other item/block use rejected and corrected. |
 | Predicted-action correction | Partial — block states and sequence acknowledgements restore rejected edits; collision corrections resend nearby terrain. |
 | Neighbor and shape updates | Partial — sand/gravel support changes; no general shape updates. |
 | Block entities | Not started |
-| Doors, trapdoors, and gates | Not started |
+| Doors, trapdoors, and gates | Partial — hand-operated doors, trapdoors and fence gates; water in waterlogged trapdoors does not flow when opened; no sounds for other players. |
 | Beds and respawn anchors | Conditional |
 | Straw beds | Conditional |
 | Signs | Not started |

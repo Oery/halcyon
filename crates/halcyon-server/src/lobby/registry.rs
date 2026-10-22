@@ -11,7 +11,9 @@ use super::session::Input;
 use super::{
     AdmissionError, MAX_PLAYERS, PlayerSnapshot, Profile, StepMetrics, Transform, WorldAction,
 };
-use crate::player::PlayerState;
+use crate::interaction::{USES_PER_STEP, use_block};
+use crate::inventory::InventoryAction;
+use crate::player::{PlayerAction, PlayerState, PlayerUpdate};
 
 pub(super) struct Player {
     pub(super) snapshot: PlayerSnapshot,
@@ -273,6 +275,31 @@ impl Registry {
             };
             let result = self.arena.edit(world, action.pos, action.state);
             let _ = action.reply.send(result);
+        }
+        for player in self.players.values() {
+            let mut update = PlayerUpdate::default();
+            for _ in 0..USES_PER_STEP {
+                let Some(used) = player.input.uses.borrow_mut().pop() else {
+                    break;
+                };
+                update.block_ack = update.block_ack.max(Some(used.sequence));
+                if let Some(cells) = use_block(&mut self.arena, world, &player.state, used) {
+                    update.used_blocks.extend(cells);
+                } else {
+                    // Restore a predicted opening, placement or item use.
+                    let [x, y, z] = used.pos.map(f64::from);
+                    update.block_resync =
+                        Some(Transform { x: x + 0.5, y, z: z + 0.5, ..Default::default() });
+                    player.input.actions.borrow_mut().push(
+                        player.state.life.generation,
+                        PlayerAction::Inventory(InventoryAction::Resync),
+                    );
+                }
+            }
+            if update.changed() {
+                player.input.update.borrow_mut().merge(update);
+                notices.push(player.input.clone());
+            }
         }
         self.arena.step(world, &mut self.last_entity_id);
         let world = self.arena.view(world);

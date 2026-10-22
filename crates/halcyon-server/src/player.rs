@@ -19,6 +19,8 @@ use crate::movement::{Advance, MovementInput, MovementState, ProposalQueue};
 
 const ACTIONS_PER_STEP: usize = 4;
 const MAX_ACTIONS: usize = 32;
+/// Dropped cells still reach the client through terrain publication.
+const MAX_USED_BLOCKS: usize = 16;
 
 /// Arena hooks deliberately precede the first minigame implementation.
 #[allow(dead_code)]
@@ -98,6 +100,10 @@ impl ActionQueue {
 #[derive(Default)]
 pub struct PlayerUpdate {
     pub block_resync: Option<Transform>,
+    /// Cells changed by accepted block uses, resent before `block_ack`.
+    pub used_blocks: Vec<crate::arena::BlockPos>,
+    /// Highest processed block-use sequence; it survives a respawn.
+    pub block_ack: Option<i32>,
     pub teleport: Option<Teleport>,
     pub health: Option<f32>,
     pub damage: Option<Damage>,
@@ -127,6 +133,12 @@ impl PlayerUpdate {
         if newer.block_resync.is_some() {
             self.block_resync = newer.block_resync;
         }
+        for pos in newer.used_blocks {
+            if self.used_blocks.len() < MAX_USED_BLOCKS && !self.used_blocks.contains(&pos) {
+                self.used_blocks.push(pos);
+            }
+        }
+        self.block_ack = self.block_ack.max(newer.block_ack);
         if newer.health.is_some() {
             self.health = newer.health;
         }
@@ -146,6 +158,7 @@ impl PlayerUpdate {
 
     pub fn changed(&self) -> bool {
         self.block_resync.is_some()
+            || self.block_ack.is_some()
             || self.teleport.is_some()
             || self.health.is_some()
             || self.damage.is_some()

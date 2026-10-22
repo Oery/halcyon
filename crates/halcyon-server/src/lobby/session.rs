@@ -8,6 +8,7 @@ use glommio::channels::oneshot;
 use mc_protocol::types::ItemStack;
 
 use super::{ObserverMetrics, Transform};
+use crate::interaction::{BlockUse, UseQueue};
 use crate::inventory::InventoryAction;
 use crate::lifecycle::{Damage, PlayerRules};
 use crate::movement::{MovementProposal, ProposalQueue};
@@ -48,6 +49,7 @@ pub(super) struct Input {
     pub(super) transform: Cell<Option<Transform>>,
     pub(super) proposals: RefCell<ProposalQueue>,
     pub(super) actions: RefCell<ActionQueue>,
+    pub(super) uses: RefCell<UseQueue>,
     pub(super) accepted: Cell<Transform>,
     pub(super) generation: Cell<u64>,
     pub(super) ready: Cell<bool>,
@@ -69,6 +71,7 @@ impl Input {
             transform: Cell::new(None),
             proposals: RefCell::new(ProposalQueue::default()),
             actions: RefCell::new(ActionQueue::default()),
+            uses: RefCell::new(UseQueue::default()),
             accepted: Cell::new(Transform::default()),
             generation: Cell::new(0),
             ready: Cell::new(false),
@@ -141,6 +144,11 @@ impl Session {
 
     pub fn submit(&self, action: PlayerAction) -> bool {
         self.input.actions.borrow_mut().push(self.input.generation.get(), action)
+    }
+
+    /// The owner acknowledges the sequence once the use is accepted or rejected.
+    pub fn use_block(&self, used: BlockUse) -> bool {
+        self.input.uses.borrow_mut().push(used)
     }
 
     pub fn inventory(&self, action: InventoryAction) {

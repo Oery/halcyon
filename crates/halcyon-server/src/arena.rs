@@ -222,6 +222,28 @@ impl Arena {
         Ok(())
     }
 
+    /// Edits cells together, such as both halves of a door. On failure,
+    /// cells already written are restored to their previous states.
+    pub fn edit_all(
+        &mut self,
+        base: &World,
+        cells: &[(BlockPos, BlockStateId)],
+    ) -> Result<(), EditError> {
+        let previous: Vec<_> =
+            cells.iter().map(|(p, _)| self.view(base).block_at(p[0], p[1], p[2])).collect();
+        for (index, &(pos, state)) in cells.iter().enumerate() {
+            if let Err(error) = self.edit(base, pos, state) {
+                for (&(pos, _), old) in cells[..index].iter().zip(&previous).rev() {
+                    if let Some(old) = *old {
+                        self.write(pos, old);
+                    }
+                }
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
     fn room(&self, pos: BlockPos, reserve: usize) -> bool {
         let col = column(pos);
         let entry = self.columns.get(&col);
