@@ -380,6 +380,81 @@ fn edge_success_rate() {
     );
 }
 
+/// Validated route search for every leg between consecutive checkpoints:
+/// which legs bots can complete and where the others stop.
+#[test]
+#[ignore = "opt-in survey of a real map for navigation work"]
+fn checkpoint_legs() {
+    let world = load_world();
+    let names = block_names();
+    let (x, y, z, _, _) = world.spawn;
+    let around = [x.floor() as i32, y.floor() as i32, z.floor() as i32];
+    let mut nav = NavService::new(Budget::Unlimited);
+    let checkpoints = nav.detect_checkpoints(&world, around, 128);
+    let goal = nav.detect_goal(&world, around, 128).expect("a goal");
+    let stops: Vec<Cell> = checkpoints.iter().copied().chain(std::iter::once(goal)).collect();
+    for (index, pair) in stops.windows(2).enumerate() {
+        let started = std::time::Instant::now();
+        let mut search = Search::default();
+        search.start(pair[0], pair[1]);
+        let status = loop {
+            match search.step(&mut nav, &world, 100_000, &|_, _| 0.0) {
+                SearchStatus::Running => {}
+                done => break done,
+            }
+        };
+        let summary = match &status {
+            SearchStatus::Found(path) => format!("found {} steps", path.len()),
+            SearchStatus::Partial(path) => {
+                let end = path.last().map(|s| s.edge.to);
+                // Mechanics near where the route stops hint at what is missing.
+                let mut near = std::collections::BTreeSet::new();
+                if let Some([ex, ey, ez]) = end {
+                    for x in ex - 4..=ex + 4 {
+                        for y in ey - 3..=ey + 5 {
+                            for z in ez - 4..=ez + 4 {
+                                let id = world.block_at(x, y, z).unwrap_or(0);
+                                let name = names[&u32::from(id)].split('[').next().unwrap();
+                                let name = name.trim_start_matches("minecraft:");
+                                if [
+                                    "door",
+                                    "trapdoor",
+                                    "ladder",
+                                    "vine",
+                                    "bubble",
+                                    "scaffold",
+                                    "slime",
+                                    "button",
+                                    "lever",
+                                    "piston",
+                                    "water",
+                                    "honey",
+                                    "fence_gate",
+                                ]
+                                .iter()
+                                .any(|word| name.contains(word))
+                                {
+                                    near.insert(name.to_owned());
+                                }
+                            }
+                        }
+                    }
+                }
+                format!("PARTIAL, stops at {end:?} near {near:?}")
+            }
+            _ => "UNREACHABLE".to_owned(),
+        };
+        eprintln!(
+            "leg {} -> {}: {:?} -> {:?} {summary} ({} ms)",
+            index + 1,
+            index + 2,
+            pair[0],
+            pair[1],
+            started.elapsed().as_millis()
+        );
+    }
+}
+
 /// Why lily pads near spawn are or are not navigation nodes.
 #[test]
 #[ignore = "opt-in survey of a real map for navigation work"]

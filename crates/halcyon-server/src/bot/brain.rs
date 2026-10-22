@@ -21,6 +21,8 @@ const EXPANSIONS_PER_TICK: usize = 2_000;
 const FAILURE_COST: f32 = 60.0;
 /// Farther than this from a walk's starting cell, walk onto it first.
 const APPROACH_OFFSET: f64 = super::nav::follow::CENTRED + 0.15;
+/// Failed plans in a row before a stranded bot returns to its checkpoint.
+const STRANDED_RESET: u8 = 3;
 /// Ticks a bot keeps swimming toward a floor before giving up.
 const SWIM_LIMIT: u32 = 600;
 /// How far a swimming bot looks for a floor to climb onto.
@@ -103,6 +105,8 @@ pub struct Brain {
     checkpoint: usize,
     /// Trapped: return to the last checkpoint.
     reset_requested: bool,
+    /// Consecutive plans that found no way on.
+    stranded: u8,
     ticks: u64,
     pub stats: BrainStats,
 }
@@ -125,6 +129,7 @@ impl Brain {
             arrived: None,
             checkpoint: 0,
             reset_requested: false,
+            stranded: 0,
             ticks: 0,
             stats: BrainStats::default(),
         }
@@ -155,6 +160,7 @@ impl Brain {
         let ahead = nav.checkpoints.iter().skip(self.checkpoint).position(|&c| c == cell);
         if let Some(offset) = ahead {
             self.checkpoint += offset + 1;
+            self.stranded = 0;
         }
         ahead.is_some()
     }
@@ -317,7 +323,16 @@ impl Brain {
                 self.path = path.into();
                 self.state = State::Follow;
             }
-            _ => self.state = State::Stuck(self.rng.ticks(100, 300)),
+            _ => {
+                // Stranded where no route leads on: after a few tries, go
+                // back to the checkpoint like a player who fell would.
+                self.stranded = self.stranded.saturating_add(1);
+                if self.stranded >= STRANDED_RESET {
+                    self.stranded = 0;
+                    self.reset_requested = true;
+                }
+                self.state = State::Stuck(self.rng.ticks(100, 300));
+            }
         }
         self.idle(position)
     }
