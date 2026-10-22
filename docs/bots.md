@@ -288,35 +288,41 @@ Code: `crates/halcyon-server/src/bot/`. Tests: `src/tests/tests_bot_*.rs`. Real-
 | `cargo test --release -p halcyon-server spire_climb_scenario -- --ignored --nocapture` | Headless bots on a real map. Reports route existence, simulation cost, per-bot progress and, when the route is partial, a frontier report. |
 | `survey_map`, `survey_layers`, `survey_box`, `survey_inventory`, `survey_raised_water`, `survey_lily_pads`, `geometric_route`, `trace_edge` | Map forensics: height maps, slices, block inventories, optimistic routes and tick-by-tick traces of one edge. |
 | `HALCYON_DIAGNOSTICS=1` | Prints a `bots:` line every 5 s: modes, failures by cause, heights and navigation cache and cost. |
-| `HALCYON_BOT_TRACE=1` | Logs every failed edge. |
+| `HALCYON_BOT_TRACE=1` | Logs every failed edge, with its robustness. |
+| `geometric_route` with `HALCYON_ROUTE_FROM`/`HALCYON_ROUTE_TO` | One leg, e.g. between checkpoints: optimistic route, near misses and a reached/unreached height map. |
+| `edge_success_rate`, `trace_bot`, `survey_checkpoints`, `survey_approaches` | Live-controller success rate of one edge per level, a traced headless bot, the checkpoint list, floors around a goal. |
+
+### Checkpoints, bounces and resets
+
+- **Checkpoints:** gold (light weighted) pressure plates within 128 blocks of spawn are the course's checkpoints, ordered by height (`NavService::detect_checkpoints`). Each bot routes to its next plate and advances when it stands on one. It never skips a plate: if no route exists, it waits and retries. Set `HALCYON_BOT_NO_CHECKPOINTS` to aim straight for the top instead.
+- **Bounces:** a slime block within jumping reach becomes a bounce edge to floors up to about 75% of the fall height above it. The bot lands on the pad's far side and sprint-jumps off it toward the ledge, then validation simulates the result like any other edge.
+- **Resets:** a bot trapped in water for 30 s asks to be returned to its last checkpoint, or to spawn. The server teleports it. This stands in for the course's own fall handling, which Halcyon does not run for humans yet.
 
 ### Parkour Spiral status
 
-**Works:** from the spawn island, bots cross the lily pad trail and reach the spire base cave around `(0, 54, -45)`.
+**Works:**
+1. Bots cross the lily pad trail to the first checkpoint `(0, 52, -49)`.
+2. They climb the azalea and sand steps to checkpoint 2 `(-17, 59, -39)`.
+3. They bounce off the slime pad onto the grass ledge, pass through the jungle hut tunnel, and reach the stone-slab path around `(-46, 64.5, -14)`.
 
-**Performance:**
-- Headless: 8 bots of mixed levels, all arrive.
-- Live: 50 bots arrive about 40 s after they start moving, with a lobby tick under 1.2 ms.
-- The first route takes about 60 s of shared validation budget at the 4 ms default (about 90 s at 2 ms). Later bots reuse it.
+In a headless run, all six bots (levels 0–100) got that far. On the jump over the tunnel's water pit, the live controller succeeds 20/20 at level 100, 17/20 at level 50 and 0/20 at level 0.
 
-**Blocked:** the graph is closed beyond the cave. Even the optimistic geometric search finds no way up. The cave's azalea bush offers footholds at y 53 and y 56 but nothing between, under a canopy. Above it, a chamber with a pressure plate, redstone and sticky pistons (around `(6, 57, -41)`) looks like a mechanism door. Redstone is not simulated.
+**Blocked:** the slab path ends against ground 1.5 blocks higher (out of jump reach) under a cherry tree. Checkpoint 3 `(-46, 69, 12)` sits on a floating end-stone island. It can be reached from cherry leaves at 69–70 to its north or from a black concrete floor at 67 to its south, but even loosened geometric searches find no way onto either. The intended route needs a mechanic or move not identified yet.
 
-The spire also relies on mechanics the physics engine does not support:
+**Mechanics the spire uses:**
 
-| Count | Mechanic |
-| --- | --- |
-| 116 | bubble columns |
-| 3 | scaffolding |
-| 7,000+ | water blocks, i.e. swimming routes |
-| 129 | slime blocks (supported by physics; bounce jumps not yet proposed as edges) |
-
-Bots will not climb the spire until the intended route is identified and its mechanics are supported.
+| Count | Mechanic | Status |
+| --- | --- | --- |
+| 116 | bubble columns | unsupported by physics |
+| 3 | scaffolding | unsupported by physics |
+| 7,000+ | water blocks (pools, pits) | swimming routes not planned |
+| 129 | slime blocks | bounce edges |
 
 ### Known gaps
 
 - Swimming routes; bubble columns.
 - Momentum carried between jumps; neo and corner jumps.
-- Slime bounces as edges.
 - Doors and redstone.
+- A game rule returning fallen humans to checkpoints (bots have a stand-in).
 - Fall-damage edges (health does not regenerate).
 - Perception: bots know the terrain but not other players.
