@@ -31,9 +31,9 @@ impl Execution {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Failure {
-    Fell,
-    Missed,
-    Timeout,
+    Fell = 0,
+    Missed = 1,
+    Timeout = 2,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,6 +56,10 @@ const STILL: f64 = 0.03;
 const EYE_HEIGHT: f64 = 1.62;
 /// A player overlaps a block until its centre is half a width past the rim.
 const LANDING_MARGIN: f64 = 0.29;
+/// Arrival radius when stepping onto the current cell's centre.
+pub const CENTRED: f64 = 0.3;
+/// How far a walk may stray from the line between its cells.
+const CORRIDOR: f64 = 1.3;
 /// Jump before this tick's motion would carry the centre this far past the rim.
 const RIM_SAFETY: f64 = 0.27;
 
@@ -157,6 +161,13 @@ impl EdgeRun {
                 && position.y >= f64::from(y) - 1e-3
                 && position.y < f64::from(y) + 1.0;
         }
+        if self.edge.to == self.from {
+            // Stepping onto the current cell: arrive near its centre.
+            let [cx, cz] = self.target;
+            return position.on_ground
+                && (position.y - self.edge.to_feet).abs() < 0.3
+                && (position.x - cx).hypot(position.z - cz) < CENTRED;
+        }
         let over = |p: f64, cell: i32| {
             p >= f64::from(cell) - LANDING_MARGIN && p <= f64::from(cell) + 1.0 + LANDING_MARGIN
         };
@@ -222,7 +233,7 @@ impl EdgeRun {
         let t = (dot(offset, length) / span).clamp(0.0, 1.0);
         let nearest = [self.origin[0] + length[0] * t, self.origin[1] + length[1] * t];
         let away = sub([position.x, position.z], nearest);
-        if position.on_ground && away[0].hypot(away[1]) > 0.9 {
+        if position.on_ground && away[0].hypot(away[1]) > CORRIDOR {
             return (self.look(position, position.yaw), Status::Failed(Failure::Missed));
         }
         let mut intent = self.look(position, self.towards_target(position));
@@ -231,6 +242,12 @@ impl EdgeRun {
             intent.sprint = self.edge.plan.sprint;
             // Leaving a climbable upwards: keep climbing until over the ledge.
             intent.jump = self.from_kind.climbable() && self.edge.to_feet > position.y + 0.1;
+            if self.edge.to == self.from {
+                // Centring on the current cell: coast in rather than orbit.
+                let to = sub(self.target, [position.x, position.z]);
+                let speed = obs.velocity[0].hypot(obs.velocity[2]);
+                intent.forward = to[0].hypot(to[1]) > speed * 2.5 + 0.15;
+            }
         } else {
             self.air_control(obs, &mut intent);
         }

@@ -93,6 +93,23 @@ fn a_bot_that_falls_in_water_swims_ashore_and_carries_on() {
 }
 
 #[test]
+fn an_off_centre_start_steps_onto_its_cell_first() {
+    let (view, _, goal) = spiral();
+    // The pad's corner, well off any cell centre.
+    let spawn = Transform { x: 2.08, y: 11.0, z: -4.07, on_ground: true, ..Transform::default() };
+    let mut nav = NavService::new(Budget::Unlimited);
+    nav.goal = Some(goal);
+    let mut bot = SimBot::new(BotProfile::new(80), 5, spawn);
+    for _ in 0..6_000 {
+        bot.step(&mut nav, &view);
+        if bot.brain.mode() == Mode::Finished {
+            return;
+        }
+    }
+    panic!("stuck at {:?} in {:?}", bot.position(), bot.brain.mode());
+}
+
+#[test]
 fn runs_are_reproducible() {
     let (a, ta) = climb(50, 9, 10_000);
     let (b, tb) = climb(50, 9, 10_000);

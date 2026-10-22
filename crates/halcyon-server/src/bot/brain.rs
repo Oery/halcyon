@@ -19,12 +19,20 @@ use crate::movement::MovementInput;
 const EXPANSIONS_PER_TICK: usize = 2_000;
 /// Planning cost added per remembered failure of an edge, in ticks.
 const FAILURE_COST: f32 = 60.0;
+/// Farther than this from a walk's starting cell, walk onto it first.
+const APPROACH_OFFSET: f64 = super::nav::follow::CENTRED + 0.15;
 /// Ticks a bot keeps swimming toward a floor before giving up.
 const SWIM_LIMIT: u32 = 600;
 /// How far a swimming bot looks for a floor to climb onto.
 const SWIM_RADIUS: i32 = 8;
 /// A position jump this large is a teleport or respawn, not movement.
 const TELEPORT_DISTANCE: f64 = 4.0;
+
+/// `HALCYON_BOT_TRACE` logs every failed edge, for debugging navigation.
+fn trace() -> bool {
+    static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TRACE.get_or_init(|| std::env::var_os("HALCYON_BOT_TRACE").is_some())
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -71,6 +79,8 @@ impl Gaze {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BrainStats {
     pub falls: u32,
+    /// Failed edges by cause: fell, missed, timed out.
+    pub failures: [u32; 3],
     pub edges_done: u32,
     pub replans: u32,
     pub finished_at: Option<u64>,
@@ -87,6 +97,8 @@ pub struct Brain {
     last: Option<Transform>,
     failures: HashMap<(Cell, Cell), u8>,
     gaze: Gaze,
+    /// Destination of the last completed edge: where the route says we are.
+    arrived: Option<Cell>,
     ticks: u64,
     pub stats: BrainStats,
 }
@@ -106,6 +118,7 @@ impl Brain {
             last: None,
             failures: HashMap::new(),
             gaze: Gaze { yaw: facing.yaw, pitch: 0.0, hold: 0 },
+            arrived: None,
             ticks: 0,
             stats: BrainStats::default(),
         }
@@ -124,6 +137,7 @@ impl Brain {
     }
 
     fn forget_route(&mut self) {
+        self.arrived = None;
         self.search.cancel();
         self.path.clear();
         self.run = None;
@@ -320,7 +334,8 @@ impl Brain {
         for _ in 0..2 {
             if self.run.is_none() {
                 let Some(step) = self.path.pop_front() else {
-                    if nav.goal.is_some_and(|goal| self.locate(position, nav, view) == Some(goal)) {
+                    let here = self.arrived.or_else(|| self.locate(position, nav, view));
+                    if nav.goal.is_some() && here == nav.goal {
                         self.finish();
                     } else {
                         // A partial route ended: plan the next stretch.
@@ -332,6 +347,30 @@ impl Brain {
                     self.forget_route();
                     self.state = State::Plan;
                     return self.idle(position);
+                };
+                let [cx, cz] = super::nav::stand::centre(step.from);
+                let offset = (position.x - cx).hypot(position.z - cz);
+                let step = if step.edge.kind != EdgeKind::Jump
+                    && step.edge.to != step.from
+                    && offset > APPROACH_OFFSET
+                    && position.on_ground
+                {
+                    // Standing off the step's cell (an overhang, a spawn
+                    // offset): walk onto it first, then take the step.
+                    self.path.push_front(step);
+                    Step {
+                        from: step.from,
+                        edge: Edge {
+                            to: step.from,
+                            to_feet: stand.feet_y,
+                            kind: EdgeKind::Walk,
+                            plan: super::nav::Plan::WALK,
+                            ticks: 10,
+                            robustness: 1.0,
+                        },
+                    }
+                } else {
+                    step
                 };
                 let hesitation = if step.edge.kind == EdgeKind::Jump {
                     self.profile.hesitation(step.edge.robustness, &mut self.rng)
@@ -351,7 +390,7 @@ impl Brain {
                 Status::Running => return intent,
                 Status::Done => {
                     self.stats.edges_done += 1;
-                    self.run = None;
+                    self.arrived = self.run.take().map(|run| run.edge.to);
                 }
                 Status::Failed(failure) => {
                     let key = (run.from, run.edge.to);
@@ -360,7 +399,21 @@ impl Brain {
                     if failure != Failure::Timeout {
                         self.stats.falls += 1;
                     }
+                    self.stats.failures[failure as usize] += 1;
                     self.stats.replans += 1;
+                    if trace() {
+                        eprintln!(
+                            "bot: {failure:?} {:?} {:?} -> {:?} plan={:?} at ({:.2},{:.2},{:.2}) ground={}",
+                            run.edge.kind,
+                            run.from,
+                            run.edge.to,
+                            run.edge.plan,
+                            position.x,
+                            position.y,
+                            position.z,
+                            position.on_ground,
+                        );
+                    }
                     self.forget_route();
                     self.state = State::Recover(self.rng.ticks(10, 40));
                     return self.idle(position);

@@ -38,15 +38,16 @@ use rng::Rng;
 const TICK: Duration = Duration::from_millis(50);
 /// Ticks a dead bot waits before pressing respawn.
 const RESPAWN_DELAY: u32 = 30;
-/// Route validation time shared by all bots per server tick.
-const NAV_BUDGET: Duration = Duration::from_millis(2);
+/// Route validation time shared by all bots per server tick, unless
+/// `HALCYON_BOT_NAV_MS` overrides it. Searches pause when it is spent.
+const NAV_BUDGET: Duration = Duration::from_millis(4);
 /// How far from spawn the climb goal is searched for.
 const GOAL_RADIUS: i32 = 128;
 
 /// Live per-bot summaries for diagnostics.
 #[derive(Default)]
 struct Report {
-    bots: Vec<(Mode, f64, u32)>,
+    bots: Vec<(Mode, f64, [u32; 3])>,
 }
 
 /// Spawn `count` bots on the current executor. They share one navigation
@@ -55,7 +56,11 @@ pub fn spawn(server: Arc<Server>, lobby: Lobby, count: usize, seed: u64) {
     if count == 0 {
         return;
     }
-    let mut service = NavService::new(Budget::PerWindow { limit: NAV_BUDGET, window: TICK });
+    let limit = std::env::var("HALCYON_BOT_NAV_MS")
+        .ok()
+        .and_then(|ms| ms.parse().ok())
+        .map_or(NAV_BUDGET, Duration::from_millis);
+    let mut service = NavService::new(Budget::PerWindow { limit, window: TICK });
     service.goal = std::env::var("HALCYON_BOT_GOAL").ok().and_then(|goal| parse_cell(&goal));
     if service.goal.is_none() {
         let (x, y, z, _, _) = server.lobby.spawn;
@@ -67,7 +72,7 @@ pub fn spawn(server: Arc<Server>, lobby: Lobby, count: usize, seed: u64) {
         println!("bots: goal {:?} detected in {}ms", service.goal, start.elapsed().as_millis());
     }
     let nav = Rc::new(RefCell::new(service));
-    let report = Rc::new(RefCell::new(Report { bots: vec![(Mode::Idle, 0.0, 0); count] }));
+    let report = Rc::new(RefCell::new(Report { bots: vec![(Mode::Idle, 0.0, [0; 3]); count] }));
     let (low, high) = profile::parse_levels(std::env::var("HALCYON_BOT_LEVEL").ok().as_deref());
     for index in 0..count {
         let server = server.clone();
@@ -102,9 +107,12 @@ async fn report_loop(nav: Rc<RefCell<NavService>>, report: Rc<RefCell<Report>>) 
         let count = |mode| report.bots.iter().filter(|(m, _, _)| *m == mode).count();
         let mut heights: Vec<f64> = report.bots.iter().map(|(_, y, _)| *y).collect();
         heights.sort_by(f64::total_cmp);
-        let falls: u32 = report.bots.iter().map(|(_, _, falls)| falls).sum();
+        let failures = report
+            .bots
+            .iter()
+            .fold([0u32; 3], |sum, (_, _, f)| [sum[0] + f[0], sum[1] + f[1], sum[2] + f[2]]);
         eprintln!(
-            "bots: idle={} planning={} moving={} recovering={} swimming={} finished={} stuck={} falls={} y_median={:.1} y_max={:.1} nav_nodes={} nav_edges={} nav_cells={} sims={} sim_ticks={} build_ms={} expansions={}",
+            "bots: idle={} planning={} moving={} recovering={} swimming={} finished={} stuck={} fell={} missed={} timeouts={} y_median={:.1} y_max={:.1} nav_nodes={} nav_edges={} nav_cells={} sims={} sim_ticks={} build_ms={} expansions={}",
             count(Mode::Idle),
             count(Mode::Planning),
             count(Mode::Moving),
@@ -112,7 +120,9 @@ async fn report_loop(nav: Rc<RefCell<NavService>>, report: Rc<RefCell<Report>>) 
             count(Mode::Swimming),
             count(Mode::Finished),
             count(Mode::Stuck),
-            falls,
+            failures[0],
+            failures[1],
+            failures[2],
             heights.get(heights.len() / 2).copied().unwrap_or(0.0),
             heights.last().copied().unwrap_or(0.0),
             stats.nodes,
@@ -174,22 +184,32 @@ async fn run(server: Arc<Server>, lobby: Lobby, bot: Bot) -> Result<(), crate::e
 
     let mut brain = Brain::new(skill, rng.next(), spawn);
     let mut body = Body::default();
-    let mut next = Instant::now();
+    let mut decided_at = None;
     loop {
-        next += TICK;
-        Timer::new(next.saturating_duration_since(Instant::now())).await;
+        // Decide once per simulation step, right after the owner publishes
+        // it, so every observation is fresh and every input lands on the next
+        // step. The timer covers waits before the bot becomes active.
+        futures_lite::future::or(session.wait_changed(), async {
+            Timer::new(TICK).await;
+        })
+        .await;
         body.sync(&session);
         if !session.ready() {
             continue;
         }
         let position = session.accepted_transform();
         let input = lobby.with_registry(|registry| {
+            let step = registry.arena.tick();
+            if decided_at.replace(step) == Some(step) {
+                return None;
+            }
             let mut nav = nav.borrow_mut();
             nav.sync(&registry.arena);
-            brain.tick(position, &mut nav, &registry.arena.view(&server.lobby))
+            Some(brain.tick(position, &mut nav, &registry.arena.view(&server.lobby)))
         });
+        let Some(input) = input else { continue };
         body.drive(&session, input);
-        report.borrow_mut().bots[index] = (brain.mode(), position.y, brain.stats.falls);
+        report.borrow_mut().bots[index] = (brain.mode(), position.y, brain.stats.failures);
     }
 }
 
