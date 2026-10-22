@@ -70,6 +70,10 @@ const LANDING_MARGIN: f64 = 0.29;
 pub const CENTRED: f64 = 0.3;
 /// How far past a slime pad's centre a bounce aims, toward its target.
 const PAD_LEAD: f64 = 0.3;
+/// Ground covered by a sprint jump at running speed.
+const HOP_LENGTH: f64 = 3.6;
+/// Where past the rim a momentum hop should land, as the takeoff mark.
+const HOP_LANDING: f64 = 0.1;
 /// How far a walk may stray from the line between its cells.
 const CORRIDOR: f64 = 1.3;
 /// Jump before this tick's motion would carry the centre this far past the rim.
@@ -90,6 +94,8 @@ pub struct EdgeRun {
     ticks: u16,
     waited: u16,
     jumped_at: Option<u16>,
+    /// A momentum hop along the run-up has been jumped.
+    hopped: bool,
     airborne: bool,
     /// Feet height of the floor currently aimed at: a bounce's slime first.
     aim_feet: f64,
@@ -168,6 +174,7 @@ impl EdgeRun {
             ticks: 0,
             waited: 0,
             jumped_at: None,
+            hopped: false,
             airborne: false,
             aim_feet,
             bounced_at: None,
@@ -191,7 +198,15 @@ impl EdgeRun {
     }
 
     fn limit(&self) -> u16 {
-        self.edge.ticks.saturating_mul(3).saturating_add(60).saturating_add(self.exec.hesitation)
+        // Backing up and running in again takes time of its own.
+        let runup =
+            (self.edge.plan.runup.max(0.0) * 20.0) as u16 + if self.edge.plan.hop { 30 } else { 0 };
+        self.edge
+            .ticks
+            .saturating_mul(3)
+            .saturating_add(60)
+            .saturating_add(runup)
+            .saturating_add(self.exec.hesitation)
     }
 
     /// Whether `position` rests at this edge's destination: on its floor and
@@ -348,6 +363,14 @@ impl EdgeRun {
                 (intent, Status::Running)
             }
             Phase::Execute => {
+                if self.edge.plan.hop && self.hopped && !position.on_ground && along < self.rim {
+                    // Mid-hop over the run-up: keep running for the real jump.
+                    intent.yaw = wrap_degrees(self.dir_yaw + self.exec.yaw_offset);
+                    intent.precise = true;
+                    intent.forward = true;
+                    intent.sprint = true;
+                    return (intent, Status::Running);
+                }
                 if !position.on_ground {
                     // Walked off the rim without jumping: let the fall play out.
                     self.airborne = true;
@@ -362,6 +385,17 @@ impl EdgeRun {
                 let moving = dot([obs.velocity[0], obs.velocity[2]], self.dir);
                 // Never run off the support while waiting for the takeoff mark.
                 let leaving = along + moving * 1.05 > self.rim + RIM_SAFETY;
+                // Time the hop to land at the rim and jump again at once,
+                // before the ground bleeds off the extra speed.
+                if self.edge.plan.hop
+                    && !self.hopped
+                    && along >= self.rim + HOP_LANDING - HOP_LENGTH
+                {
+                    // The momentum hop, early on the run-up.
+                    intent.jump = true;
+                    self.hopped = true;
+                    return (intent, Status::Running);
+                }
                 if along >= takeoff || leaving {
                     intent.jump = true;
                     self.jumped_at = Some(self.ticks);

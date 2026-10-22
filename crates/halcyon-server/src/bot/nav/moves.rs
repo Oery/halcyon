@@ -41,6 +41,10 @@ const MAX_BOUNCE_CANDIDATES: usize = 24;
 const MID_RUNUP: f32 = 1.5;
 const LONG_RUNUP: f32 = 2.5;
 const RUNWAY_STEP: f32 = 0.25;
+/// Run-up for a hop: room to sprint, jump once and land before the rim.
+const HOP_RUNUP: f32 = 5.0;
+/// Hop run-ups tried, a fraction of a sprint step apart.
+const HOP_PHASES: usize = 8;
 /// Run-up shortenings tried after a near miss, a fraction of a sprint step each.
 const PHASE_SHIFTS: [f32; 4] = [0.21, 0.14, 0.07, 0.035];
 
@@ -533,7 +537,8 @@ impl NavGraph {
         // no plan can succeed. It is a feasibility check, never a preference.
         let longest: &[f32] = if long { &[LONG_RUNUP, MID_RUNUP, 0.3] } else { &[0.3] };
         let farthest = longest.iter().copied().find(|&r| runup_ok(r)).unwrap_or(0.0);
-        let probe = Plan { runup: farthest, takeoff: rim + 0.2, sprint: true };
+        let hop = long && runway >= HOP_RUNUP;
+        let probe = Plan { runup: farthest, takeoff: rim + 0.2, sprint: true, hop: false };
         let probed = self.simulate(view, from, here, edge_for(probe), Execution::IDEAL, false);
         if probed.ticks.is_none() && probed.closest > 1.0 && probed.furthest + 1.0 < distance {
             return None;
@@ -558,7 +563,7 @@ impl NavGraph {
             }
             for sprint in sprints {
                 for takeoff in takeoffs {
-                    let plan = Plan { runup, takeoff: takeoff.max(-0.3), sprint };
+                    let plan = Plan { runup, takeoff: takeoff.max(-0.3), sprint, hop: false };
                     if !plans.contains(&plan) {
                         plans.push(plan);
                     }
@@ -570,6 +575,14 @@ impl NavGraph {
         // lands later, as players do on max-distance jumps.
         if probed.ticks.is_none() && probe.runup > 1.0 && probed.furthest + 1.0 >= distance {
             plans.extend(PHASE_SHIFTS.map(|shift| Plan { runup: probe.runup - shift, ..probe }));
+        }
+        // Momentum from a hop is the last resort, for the longest jumps.
+        if hop {
+            let hopping = Plan { runup: HOP_RUNUP, takeoff: rim + 0.2, sprint: true, hop: true };
+            // The hop must land just short of the rim: try several phases.
+            plans.extend(
+                (0..HOP_PHASES).map(|k| Plan { runup: HOP_RUNUP - k as f32 * 0.07, ..hopping }),
+            );
         }
         let mut best: Option<Edge> = None;
         let mut successes = 0;
@@ -612,7 +625,7 @@ impl NavGraph {
         let [cx, cz] = centre(from);
         let mut room = 0.0f32;
         // Within the own cell the support's rim bounds it; beyond, floors.
-        for step in 1..=(LONG_RUNUP / RUNWAY_STEP) as i32 {
+        for step in 1..=(HOP_RUNUP / RUNWAY_STEP) as i32 {
             let distance = step as f32 * RUNWAY_STEP;
             let x = cx - dir[0] * f64::from(distance);
             let z = cz - dir[1] * f64::from(distance);

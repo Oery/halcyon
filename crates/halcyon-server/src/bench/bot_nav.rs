@@ -405,7 +405,27 @@ fn checkpoint_legs() {
             }
         };
         let summary = match &status {
-            SearchStatus::Found(path) => format!("found {} steps", path.len()),
+            SearchStatus::Found(path) => {
+                let long: Vec<String> = path
+                    .iter()
+                    .filter(|s| {
+                        let d = f64::from(s.edge.to[0] - s.from[0])
+                            .hypot(f64::from(s.edge.to[2] - s.from[2]));
+                        s.edge.plan.runup > 1.0 || d >= 4.0
+                    })
+                    .map(|s| {
+                        format!(
+                            "{:?}->{:?} runup={} hop={} robustness={:.2}",
+                            s.from,
+                            s.edge.to,
+                            s.edge.plan.runup,
+                            s.edge.plan.hop,
+                            s.edge.robustness
+                        )
+                    })
+                    .collect();
+                format!("found {} steps; long jumps: {long:?}", path.len())
+            }
             SearchStatus::Partial(path) => {
                 let end = path.last().map(|s| s.edge.to);
                 // Mechanics near where the route stops hint at what is missing.
@@ -526,7 +546,7 @@ fn trace_edge() {
             to,
             to_feet: there.feet_y,
             kind,
-            plan: Plan { runup, takeoff, sprint },
+            plan: Plan { runup, takeoff, sprint, hop: false },
             ticks: 0,
             robustness: 0.0,
             via,

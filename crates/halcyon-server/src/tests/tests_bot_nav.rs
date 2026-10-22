@@ -69,6 +69,20 @@ fn ordinary_jumps_keep_simple_plans_even_with_room_to_run() {
 }
 
 #[test]
+fn a_momentum_hop_clears_level_four_block_gaps() {
+    // A level four-block gap is out of reach from a plain sprint; a long
+    // runway lets the bot sprint-jump once first and carry that speed.
+    let mut view = MapView::default();
+    for x in -5..=0 {
+        view.pillar(x, 10, 0);
+    }
+    view.pillar(5, 10, 0);
+    let found = edge(&mut nav(), &view, [0, 11, 0], [5, 11, 0]).expect("a hopping jump");
+    assert!(found.plan.hop, "{:?}", found.plan);
+    assert_eq!(edge(&mut nav(), &gap_course(4), [0, 11, 0], [5, 11, 0]), None);
+}
+
+#[test]
 fn runways_measure_level_floor_behind_the_takeoff() {
     let mut view = MapView::default();
     view.pillar(-2, 10, 0).pillar(-1, 10, 0).pillar(0, 10, 0);

@@ -55,10 +55,13 @@ pub struct Plan {
     /// Distance from the source centre along the jump line at which to jump.
     pub takeoff: f32,
     pub sprint: bool,
+    /// Sprint-jump once along the run-up first: each sprint jump adds speed
+    /// that landing does not take away, enough for the longest level jumps.
+    pub hop: bool,
 }
 
 impl Plan {
-    pub const WALK: Plan = Plan { runup: 0.0, takeoff: f32::INFINITY, sprint: false };
+    pub const WALK: Plan = Plan { runup: 0.0, takeoff: f32::INFINITY, sprint: false, hop: false };
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
