@@ -230,9 +230,9 @@ impl Lobby {
 }
 
 #[cfg(test)]
-#[path = "bench/gameplay.rs"]
+#[path = "../bench/gameplay/mod.rs"]
 mod gameplay_benchmarks;
 
 #[cfg(test)]
-#[path = "tests/tests_lobby.rs"]
+#[path = "../tests/tests_lobby.rs"]
 mod tests;

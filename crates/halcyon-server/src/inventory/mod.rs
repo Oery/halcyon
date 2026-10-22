@@ -319,5 +319,5 @@ fn changed_mask(before: &[ItemStack; SLOT_COUNT], after: &[ItemStack; SLOT_COUNT
 }
 
 #[cfg(test)]
-#[path = "tests/tests_inventory.rs"]
+#[path = "../tests/tests_inventory.rs"]
 mod tests;

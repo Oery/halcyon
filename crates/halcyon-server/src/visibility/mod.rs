@@ -426,13 +426,13 @@ impl Observer {
 }
 
 #[cfg(test)]
-#[path = "tests/tests_visibility.rs"]
+#[path = "../tests/tests_visibility.rs"]
 mod tests;
 
 #[cfg(test)]
-#[path = "bench/visibility.rs"]
+#[path = "../bench/visibility.rs"]
 mod benchmarks;
 
 #[cfg(test)]
-#[path = "bench/synthetic.rs"]
+#[path = "../bench/synthetic.rs"]
 mod synthetic_benchmarks;

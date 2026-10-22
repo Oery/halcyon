@@ -34,18 +34,18 @@ Crate dependency: `halcyon-server → mc_protocol → macros` (proc-macro), plus
 
 An executor-local `Lobby` owns player state and an `Arena` terrain overlay at 20 Hz and publishes every 50 ms; `Arc<Server>` retains immutable startup resources. Each `Client` holds a unique session guard, player `Observer`, and `WorldObserver` with delivered terrain/entity baselines. Cached base chunks are followed by current patches before entity admission; removals precede terrain unload/replacement. Collision, suffocation and replication read the same `BlockView`. Registry borrows end before socket I/O. Dropping the guard signals cleanup without needing registration queue space. Independent lobby ownership is the boundary for future executor placement; the runtime still uses one core.
 
-Add a packet: define `#[packet(State, 0xNN, Client|Server)] struct` in `crates/mc-protocol/src/packets/{server,client}.rs` → add `Packets` enum variant → add `(id, state)` arm in `Packets::read` → handle in `crates/halcyon-server/src/states/<state>.rs`.
+Add a packet: define `#[packet(State, 0xNN, Client|Server)] struct` in `crates/mc-protocol/src/packets/{server,client}/mod.rs` → add `Packets` enum variant → add `(id, state)` arm in `Packets::read` → handle in `crates/halcyon-server/src/states/<state>.rs`.
 
 ## Key Directories
 
-- `crates/halcyon-server/src/`: runtime — `main.rs`, `server.rs`, `client.rs`, `transport.rs`, `packet.rs`, `lifecycle.rs`, `player.rs`, `movement.rs`, `movement/physics.rs`, `simulation.rs`, `inventory.rs`, `arena.rs`, `world_sync.rs`, `lobby.rs`, `visibility.rs`, `cache.rs`, `chunks.rs`, `states/`, `auth/`, `encryption/`.
-- `crates/halcyon-world/src/`: startup world loading — `loader.rs`, section palette encoding in `loader/section.rs`, `disk_nbt.rs`, `blockstates.rs`, `terrain.rs`, generated `collision_data.rs`, immutable world grid in `lib.rs`.
-- `crates/mc-protocol/src/`: codec — `encode.rs`, `decode.rs`, `error.rs`, `state.rs`, `packets/{mod,client,server}.rs`, `types/{varint,int,str,bytes,uuid,game_profile}.rs`, `data/{motd,config/*}`, `auth/`.
+- `crates/halcyon-server/src/`: runtime — `main.rs`, `server.rs`, `client/mod.rs`, `transport.rs`, `packet.rs`, `lifecycle.rs`, `player.rs`, `movement/mod.rs`, `movement/physics.rs`, `simulation.rs`, `inventory/mod.rs`, `arena.rs`, `world_sync.rs`, `lobby/mod.rs`, `visibility/mod.rs`, `cache.rs`, `chunks.rs`, `states/`, `auth/`, `encryption/`.
+- `crates/halcyon-world/src/`: startup world loading — `loader/mod.rs`, section palette encoding in `loader/section.rs`, `disk_nbt.rs`, `blockstates.rs`, `terrain.rs`, generated `collision_data.rs`, immutable world grid in `lib.rs`.
+- `crates/mc-protocol/src/`: codec — `encode.rs`, `decode.rs`, `error.rs`, `state.rs`, `packets/mod.rs`, `packets/{client,server}/`, `types/{varint,int,str,bytes,uuid,game_profile}.rs`, `data/{motd,config/*}`, `auth/`.
 - `crates/mc-protocol-macros/src/`: `lib.rs`, `attrs.rs`, `format.rs` — `#[packet]` / `Payload` / `InnerPacket` codegen.
 - `docs/`: vanilla feature inventory, Halcyon feature assessment, and `feature-progress.md` implementation tracker. Keep the tracker current when feature support changes; describe what is available, not implementation details. No `scripts/`, `tools/`, standalone `tests/`, `benches/`, `examples/`, `.github/`, or `Dockerfile`.
 - `crates/halcyon-server/src/bench/`: opt-in component benchmarks, compiled only for tests.
 
-Server implementation modules use sibling directories to separate responsibilities: `client/` owns gameplay delivery, publication and writing; `lobby/` owns sessions, registry management and scheduling; `movement/` owns collision, terrain contact and physics; `visibility/` owns frame encoding and delivery; `inventory/click.rs` owns menu operations. Player login/profile packet codecs live in `mc-protocol/src/packets/client/player.rs`. Unit tests live in each crate's `src/tests/tests_<feature>.rs`, with local guidance in `src/tests/AGENTS.md`. Wire them into the feature module with `#[cfg(test)]` and `#[path = "..."] mod tests;` to preserve access to private internals. Keep generated data tables intact.
+Server modules group responsibilities in directories: `client/` owns gameplay delivery, publication and writing; `lobby/` owns sessions, registry management and scheduling; `movement/` owns collision, terrain contact and physics; `visibility/` owns frame encoding and delivery; `inventory/click.rs` owns menu operations. Player login/profile packet codecs live in `mc-protocol/src/packets/client/player.rs`. Unit tests live in each crate's `src/tests/tests_<feature>.rs`, with local guidance in `src/tests/AGENTS.md`. Wire them into the feature module with `#[cfg(test)]` and `#[path = "..."] mod tests;` to preserve access to private internals. Keep generated data tables intact.
 
 ## Development Commands
 
@@ -64,8 +64,9 @@ The macro crate is an automatic workspace member through its path dependency; wo
 ## Code Conventions & Common Patterns
 
 - Formatting: `rustfmt.toml` (`single_line_if_else_max_width=60`, `single_line_let_else_max_width=60`, `use_small_heuristics="Max"`). Run `cargo fmt` before yielding.
+- Module layout: use `feature/mod.rs` when a module has a `feature/` directory for submodules; do not keep both `feature.rs` and `feature/`. Leaf modules can remain `feature.rs`.
 - Codec traits: `PacketWriter{read, write, body_len}`, `Payload{const ID, const STATE, payload_len, decode_payload, write_payload, write_packet}`, `InnerPacket{id(), state()}`. Zero-copy decode borrows `&'p str` / `&[u8]` from read buffer.
-- Packet declaration: `#[packet(Login, 0x00, Client)]` + field `#[format="varint"|"json"]`. Direction files: `packets/server.rs` = client→server, `packets/client.rs` = server→client.
+- Packet declaration: `#[packet(Login, 0x00, Client)]` + field `#[format="varint"|"json"]`. Direction files: `packets/server/mod.rs` = client→server, `packets/client/mod.rs` = server→client.
 - Naming: packets `PascalCase` + `*Request/*Response` (`ServerListPing`, `LoginStart`, `EncryptionRequest`); methods `handle_packet/read_packet/write_packet/payload_len/decode_payload/write_payload`; fields `snake_case` (`verify_token`, `next_state`); consts `UPPER_SNAKE` (`ADDR`, `SIZE`); traits `PacketWriter/Payload/InnerPacket`.
 - State: `Context` holds wire state and profile data. Handshake decodes `HandshakeIntent`, never arbitrary `State`. `LoginProgress` guards authentication and acknowledgement. Handlers own transitions through Login → Config → Play. `compression` is unused; do not negotiate it until framing supports it.
 - Async: `glommio` `Fixed(0)` single-place executor, one local task per connection. Receive storage starts at 1024 bytes and grows to at most `MAX_FRAME_LEN + 3`. A complete frame with an incomplete payload is invalid, not a partial network read. Parse loops and chunk sends yield explicitly; blocking HTTPS runs off the executor with a request timeout.
@@ -78,7 +79,7 @@ The macro crate is an automatic workspace member through its path dependency; wo
 ## Important Files
 
 - `crates/halcyon-server/src/main.rs`: `ADDR`, `MiMalloc` global allocator, `glommio::main`, accept loop.
-- `crates/halcyon-server/src/client.rs`, `packet.rs`: read loop, VarInt framing.
+- `crates/halcyon-server/src/client/mod.rs`, `packet.rs`: read loop, VarInt framing.
 - `crates/halcyon-server/src/states/mod.rs`, `login.rs`, `status.rs`: connection-state dispatch, authenticated login, status response with actual active lobby population (`protocol: 777`).
 - `crates/halcyon-server/src/encryption/mod.rs`: `Keys`, `Rsa::generate(2048)`, `generate_verify_token`, `decrypt_rsa` (PKCS1).
 - `crates/mc-protocol/src/packets/mod.rs`, `state.rs`, `error.rs`, `encode.rs`, `decode.rs`: `Context`, `State`, traits, error enums.

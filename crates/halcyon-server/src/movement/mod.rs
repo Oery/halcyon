@@ -418,5 +418,5 @@ impl MovementState {
 }
 
 #[cfg(test)]
-#[path = "tests/tests_movement.rs"]
+#[path = "../tests/tests_movement.rs"]
 mod tests;

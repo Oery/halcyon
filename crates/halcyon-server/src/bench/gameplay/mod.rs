@@ -15,7 +15,6 @@ use mc_protocol::packets::{Payload, client::PlayerInfoUpdate};
 use serde_json::{Value, json};
 use std::time::Instant;
 
-#[path = "gameplay/receiver.rs"]
 mod receiver;
 
 use receiver::Receiver;
