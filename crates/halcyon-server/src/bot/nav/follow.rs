@@ -19,14 +19,24 @@ pub struct Obs {
 #[derive(Clone, Copy, Debug)]
 pub struct Execution {
     pub aim_tolerance: f32,
+    /// How precisely the run-up point must be reached before lining up.
+    pub approach_tolerance: f64,
+    /// Validation only: start this far to the left of the jump line.
+    pub start_lateral: f64,
     pub hesitation: u16,
     pub yaw_offset: f32,
     pub takeoff_offset: f32,
 }
 
 impl Execution {
-    pub const IDEAL: Execution =
-        Execution { aim_tolerance: 0.5, hesitation: 0, yaw_offset: 0.0, takeoff_offset: 0.0 };
+    pub const IDEAL: Execution = Execution {
+        aim_tolerance: 0.5,
+        approach_tolerance: APPROACH_TOLERANCE,
+        start_lateral: 0.0,
+        hesitation: 0,
+        yaw_offset: 0.0,
+        takeoff_offset: 0.0,
+    };
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -167,6 +177,11 @@ impl EdgeRun {
         self.dir_yaw
     }
 
+    /// Unit vector to the left of the jump line, in world x/z.
+    pub fn left(&self) -> [f64; 2] {
+        [self.dir[1], -self.dir[0]]
+    }
+
     fn limit(&self) -> u16 {
         self.edge.ticks.saturating_mul(3).saturating_add(60).saturating_add(self.exec.hesitation)
     }
@@ -288,21 +303,22 @@ impl EdgeRun {
         let mut intent = self.look(position, self.dir_yaw);
         match self.phase {
             Phase::Approach => {
+                let tolerance = self.exec.approach_tolerance;
                 let error = along + f64::from(self.edge.plan.runup);
                 let moving = dot([obs.velocity[0], obs.velocity[2]], self.dir);
                 // Press only when not already coasting onto the mark.
-                if error > APPROACH_TOLERANCE && moving * -4.0 < error {
+                if error > tolerance && moving * -4.0 < error {
                     intent.backward = true;
-                } else if error < -APPROACH_TOLERANCE && moving * 4.0 < -error {
+                } else if error < -tolerance && moving * 4.0 < -error {
                     intent.forward = true;
                 }
-                if lateral > APPROACH_TOLERANCE {
+                if lateral > tolerance {
                     intent.right = true;
-                } else if lateral < -APPROACH_TOLERANCE {
+                } else if lateral < -tolerance {
                     intent.left = true;
                 }
-                let placed = error.abs() <= APPROACH_TOLERANCE * 1.5
-                    && lateral.abs() <= APPROACH_TOLERANCE * 1.5
+                let placed = error.abs() <= tolerance * 1.5
+                    && lateral.abs() <= tolerance * 1.5
                     && speed < STILL;
                 if placed || (self.ticks > 40 && error.abs() < 0.3 && lateral.abs() < 0.3) {
                     self.phase = Phase::Align;

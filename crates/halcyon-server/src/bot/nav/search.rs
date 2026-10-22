@@ -19,7 +19,7 @@ const WEIGHT: f32 = 1.5;
 pub const JUMP_COST: f32 = 8.0;
 /// Rough cost of gaining one block of height, in ticks.
 const RISE_COST: f32 = 15.0;
-pub const MAX_EXPANSIONS: usize = 60_000;
+pub const MAX_EXPANSIONS: usize = 20_000;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Step {

@@ -19,8 +19,6 @@ use crate::movement::MovementInput;
 const EXPANSIONS_PER_TICK: usize = 2_000;
 /// Planning cost added per remembered failure of an edge, in ticks.
 const FAILURE_COST: f32 = 60.0;
-/// Partial routes toward one checkpoint before skipping it.
-const SKIP_AFTER: u8 = 3;
 /// Farther than this from a walk's starting cell, walk onto it first.
 const APPROACH_OFFSET: f64 = super::nav::follow::CENTRED + 0.15;
 /// Ticks a bot keeps swimming toward a floor before giving up.
@@ -103,11 +101,8 @@ pub struct Brain {
     arrived: Option<Cell>,
     /// Index of the next checkpoint to reach.
     checkpoint: usize,
-    /// Routes toward the current target that ended short of it, at the same
-    /// place as the previous one: no progress.
-    attempts: u8,
-    /// Where the last partial route ended.
-    stalled_at: Option<Cell>,
+    /// Trapped: return to the last checkpoint.
+    reset_requested: bool,
     ticks: u64,
     pub stats: BrainStats,
 }
@@ -129,8 +124,7 @@ impl Brain {
             gaze: Gaze { yaw: facing.yaw, pitch: 0.0, hold: 0 },
             arrived: None,
             checkpoint: 0,
-            attempts: 0,
-            stalled_at: None,
+            reset_requested: false,
             ticks: 0,
             stats: BrainStats::default(),
         }
@@ -139,6 +133,15 @@ impl Brain {
     /// Checkpoints reached so far.
     pub fn checkpoint(&self) -> usize {
         self.checkpoint
+    }
+
+    /// Where a trapped bot asks to be returned: its last checkpoint, or
+    /// `None` for the spawn. Taken once per request.
+    pub fn take_reset(&mut self, nav: &NavService) -> Option<Option<Cell>> {
+        if !std::mem::take(&mut self.reset_requested) {
+            return None;
+        }
+        Some(self.checkpoint.checked_sub(1).and_then(|index| nav.checkpoints.get(index).copied()))
     }
 
     /// The next checkpoint, or the final goal once every checkpoint is behind.
@@ -152,25 +155,8 @@ impl Brain {
         let ahead = nav.checkpoints.iter().skip(self.checkpoint).position(|&c| c == cell);
         if let Some(offset) = ahead {
             self.checkpoint += offset + 1;
-            self.attempts = 0;
         }
         ahead.is_some()
-    }
-
-    /// A route toward the current target ended short at `end`. Progress is
-    /// fine; after a few routes ending at the same place, give that
-    /// checkpoint up and aim for the next one.
-    fn fell_short(&mut self, end: Option<Cell>, nav: &NavService) {
-        if end.is_some() && self.stalled_at != end {
-            self.stalled_at = end;
-            self.attempts = 0;
-            return;
-        }
-        self.attempts = self.attempts.saturating_add(1);
-        if self.attempts >= SKIP_AFTER && self.checkpoint < nav.checkpoints.len() {
-            self.checkpoint += 1;
-            self.attempts = 0;
-        }
     }
 
     pub fn mode(&self) -> Mode {
@@ -331,10 +317,7 @@ impl Brain {
                 self.path = path.into();
                 self.state = State::Follow;
             }
-            _ => {
-                self.fell_short(None, nav);
-                self.state = State::Stuck(self.rng.ticks(100, 300));
-            }
+            _ => self.state = State::Stuck(self.rng.ticks(100, 300)),
         }
         self.idle(position)
     }
@@ -348,12 +331,15 @@ impl Brain {
         view: &impl BlockView,
         ticks: u32,
     ) -> Intent {
-        if !super::nav::moves::in_water(view, position) && position.on_ground {
+        if position.on_ground && !super::nav::moves::in_water(view, position) {
             self.state = State::Recover(self.rng.ticks(5, 20));
             return self.idle(position);
         }
         if ticks > SWIM_LIMIT {
-            self.state = State::Stuck(self.rng.ticks(100, 300));
+            // Trapped in water: ask the game to return us to our checkpoint,
+            // as the course does for players who fall.
+            self.reset_requested = true;
+            self.state = State::Stuck(self.rng.ticks(20, 60));
             return self.idle(position);
         }
         self.state = State::Swim(ticks + 1);
@@ -406,7 +392,6 @@ impl Brain {
                         self.finish();
                     } else {
                         // A partial route ended: plan the next stretch.
-                        self.fell_short(here, nav);
                         self.state = State::Plan;
                     }
                     return self.idle(position);
@@ -448,6 +433,7 @@ impl Brain {
                 };
                 let exec = Execution {
                     aim_tolerance: self.profile.aim_tolerance(),
+                    approach_tolerance: self.profile.approach_tolerance(),
                     hesitation,
                     ..Execution::IDEAL
                 };
@@ -472,10 +458,11 @@ impl Brain {
                     self.stats.replans += 1;
                     if trace() {
                         eprintln!(
-                            "bot: {failure:?} {:?} {:?} -> {:?} plan={:?} at ({:.2},{:.2},{:.2}) ground={}",
+                            "bot: {failure:?} {:?} {:?} -> {:?} robustness={} plan={:?} at ({:.2},{:.2},{:.2}) ground={}",
                             run.edge.kind,
                             run.from,
                             run.edge.to,
+                            run.edge.robustness,
                             run.edge.plan,
                             position.x,
                             position.y,

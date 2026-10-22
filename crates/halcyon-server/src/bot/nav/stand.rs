@@ -96,8 +96,8 @@ pub fn stand(view: &impl BlockView, probe: &mut MovementState, cell: Cell) -> Op
     if hazardous(here) || view.block_at(x, y + 1, z).is_some_and(hazardous) {
         return None;
     }
+    // Water routes are not planned: in water a jump becomes a swim stroke.
     if fluid_info(here).kind != FluidKind::Empty {
-        // Swimming routes are not planned yet.
         return None;
     }
     let climbable = match climb(here) {

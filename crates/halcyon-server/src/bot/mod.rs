@@ -227,6 +227,18 @@ async fn run(server: Arc<Server>, lobby: Lobby, bot: Bot) -> Result<(), crate::e
         });
         let Some(input) = input else { continue };
         body.drive(&session, input);
+        let reset = brain.take_reset(&nav.borrow());
+        if let Some(reset) = reset {
+            // Stand-in for the course returning fallen players to their
+            // checkpoint; the lobby has no such rule for humans yet.
+            let to = reset.map_or(spawn, |cell| Transform {
+                x: f64::from(cell[0]) + 0.5,
+                y: f64::from(cell[1]),
+                z: f64::from(cell[2]) + 0.5,
+                ..spawn
+            });
+            session.teleport(to);
+        }
         report.borrow_mut().bots[index] =
             (brain.mode(), position.y, brain.stats.failures, brain.checkpoint());
     }

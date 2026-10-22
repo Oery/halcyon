@@ -246,6 +246,140 @@ fn survey_checkpoints() {
     eprintln!("{} gold plates", found.len());
 }
 
+/// Floors from which a cell could be jumped to: within reach, at most a
+/// jump's height below and a few blocks above. Shows how a goal is entered.
+#[test]
+#[ignore = "opt-in survey of a real map for navigation work"]
+fn survey_approaches() {
+    let world = load_world();
+    let names = block_names();
+    let text = std::env::var("HALCYON_SURVEY_AT").unwrap_or_else(|_| "-46,69,12".into());
+    let parts: Vec<i32> = text.split(',').map(|p| p.trim().parse().unwrap()).collect();
+    let goal = [parts[0], parts[1], parts[2]];
+    let mut nav = NavService::new(Budget::Unlimited);
+    let mut found = Vec::new();
+    for dx in -7..=7 {
+        for dz in -7..=7 {
+            for dy in -2..=4 {
+                let cell = [goal[0] + dx, goal[1] + dy, goal[2] + dz];
+                if let Some(stand) = nav.stand(&world, cell) {
+                    let floor = world.block_at(cell[0], cell[1] - 1, cell[2]).unwrap_or(0);
+                    let name = names[&u32::from(floor)].split('[').next().unwrap();
+                    found.push((dx * dx + dz * dz, cell, stand.feet_y, name));
+                }
+            }
+        }
+    }
+    found.sort_by_key(|(d, cell, ..)| (*d, cell[1]));
+    let mut seen = std::collections::HashSet::new();
+    for (_, cell, feet, floor) in found {
+        // One line per kind of floor and height keeps the list readable.
+        if seen.insert((floor, (feet * 2.0) as i32, cell[0] / 2, cell[2] / 2)) {
+            eprintln!("  {cell:?} feet={feet} floor={floor}");
+        }
+    }
+}
+
+/// A headless bot dropped at `HALCYON_SURVEY_AT`, traced as it recovers.
+#[test]
+#[ignore = "opt-in survey of a real map for navigation work"]
+fn trace_bot() {
+    let world = load_world();
+    let text = std::env::var("HALCYON_SURVEY_AT").unwrap_or_else(|_| "-27.5,58.2,-36.5".into());
+    let parts: Vec<f64> = text.split(',').map(|p| p.trim().parse().unwrap()).collect();
+    let at = Transform { x: parts[0], y: parts[1], z: parts[2], ..Transform::default() };
+    let mut nav = NavService::new(Budget::Unlimited);
+    let goal = std::env::var("HALCYON_TRACE_GOAL").ok().map(|text| {
+        let parts: Vec<i32> = text.split(',').map(|p| p.trim().parse().unwrap()).collect();
+        [parts[0], parts[1], parts[2]]
+    });
+    nav.goal = Some(goal.unwrap_or([-46, 69, 12]));
+    let level = env_or("HALCYON_TRACE_LEVEL", 100) as u8;
+    let every = env_or("HALCYON_TRACE_EVERY", 10);
+    let mut bot = SimBot::new(BotProfile::new(level), 1, at);
+    for tick in 0..env_or("HALCYON_BENCH_TICKS", 600) {
+        bot.step(&mut nav, &world);
+        if tick % every == 0 {
+            let p = bot.position();
+            eprintln!(
+                "t={tick} mode={:?} ({:.2},{:.2},{:.2}) ground={}",
+                bot.brain.mode(),
+                p.x,
+                p.y,
+                p.z,
+                p.on_ground
+            );
+        }
+    }
+}
+
+/// Success rate of one edge under the live controller and motor at a level,
+/// against its validated robustness. Exposes validation/runtime mismatches.
+#[test]
+#[ignore = "opt-in survey of a real map for navigation work"]
+fn edge_success_rate() {
+    use super::follow::{EdgeRun, Execution, Obs, Status};
+    let world = load_world();
+    let parse = |name: &str, default: &str| {
+        let text = std::env::var(name).unwrap_or_else(|_| default.into());
+        let parts: Vec<i32> = text.split(',').map(|p| p.trim().parse().unwrap()).collect();
+        [parts[0], parts[1], parts[2]]
+    };
+    let from = parse("HALCYON_TRACE_FROM", "-13,61,-26");
+    let to = parse("HALCYON_TRACE_TO", "-13,62,-30");
+    let level = env_or("HALCYON_TRACE_LEVEL", 100) as u8;
+    let mut nav = NavService::new(Budget::Unlimited);
+    let here = nav.stand(&world, from).expect("from is standable");
+    let candidate = *nav
+        .graph
+        .candidates(&world, from)
+        .expect("candidates")
+        .iter()
+        .find(|c| c.to == to)
+        .expect("a candidate");
+    let edge = nav.graph.validate(&world, from, &candidate).expect("a valid edge");
+    let profile = BotProfile::new(level);
+    let mut successes = 0;
+    let trials = 20;
+    for seed in 0..trials {
+        let mut rng = crate::bot::rng::Rng::new(seed);
+        let mut motor = crate::bot::motor::Motor::new(0.0, 0.0);
+        let exec = Execution {
+            aim_tolerance: profile.aim_tolerance(),
+            approach_tolerance: profile.approach_tolerance(),
+            hesitation: profile.hesitation(edge.robustness, &mut rng),
+            ..Execution::IDEAL
+        };
+        let mut run = EdgeRun::new(from, &here, edge, exec);
+        let [x, z] = super::stand::centre(from);
+        let start = Transform { x, y: here.feet_y, z, on_ground: true, ..Transform::default() };
+        let mut state = crate::movement::MovementState::new(start);
+        state.place(start);
+        let mut previous = start;
+        let mut velocity = [0.0; 3];
+        for _ in 0..200 {
+            let position = state.transform();
+            let (intent, status) = run.tick(&Obs { position, velocity });
+            match status {
+                Status::Running => {}
+                Status::Done => {
+                    successes += 1;
+                    break;
+                }
+                Status::Failed(_) => break,
+            }
+            state.step(&world, motor.tick(intent, profile, &mut rng));
+            let now = state.transform();
+            velocity = [now.x - previous.x, now.y - previous.y, now.z - previous.z];
+            previous = now;
+        }
+    }
+    eprintln!(
+        "edge {from:?} -> {to:?} plan={:?} robustness={} level={level}: {successes}/{trials}",
+        edge.plan, edge.robustness
+    );
+}
+
 /// Why lily pads near spawn are or are not navigation nodes.
 #[test]
 #[ignore = "opt-in survey of a real map for navigation work"]

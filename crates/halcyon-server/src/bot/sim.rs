@@ -19,6 +19,8 @@ pub struct SimBot {
     health: f32,
     pub max_y: f64,
     pub deaths: u32,
+    /// Returns to a checkpoint after getting trapped.
+    pub resets: u32,
 }
 
 impl SimBot {
@@ -32,6 +34,7 @@ impl SimBot {
             health: 20.0,
             max_y: spawn.y,
             deaths: 0,
+            resets: 0,
         }
     }
 
@@ -45,6 +48,16 @@ impl SimBot {
         let advance = self.state.step(view, input);
         if let Some(damage) = advance.landed_fall_damage {
             self.health -= damage;
+        }
+        if let Some(reset) = self.brain.take_reset(nav) {
+            let to = reset.map_or(self.spawn, |cell| Transform {
+                x: f64::from(cell[0]) + 0.5,
+                y: f64::from(cell[1]),
+                z: f64::from(cell[2]) + 0.5,
+                ..self.spawn
+            });
+            self.state.place(to);
+            self.resets += 1;
         }
         let position = self.state.transform();
         self.max_y = self.max_y.max(position.y);

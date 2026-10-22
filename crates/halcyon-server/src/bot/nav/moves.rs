@@ -104,10 +104,11 @@ impl NavGraph {
     ) -> Outcome {
         let mut run = EdgeRun::new(from, &from_stand, edge, exec);
         let [x, z] = centre(from);
+        let [lx, lz] = run.left();
         let start = Transform {
-            x,
+            x: x + lx * exec.start_lateral,
             y: from_stand.feet_y,
-            z,
+            z: z + lz * exec.start_lateral,
             yaw: run.dir_yaw(),
             pitch: 0.0,
             on_ground: matches!(from_stand.kind, StandKind::Ground),
@@ -566,13 +567,23 @@ impl NavGraph {
             (Execution { yaw_offset: -3.0, ..Execution::IDEAL }, false),
             (Execution { takeoff_offset: -0.15, ..Execution::IDEAL }, false),
             (Execution::IDEAL, true),
+            // Lining up a little off the jump line.
+            (
+                Execution { start_lateral: 0.12, approach_tolerance: 0.15, ..Execution::IDEAL },
+                false,
+            ),
+            (
+                Execution { start_lateral: -0.12, approach_tolerance: 0.15, ..Execution::IDEAL },
+                false,
+            ),
         ];
+        let count = trials.len();
         let passed = trials
             .into_iter()
             .filter(|&(exec, late)| {
                 self.simulate(view, from, here, edge, exec, late).ticks.is_some()
             })
             .count();
-        passed as f32 / 4.0
+        passed as f32 / count as f32
     }
 }

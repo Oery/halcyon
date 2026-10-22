@@ -35,7 +35,7 @@ impl BotProfile {
 
     /// Standard deviation of the heading error committed to a jump, in degrees.
     pub fn aim_sigma(self) -> f32 {
-        3.0 - 2.6 * self.skill()
+        3.0 - 2.85 * self.skill()
     }
 
     /// Heading error accepted before committing to a jump, in degrees.
@@ -43,9 +43,14 @@ impl BotProfile {
         6.0 - 4.5 * self.skill()
     }
 
+    /// How precisely the run-up point is reached before a jump, in blocks.
+    pub fn approach_tolerance(self) -> f64 {
+        f64::from(0.12 - 0.08 * self.skill())
+    }
+
     /// Probability that a jump press lands one tick late.
     pub fn timing_slip(self) -> f64 {
-        f64::from(0.3 - 0.27 * self.skill())
+        f64::from(0.3 - 0.295 * self.skill())
     }
 
     /// Extra planning cost of an edge per unit of missing robustness, in ticks.
