@@ -45,6 +45,7 @@ struct Rendered {
     pose: mc_protocol::packets::client::PlayerPose,
     swimming: bool,
     sprinting: bool,
+    using: Option<mc_protocol::packets::client::InteractionHand>,
     health: f32,
     equipment: Rc<[mc_protocol::types::ItemStack; 6]>,
     life_generation: u64,
@@ -363,6 +364,11 @@ impl Observer {
 
     pub fn next_frame_count(&self) -> usize {
         self.active.as_ref().map_or(0, |frame| frame.frames)
+    }
+
+    /// Delivered and not being removed, so entity-bound effects can target it.
+    pub fn is_rendered(&self, id: i32) -> bool {
+        self.rendered.contains_key(&id) && !self.removal_pending(id)
     }
 
     pub fn visible_count(&self) -> usize {

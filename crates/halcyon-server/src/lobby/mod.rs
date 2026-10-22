@@ -66,6 +66,7 @@ pub struct PlayerSnapshot {
     pub pose: mc_protocol::packets::client::PlayerPose,
     pub swimming: bool,
     pub sprinting: bool,
+    pub using: Option<mc_protocol::packets::client::InteractionHand>,
     pub health: f32,
     pub equipment: Rc<[ItemStack; 6]>,
     pub life_generation: u64,
@@ -190,6 +191,12 @@ impl Lobby {
             registry.world_actions.push_back(WorldAction { pos, state, reply });
         }
         response.await.map_err(|_| crate::arena::EditError::Unavailable)?
+    }
+
+    /// Game-owned sounds, particles and animations for nearby observers.
+    #[allow(dead_code)]
+    pub fn effects(&self, emit: impl FnOnce(&mut crate::effects::EffectLog)) {
+        emit(&mut self.registry.borrow_mut().effects);
     }
 
     pub fn with_registry<T>(&self, read: impl FnOnce(&Registry) -> T) -> T {

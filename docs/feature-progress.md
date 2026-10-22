@@ -52,7 +52,7 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Death processing | Partial — death state and messages; no drops or match callbacks. |
 | Respawning | Done — same-world respawn/reset; inventory retained. |
 | Dimension transitions | Not started |
-| Player poses and actions | Partial — standing, crouching, swimming/crawling and dying. |
+| Player poses and actions | Partial — standing, crouching, swimming/crawling, dying, visible arm swings and item-use hand state. |
 | End completion flow | Excluded |
 
 ## 3. Combat and survival
@@ -298,9 +298,9 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Titles and action bar | Not started |
 | Player HUD state | Partial — health and hotbar; food stays fixed. |
 | Locator bar and waypoints | Not started |
-| Sounds | Not started |
-| Particles | Not started |
-| World and entity events | Partial — player damage and death. |
+| Sounds | Partial — positioned and entity sounds for nearby players, with combat presets; observers hear player hurt sounds. |
+| Particles | Partial — option-free particles for nearby players, with crit, hit, damage-indicator and sweep presets. |
+| World and entity events | Partial — player damage, death, swings and critical-hit animations, shown to other players. |
 | Maps and markers | Conditional |
 | Camera targets | Not started |
 | Dialogs | Not started |

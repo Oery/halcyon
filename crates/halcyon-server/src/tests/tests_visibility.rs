@@ -23,6 +23,7 @@ pub(super) fn player(id: i32, x: f64, revision: u64) -> PlayerSnapshot {
         pose: Default::default(),
         swimming: false,
         sprinting: false,
+        using: None,
         health: 20.0,
         equipment: Rc::new(std::array::from_fn(|_| mc_protocol::types::ItemStack::default())),
         life_generation: 0,

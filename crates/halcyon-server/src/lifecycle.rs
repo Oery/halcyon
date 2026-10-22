@@ -40,6 +40,20 @@ pub struct Damage {
     pub source: Option<i32>,
 }
 
+impl Damage {
+    /// The victim's own client and its observers receive the same event.
+    pub fn event(self, entity_id: i32) -> mc_protocol::packets::client::DamageEvent {
+        let source = self.source.filter(|id| *id > 0).and_then(|id| id.checked_add(1)).unwrap_or(0);
+        mc_protocol::packets::client::DamageEvent {
+            entity_id,
+            source_type_id: self.kind.protocol_id(),
+            source_cause_id: source,
+            source_direct_id: source,
+            source_position: None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Teleport {
     pub id: i32,
