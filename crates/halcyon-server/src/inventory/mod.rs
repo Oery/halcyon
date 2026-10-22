@@ -2,31 +2,23 @@
 //! do no inventory work. Client predictions identify corrections, never ownership.
 use mc_protocol::types::ItemStack;
 
+mod action;
 mod click;
+mod slot;
 
-const SLOT_COUNT: usize = 46;
+pub use action::InventoryAction;
+use slot::STORAGE;
+pub use slot::{ClickTarget, HotbarSlot, InventorySlot};
+
+const SLOT_COUNT: usize = InventorySlot::COUNT;
 const ALL_SLOTS: u64 = (1 << SLOT_COUNT) - 1;
-const STORAGE: [usize; 36] = [
-    36, 37, 38, 39, 40, 41, 42, 43, 44, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
-    24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
-];
 
 #[derive(Clone, Debug)]
 pub struct InventorySnapshot {
     pub slots: [ItemStack; SLOT_COUNT],
     pub cursor: ItemStack,
-    pub selected: u8,
+    pub selected: HotbarSlot,
     pub state_id: i32,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum InventoryAction {
-    Click { window_id: i32, state_id: i32, slot: i16, button: u8, mode: i32, predicted_slots: u64 },
-    Close { window_id: i32 },
-    Select { slot: i16 },
-    SwapHands,
-    RejectDrop,
-    Resync,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -62,7 +54,7 @@ struct Drag {
 pub struct Inventory {
     slots: [ItemStack; SLOT_COUNT],
     cursor: ItemStack,
-    selected: u8,
+    selected: HotbarSlot,
     state_id: i32,
     drag: Option<Drag>,
     /// Loadout replacement is a barrier against clicks predicted from old items.
@@ -80,7 +72,7 @@ impl Inventory {
         Self {
             slots: std::array::from_fn(|_| ItemStack::default()),
             cursor: ItemStack::default(),
-            selected: 0,
+            selected: HotbarSlot::FIRST,
             state_id: 0,
             drag: None,
             require_current_state: false,
@@ -98,12 +90,12 @@ impl Inventory {
 
     pub fn equipment(&self) -> [ItemStack; 6] {
         [
-            self.slots[36 + usize::from(self.selected)].clone(),
-            self.slots[45].clone(),
-            self.slots[8].clone(),
-            self.slots[7].clone(),
-            self.slots[6].clone(),
-            self.slots[5].clone(),
+            self.slots[self.selected.inventory_slot().index()].clone(),
+            self.slots[InventorySlot::OFFHAND.index()].clone(),
+            self.slots[InventorySlot::FEET.index()].clone(),
+            self.slots[InventorySlot::LEGS.index()].clone(),
+            self.slots[InventorySlot::CHEST.index()].clone(),
+            self.slots[InventorySlot::HEAD.index()].clone(),
         ]
     }
 
@@ -121,22 +113,33 @@ impl Inventory {
         self.state_id = (self.state_id + 1) & 0x7fff;
     }
 
-    fn slot_limit(slot: usize) -> u8 {
-        if (5..9).contains(&slot) { 1 } else { 99 }
+    fn slot_limit(slot: InventorySlot) -> u8 {
+        if slot.is_armor() { 1 } else { 99 }
     }
 
-    fn may_place(slot: usize, stack: &ItemStack) -> bool {
-        if !(5..SLOT_COUNT).contains(&slot) {
+    fn equipment_slot(stack: &ItemStack) -> Option<InventorySlot> {
+        match stack.equipment_kind() {
+            1 => Some(InventorySlot::FEET),
+            2 => Some(InventorySlot::LEGS),
+            3 => Some(InventorySlot::CHEST),
+            4 => Some(InventorySlot::HEAD),
+            5 => Some(InventorySlot::OFFHAND),
+            _ => None,
+        }
+    }
+
+    fn may_place(slot: InventorySlot, stack: &ItemStack) -> bool {
+        if slot.is_crafting() {
             return false;
         }
-        if stack.is_empty() || slot >= 9 {
+        if stack.is_empty() || !slot.is_armor() {
             return true;
         }
-        usize::from(stack.equipment_kind()) == 9 - slot
+        Self::equipment_slot(stack) == Some(slot)
     }
 
-    fn validate_slot(slot: usize, stack: &ItemStack) -> Result<(), InventoryError> {
-        if !(5..SLOT_COUNT).contains(&slot) {
+    fn validate_slot(slot: InventorySlot, stack: &ItemStack) -> Result<(), InventoryError> {
+        if slot.is_crafting() {
             return Err(InventoryError::InvalidSlot);
         }
         if !Self::may_place(slot, stack) || stack.count() > Self::slot_limit(slot) {
@@ -149,19 +152,19 @@ impl Inventory {
     /// the old stack; ordinary item grants should use give and retain its remainder.
     pub fn set_slot(
         &mut self,
-        slot: usize,
+        slot: InventorySlot,
         stack: ItemStack,
     ) -> Result<InventoryChange, InventoryError> {
         Self::validate_slot(slot, &stack)?;
-        if self.slots[slot] == stack {
+        if self.slots[slot.index()] == stack {
             return Ok(InventoryChange { ignored: true, ..Default::default() });
         }
         let before = self.equipment();
         self.cancel_drag();
-        self.slots[slot] = stack;
+        self.slots[slot.index()] = stack;
         self.advance_state();
         Ok(InventoryChange {
-            changed_slots: 1 << slot,
+            changed_slots: slot.mask(),
             equipment_changed: before != self.equipment(),
             ..Default::default()
         })
@@ -172,16 +175,13 @@ impl Inventory {
     pub fn replace_loadout(
         &mut self,
         slots: [ItemStack; SLOT_COUNT],
-        selected: u8,
+        selected: HotbarSlot,
     ) -> Result<InventoryChange, InventoryError> {
-        if selected > 8 {
-            return Err(InventoryError::InvalidSelection);
-        }
-        if slots[..5].iter().any(|item| !item.is_empty()) {
+        if slots[..InventorySlot::HEAD.index()].iter().any(|item| !item.is_empty()) {
             return Err(InventoryError::InvalidSlot);
         }
-        for (slot, stack) in slots.iter().enumerate().skip(5) {
-            Self::validate_slot(slot, stack)?;
+        for slot in InventorySlot::all().filter(|slot| !slot.is_crafting()) {
+            Self::validate_slot(slot, &slots[slot.index()])?;
         }
         let before = self.equipment();
         self.slots = slots;
@@ -199,7 +199,7 @@ impl Inventory {
     }
 
     pub fn reset(&mut self) -> InventoryChange {
-        self.replace_loadout(std::array::from_fn(|_| ItemStack::default()), 0)
+        self.replace_loadout(std::array::from_fn(|_| ItemStack::default()), HotbarSlot::FIRST)
             .expect("empty loadout is valid")
     }
 
@@ -225,7 +225,7 @@ impl Inventory {
     }
 
     pub fn apply(&mut self, action: InventoryAction) -> InventoryChange {
-        if matches!(action, InventoryAction::Click { window_id,.. } | InventoryAction::Close { window_id } if window_id != 0)
+        if matches!(action, InventoryAction::Click { window_id,.. } | InventoryAction::Close { window_id } | InventoryAction::Reject { window_id, .. } if window_id != 0)
         {
             return InventoryChange { ignored: true, ..Default::default() };
         }
@@ -236,14 +236,14 @@ impl Inventory {
         let mut full_sync = false;
         let mut predicted = 0;
         let accepted = match action {
-            InventoryAction::Click { state_id, slot, button, mode, predicted_slots, .. } => {
+            InventoryAction::Click { state_id, target, button, mode, predicted_slots, .. } => {
                 predicted = predicted_slots & ALL_SLOTS;
                 full_sync = state_id != self.state_id;
                 if self.require_current_state && full_sync {
                     false
                 } else {
                     self.require_current_state = false;
-                    self.click(slot, button, mode)
+                    self.click(target, button, mode)
                 }
             }
             InventoryAction::Close { .. } => {
@@ -255,16 +255,17 @@ impl Inventory {
                 true
             }
             InventoryAction::Select { slot } => {
-                if (0..9).contains(&slot) {
-                    self.selected = slot as u8;
-                    true
-                } else {
-                    false
-                }
+                self.selected = slot;
+                true
+            }
+            InventoryAction::Reject { predicted_slots, .. } => {
+                predicted = predicted_slots & ALL_SLOTS;
+                false
             }
             InventoryAction::SwapHands => {
                 self.cancel_drag();
-                self.slots.swap(36 + usize::from(self.selected), 45);
+                self.slots
+                    .swap(self.selected.inventory_slot().index(), InventorySlot::OFFHAND.index());
                 true
             }
             InventoryAction::RejectDrop => false,
@@ -295,27 +296,25 @@ impl Inventory {
         }
     }
 
-    fn insert_storage(&mut self, stack: &mut ItemStack, targets: &[usize]) {
+    fn insert_storage(&mut self, stack: &mut ItemStack, targets: &[InventorySlot]) {
         for empty in [false, true] {
             for &slot in targets {
                 if stack.is_empty() {
                     return;
                 }
-                if self.slots[slot].is_empty() != empty {
+                if self.slots[slot.index()].is_empty() != empty {
                     continue;
                 }
-                stack.transfer_to(&mut self.slots[slot], u8::MAX, Self::slot_limit(slot));
+                stack.transfer_to(&mut self.slots[slot.index()], u8::MAX, Self::slot_limit(slot));
             }
         }
     }
 }
 
 fn changed_mask(before: &[ItemStack; SLOT_COUNT], after: &[ItemStack; SLOT_COUNT]) -> u64 {
-    before
-        .iter()
-        .zip(after)
-        .enumerate()
-        .fold(0, |mask, (slot, (old, new))| mask | if old != new { 1 << slot } else { 0 })
+    InventorySlot::all()
+        .zip(before.iter().zip(after))
+        .fold(0, |mask, (slot, (old, new))| mask | if old != new { slot.mask() } else { 0 })
 }
 
 #[cfg(test)]

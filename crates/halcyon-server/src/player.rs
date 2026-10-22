@@ -10,7 +10,8 @@ use halcyon_world::World;
 use mc_protocol::types::ItemStack;
 
 use crate::inventory::{
-    Inventory, InventoryAction, InventoryChange, InventoryError, InventorySnapshot,
+    HotbarSlot, Inventory, InventoryAction, InventoryChange, InventoryError, InventorySlot,
+    InventorySnapshot,
 };
 use crate::lifecycle::{Damage, DamageKind, DamageResult, PlayerLife, PlayerRules, Teleport};
 use crate::lobby::Transform;
@@ -44,8 +45,8 @@ mod tests;
 /// Deliberate game-owned changes; replacing a loadout intentionally replaces its cursor too.
 #[allow(dead_code)]
 pub enum InventoryEdit {
-    SetSlot { slot: usize, stack: ItemStack },
-    Loadout { slots: Box<[ItemStack; 46]>, selected: u8 },
+    SetSlot { slot: InventorySlot, stack: ItemStack },
+    Loadout { slots: Box<[ItemStack; InventorySlot::COUNT]>, selected: HotbarSlot },
     Clear,
     Give(ItemStack),
 }

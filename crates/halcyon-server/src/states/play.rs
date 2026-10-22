@@ -113,14 +113,14 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
         }
         Packets::ClickContainer(p) => {
             if let Some(session) = &client.session {
-                session.inventory(InventoryAction::Click {
-                    window_id: p.window_id,
-                    state_id: p.state_id,
-                    slot: p.slot,
-                    button: p.button,
-                    mode: p.mode,
-                    predicted_slots: p.predicted_slots,
-                });
+                session.inventory(InventoryAction::from_click(
+                    p.window_id,
+                    p.state_id,
+                    p.slot,
+                    p.button,
+                    p.mode,
+                    p.predicted_slots,
+                ));
             }
         }
         Packets::CloseContainer(p) => {
@@ -130,7 +130,7 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
         }
         Packets::SetHeldItem(p) => {
             if let Some(session) = &client.session {
-                session.inventory(InventoryAction::Select { slot: p.slot });
+                session.inventory(InventoryAction::from_selection(p.slot));
             }
         }
         Packets::PlayerAction(p) => {

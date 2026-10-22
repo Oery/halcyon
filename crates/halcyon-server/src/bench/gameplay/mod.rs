@@ -1,7 +1,7 @@
 //! Opt-in production-rule workloads: terrain, owner steps, 20 Hz publication,
 //! ground physics, equipment and encrypted bounded writers. No sockets.
 use super::*;
-use crate::inventory::InventoryAction;
+use crate::inventory::{HotbarSlot, InventoryAction};
 use crate::lifecycle::Damage;
 use crate::movement::MovementProposal;
 use crate::player::PlayerAction;
@@ -126,8 +126,19 @@ async fn measure(case: Scenario, paced: bool) -> Value {
         let player = registry.players.get_mut(&entity_id).unwrap();
         player.state.life.rules.protected = !case.churn;
         player.state.life.rules.respawn = transform;
-        player.state.inventory.set_slot(36, ItemStack::plain(1, 32).unwrap()).unwrap();
-        player.state.inventory.set_slot(37, ItemStack::plain(2, 32).unwrap()).unwrap();
+        player
+            .state
+            .inventory
+            .set_slot(HotbarSlot::FIRST.inventory_slot(), ItemStack::plain(1, 32).unwrap())
+            .unwrap();
+        player
+            .state
+            .inventory
+            .set_slot(
+                HotbarSlot::try_from(1usize).unwrap().inventory_slot(),
+                ItemStack::plain(2, 32).unwrap(),
+            )
+            .unwrap();
         player.state.equipment = Rc::new(player.state.inventory.equipment());
         inputs.push((entity_id, input, transform));
         let terrain = world
@@ -222,7 +233,7 @@ async fn measure(case: Scenario, paced: bool) -> Value {
                     input.actions.borrow_mut().push(
                         input.generation.get(),
                         PlayerAction::Inventory(InventoryAction::Select {
-                            slot: ((tick / 5) % 2) as i16,
+                            slot: HotbarSlot::try_from((tick / 5) % 2).unwrap(),
                         }),
                     );
                     let action = if !registry.players[id].state.life.alive() {

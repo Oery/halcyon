@@ -7,6 +7,7 @@ use mc_protocol::packets::Payload;
 
 use super::Client;
 use crate::error::Error;
+use crate::inventory::InventorySlot;
 use crate::lobby::{Profile, Session, Transform};
 
 impl Client {
@@ -136,12 +137,12 @@ impl Client {
                 })
                 .await?;
             } else {
-                for (slot, stack) in inventory.slots.iter().enumerate() {
-                    if update.inventory_slots & (1u64 << slot) != 0 {
+                for (slot, stack) in InventorySlot::all().zip(&inventory.slots) {
+                    if update.inventory_slots & slot.mask() != 0 {
                         self.send(&SetContainerSlot {
                             window_id: 0,
                             state_id: inventory.state_id,
-                            slot: slot as i16,
+                            slot: slot.protocol_id(),
                             stack,
                         })
                         .await?;
@@ -150,7 +151,10 @@ impl Client {
             }
             self.send(&SetCursorItem { stack: &inventory.cursor }).await?;
             if update.inventory_full || self.selected_slot != inventory.selected {
-                self.send(&SetHeldItemResponse { slot: i32::from(inventory.selected) }).await?;
+                self.send(&SetHeldItemResponse {
+                    slot: i32::from(inventory.selected.protocol_id()),
+                })
+                .await?;
                 self.selected_slot = inventory.selected;
             }
         }

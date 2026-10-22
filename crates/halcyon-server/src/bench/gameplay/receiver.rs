@@ -9,6 +9,7 @@ use futures_lite::{AsyncWrite, AsyncWriteExt, future::block_on};
 use mc_protocol::packets::{Payload, client::*};
 
 use crate::encryption::ciphers;
+use crate::inventory::InventorySlot;
 use crate::lobby::Registry;
 use crate::player::PlayerUpdate;
 use crate::transport::ClientStream;
@@ -111,19 +112,19 @@ impl Receiver {
                     carried: &inventory.cursor,
                 });
             } else {
-                for (slot, stack) in inventory.slots.iter().enumerate() {
-                    if update.inventory_slots & (1 << slot) != 0 {
+                for (slot, stack) in InventorySlot::all().zip(&inventory.slots) {
+                    if update.inventory_slots & slot.mask() != 0 {
                         self.packet(&SetContainerSlot {
                             window_id: 0,
                             state_id: inventory.state_id,
-                            slot: slot as i16,
+                            slot: slot.protocol_id(),
                             stack,
                         });
                     }
                 }
             }
             self.packet(&SetCursorItem { stack: &inventory.cursor });
-            self.packet(&SetHeldItemResponse { slot: i32::from(inventory.selected) });
+            self.packet(&SetHeldItemResponse { slot: i32::from(inventory.selected.protocol_id()) });
         }
         if let Some(teleport) = update.teleport {
             let p = teleport.destination;
