@@ -12,9 +12,13 @@ use crate::bot::motor::Intent;
 use crate::lobby::Transform;
 
 const STEP: f64 = 0.6;
+/// Highest rise a walk is tried for: a stair's full block, in two steps.
+const WALK_RISE: f64 = 1.0;
 /// Highest a jump can raise the feet (0.42 jump impulse peaks near 1.25).
 const MAX_RISE: f64 = 1.3;
 const MAX_DROP: f64 = 3.6;
+/// Courses drop players onto lower stages; accept losing up to one heart.
+const MAX_FALL_DAMAGE: f32 = 2.0;
 const MAX_REACH: i32 = 5;
 const MAX_JUMP_CANDIDATES: usize = 40;
 const SIM_LIMIT: u16 = 200;
@@ -88,6 +92,10 @@ pub struct Outcome {
     pub ticks: Option<u16>,
     /// Closest horizontal approach to the destination centre.
     pub closest: f64,
+    /// Furthest progress along the jump line.
+    pub furthest: f64,
+    /// Fall damage taken on the way.
+    pub damage: f32,
 }
 
 impl NavGraph {
@@ -119,13 +127,19 @@ impl NavGraph {
         let mut velocity = [0.0; 3];
         let mut delayed = false;
         let mut settled: Option<u16> = None;
+        let mut damage = 0.0f32;
         let mut ticks = SIM_LIMIT;
         for tick in 0..SIM_LIMIT {
             let position = self.sim.transform();
             let intent = if let Some(done) = settled {
                 if tick - done >= SETTLE_TICKS {
                     self.stats.simulated_ticks += u64::from(tick);
-                    return Outcome { ticks: Some(done), closest: 0.0 };
+                    return Outcome {
+                        ticks: Some(done),
+                        closest: 0.0,
+                        furthest: run.furthest,
+                        damage,
+                    };
                 }
                 if !run.arrived(position) {
                     ticks = tick;
@@ -162,10 +176,11 @@ impl NavGraph {
                 }
             }
             let advance = self.sim.step(view, input);
+            damage += advance.landed_fall_damage.unwrap_or(0.0);
             let now = self.sim.transform();
             if advance.correction
                 || advance.uncertain_motion
-                || advance.landed_fall_damage.is_some_and(|damage| damage > 0.0)
+                || advance.landed_fall_damage.is_some_and(|damage| damage > MAX_FALL_DAMAGE)
                 // Swimming is not planned: a splash is a miss.
                 || in_water(view, now)
             {
@@ -176,7 +191,7 @@ impl NavGraph {
             previous = now;
         }
         self.stats.simulated_ticks += u64::from(ticks);
-        Outcome { ticks: None, closest: run.closest }
+        Outcome { ticks: None, closest: run.closest, furthest: run.furthest, damage }
     }
 
     /// Every move worth trying from `from`, from geometry alone.
@@ -200,7 +215,8 @@ impl NavGraph {
                 let to = [from[0] + dx, from[1] + dy, from[2] + dz];
                 let Some(there) = self.stand(view, to) else { continue };
                 let rise = there.feet_y - here.feet_y;
-                let limit = if on_ladder { 1.6 } else { STEP };
+                // Up to a block: stairs climb by stepping; the simulation decides.
+                let limit = if on_ladder { 1.6 } else { WALK_RISE };
                 if rise > limit || rise < -STEP {
                     continue;
                 }
@@ -338,6 +354,7 @@ impl NavGraph {
             ticks: 1,
             robustness: 1.0,
             via: None,
+            damage: 0.0,
         };
         match candidate.kind {
             EdgeKind::Jump | EdgeKind::Bounce => {
@@ -348,8 +365,9 @@ impl NavGraph {
                 Some(edge)
             }
             _ => {
-                let ticks = self.simulate(view, from, here, edge, Execution::IDEAL, false).ticks?;
-                edge.ticks = ticks.max(1);
+                let outcome = self.simulate(view, from, here, edge, Execution::IDEAL, false);
+                edge.ticks = outcome.ticks?.max(1);
+                edge.damage = outcome.damage;
                 Some(edge)
             }
         }
@@ -396,10 +414,15 @@ impl NavGraph {
                 for dy in (-4..=2).rev() {
                     let to = [from[0] + dx, from[1] + dy, from[2] + dz];
                     let Some(there) = self.stand(view, to) else { continue };
-                    if there.kind != StandKind::Ground || existing.iter().any(|c| c.to == to) {
+                    let rise = there.feet_y - here.feet_y;
+                    // A plain step makes a jump pointless; a stair-height
+                    // walk may fail validation, so keep a jump in reserve.
+                    let walked = existing
+                        .iter()
+                        .any(|c| c.to == to && (c.kind != EdgeKind::Walk || rise <= STEP));
+                    if there.kind != StandKind::Ground || walked {
                         continue;
                     }
-                    let rise = there.feet_y - here.feet_y;
                     let adjacent = distance < 1.5;
                     let plausible = if adjacent {
                         rise > STEP && rise <= MAX_RISE
@@ -517,10 +540,13 @@ impl NavGraph {
                 ticks: 0,
                 robustness: 0.0,
                 via,
+                damage: 0.0,
             };
             let outcome = self.simulate(view, from, here, edge, Execution::IDEAL, false);
             let Some(ticks) = outcome.ticks else {
-                if index == 0 && outcome.closest > 1.0 {
+                // The farthest-reaching plan fell well short: no gentler
+                // plan can do better. Overshooting proves nothing.
+                if index == 0 && outcome.closest > 1.0 && outcome.furthest + 1.0 < distance {
                     return None;
                 }
                 continue;
@@ -528,6 +554,7 @@ impl NavGraph {
             let edge = Edge {
                 ticks: ticks.max(1),
                 robustness: self.robustness(view, from, here, edge),
+                damage: outcome.damage,
                 ..edge
             };
             successes += 1;

@@ -118,6 +118,21 @@ fn vines_are_climbed_along_walls_and_hanging_free() {
 }
 
 #[test]
+fn stairs_are_walked_up_and_their_tops_are_floors() {
+    let stairs =
+        id("minecraft:stone_stairs[facing=east,half=bottom,shape=straight,waterlogged=false]");
+    let mut view = MapView::default();
+    view.floor([-2, 4], 10, [-1, 1]);
+    view.set([1, 11, 0], stairs).set([2, 11, 0], stone()).set([2, 12, 0], stairs);
+    let mut nav = nav();
+    assert_eq!(nav.stand(&view, [1, 12, 0]).map(|s| s.feet_y), Some(12.0), "stair top");
+    assert_eq!(nav.stand(&view, [1, 11, 0]), None, "inside the stair");
+    let up = edge(&mut nav, &view, [0, 11, 0], [1, 12, 0]).expect("onto the stair");
+    assert_eq!(up.kind, EdgeKind::Walk);
+    assert!(edge(&mut nav, &view, [1, 12, 0], [2, 13, 0]).is_some(), "up the next step");
+}
+
+#[test]
 fn a_low_ceiling_shortens_jumps() {
     let mut view = gap_course(3);
     let mut nav = nav();

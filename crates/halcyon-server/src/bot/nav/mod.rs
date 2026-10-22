@@ -26,7 +26,7 @@ pub use stand::{Stand, StandKind};
 
 pub type Cell = BlockPos;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum EdgeKind {
     /// Steps between neighbouring cells, including step-ups and ladder exits.
     Walk,
@@ -73,6 +73,8 @@ pub struct Edge {
     pub robustness: f32,
     /// For bounces: the slime cell landed on first, and its feet height.
     pub via: Option<(Cell, f64)>,
+    /// Fall damage taken on landing, in half hearts.
+    pub damage: f32,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -166,7 +168,7 @@ impl NavService {
         from: Cell,
         candidate: &Candidate,
     ) -> Validation {
-        let known = match self.graph.checked(from, candidate.to) {
+        let known = match self.graph.checked(from, candidate) {
             Some(known) => known,
             None => {
                 if !self.has_budget() {

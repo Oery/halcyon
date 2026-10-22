@@ -9,7 +9,7 @@ use halcyon_world::BlockView;
 
 use super::moves::Candidate;
 use super::stand::{Stand, stand};
-use super::{Cell, Edge, NavStats};
+use super::{Cell, Edge, EdgeKind, NavStats};
 use crate::arena::Column;
 use crate::lobby::Transform;
 use crate::movement::MovementState;
@@ -17,7 +17,8 @@ use crate::movement::MovementState;
 pub struct NavGraph {
     pub(super) stands: HashMap<Cell, Option<Stand>>,
     pub(super) candidates: HashMap<Cell, Rc<[Candidate]>>,
-    pub(super) validated: HashMap<(Cell, Cell), Option<Edge>>,
+    /// Keyed by move kind too: a failed stair walk must not hide the jump.
+    pub(super) validated: HashMap<(Cell, Cell, EdgeKind), Option<Edge>>,
     /// Scratch for clearance probes.
     pub(super) probe: MovementState,
     /// Scratch for edge simulations.
@@ -67,8 +68,8 @@ impl NavGraph {
     }
 
     /// A cached validation result, if `candidate` was already checked.
-    pub fn checked(&self, from: Cell, to: Cell) -> Option<Option<Edge>> {
-        self.validated.get(&(from, to)).copied()
+    pub fn checked(&self, from: Cell, candidate: &Candidate) -> Option<Option<Edge>> {
+        self.validated.get(&(from, candidate.to, candidate.kind)).copied()
     }
 
     pub fn validate(
@@ -77,7 +78,7 @@ impl NavGraph {
         from: Cell,
         candidate: &Candidate,
     ) -> Option<Edge> {
-        if let Some(known) = self.checked(from, candidate.to) {
+        if let Some(known) = self.checked(from, candidate) {
             return known;
         }
         let edge = self.stand(view, from).and_then(|here| {
@@ -86,7 +87,7 @@ impl NavGraph {
             self.stats.build_time += start.elapsed();
             edge
         });
-        self.validated.insert((from, candidate.to), edge);
+        self.validated.insert((from, candidate.to, candidate.kind), edge);
         if edge.is_some() {
             self.stats.edges += 1;
         }
@@ -113,7 +114,7 @@ impl NavGraph {
         };
         self.stands.retain(|cell, _| !near(cell));
         self.candidates.retain(|cell, _| !near(cell));
-        self.validated.retain(|(from, to), _| !near(from) && !near(to));
+        self.validated.retain(|(from, to, _), _| !near(from) && !near(to));
         self.stats.nodes = self.stands.values().filter(|s| s.is_some()).count();
         self.stats.edges = self.validated.values().filter(|e| e.is_some()).count();
     }

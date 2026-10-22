@@ -17,6 +17,8 @@ use super::{Candidate, Cell, Edge, NavService, Validation};
 const WEIGHT: f32 = 1.5;
 /// Fixed extra cost of a jump over its duration: lining it up takes time.
 pub const JUMP_COST: f32 = 8.0;
+/// Planning cost per half heart of fall damage, in ticks.
+const DAMAGE_COST: f32 = 40.0;
 /// Rough cost of gaining one block of height, in ticks.
 const RISE_COST: f32 = 15.0;
 pub const MAX_EXPANSIONS: usize = 20_000;
@@ -194,6 +196,8 @@ impl Search {
                     if edge.kind.is_jump() {
                         g += JUMP_COST;
                     }
+                    // Health does not come back: avoid damage when there is a choice.
+                    g += edge.damage * DAMAGE_COST;
                     self.push(open.cell, g, Via::Valid(Step { from, edge }), goal);
                 }
                 Via::Start | Via::Valid(_) => {

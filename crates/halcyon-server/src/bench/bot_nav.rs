@@ -454,6 +454,7 @@ fn trace_edge() {
             ticks: 0,
             robustness: 0.0,
             via,
+            damage: 0.0,
         };
         let mut run = EdgeRun::new(from, &here, edge, Execution::IDEAL);
         let [x, z] = super::stand::centre(from);
@@ -722,13 +723,13 @@ fn frontier_report(nav: &mut NavService, world: &halcyon_world::World, end: Cell
     };
     let near = |c: &Cell| (c[0] - end[0]).pow(2) + (c[2] - end[2]).pow(2) <= 25 * 25;
     let explored: HashSet<Cell> =
-        nav.graph.validated.keys().map(|(from, _)| *from).filter(near).collect();
+        nav.graph.validated.keys().map(|(from, ..)| *from).filter(near).collect();
     let mut rejected: Vec<(Cell, Cell)> = nav
         .graph
         .validated
         .iter()
         .filter(|(_, edge)| edge.is_none())
-        .map(|(&(from, to), _)| (from, to))
+        .map(|(&(from, to, _), _)| (from, to))
         .filter(|(from, to)| near(from) && to[1] > from[1] && !explored.contains(to))
         .collect();
     rejected.sort_by_key(|(_, to)| -to[1]);
@@ -773,7 +774,8 @@ fn frontier_report(nav: &mut NavService, world: &halcyon_world::World, end: Cell
             for dz in -6..=6 {
                 for dy in 1..=6 {
                     let to = [from[0] + dx, from[1] + dy, from[2] + dz];
-                    if explored.contains(&to) || nav.graph.validated.contains_key(&(*from, to)) {
+                    let tried = nav.graph.validated.keys().any(|&(a, b, _)| a == *from && b == to);
+                    if explored.contains(&to) || tried {
                         continue;
                     }
                     if nav.stand(world, to).is_some() {

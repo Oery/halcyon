@@ -58,7 +58,11 @@ pub fn centre(cell: Cell) -> [f64; 2] {
     [f64::from(cell[0]) + 0.5, f64::from(cell[2]) + 0.5]
 }
 
-/// Collision tops covering the cell centre, ignoring shapes that only touch it.
+/// Half the player's width.
+const FOOT: f64 = 0.3;
+
+/// Collision tops under a player standing on the cell centre, ignoring
+/// shapes that only touch the footprint.
 fn support(id: BlockStateId, x: i32, z: i32) -> Option<(f64, [f32; 4])> {
     let offset = collision_offset(id, x, z);
     let mut top: Option<f64> = None;
@@ -66,10 +70,12 @@ fn support(id: BlockStateId, x: i32, z: i32) -> Option<(f64, [f32; 4])> {
     for shape in state_info(id).collision_boxes() {
         let [min_x, max_x] = [shape.min[0] + offset[0], shape.max[0] + offset[0]];
         let [min_z, max_z] = [shape.min[2] + offset[2], shape.max[2] + offset[2]];
-        if min_x < 0.5 - EPSILON
-            && max_x > 0.5 + EPSILON
-            && min_z < 0.5 - EPSILON
-            && max_z > 0.5 + EPSILON
+        // Any overlap with the footprint of a player centred on the cell
+        // supports it, as in vanilla: half-block stair tops count.
+        if min_x < 0.5 + FOOT - EPSILON
+            && max_x > 0.5 - FOOT + EPSILON
+            && min_z < 0.5 + FOOT - EPSILON
+            && max_z > 0.5 - FOOT + EPSILON
         {
             top = Some(top.map_or(shape.max[1], |top: f64| top.max(shape.max[1])));
             extent = [

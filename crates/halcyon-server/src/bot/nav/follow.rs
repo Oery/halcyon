@@ -97,6 +97,8 @@ pub struct EdgeRun {
     bounced_at: Option<u16>,
     /// Closest horizontal approach to the target centre, for diagnostics.
     pub closest: f64,
+    /// Furthest progress along the line from the source towards the target.
+    pub furthest: f64,
 }
 
 /// Minecraft yaw facing horizontal direction `dir`.
@@ -170,6 +172,7 @@ impl EdgeRun {
             aim_feet,
             bounced_at: None,
             closest: f64::INFINITY,
+            furthest: 0.0,
         }
     }
 
@@ -234,6 +237,7 @@ impl EdgeRun {
         let here = [position.x, position.z];
         let to_target = sub(self.target, here);
         self.closest = self.closest.min(to_target[0].hypot(to_target[1]));
+        self.furthest = self.furthest.max(dot(sub(here, self.origin), self.dir));
         self.ticks = self.ticks.saturating_add(1);
         let idle = self.look(position, position.yaw);
         let rebounded = self.edge.via.is_none() || self.bounced_at.is_some();
