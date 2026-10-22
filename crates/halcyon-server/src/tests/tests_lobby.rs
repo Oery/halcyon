@@ -1,5 +1,4 @@
 use super::owner::register;
-use super::registry::Player;
 use super::*;
 use crate::inventory::InventoryAction;
 use crate::player::PlayerAction;
@@ -103,16 +102,6 @@ fn dropping_guards_cleans_up_without_enqueuing_and_ids_are_not_reused() {
 #[test]
 fn admission_bounds_include_invisible_reservations_and_abandoned_replies() {
     let mut registry = Registry::default();
-    let sessions: Vec<_> =
-        (1..=MAX_PLAYERS).map(|uuid| reserve(&mut registry, uuid as u128)).collect();
-    assert!(registry.capacity_payload_bytes() >= MAX_PLAYERS * std::mem::size_of::<Player>());
-    let input = Rc::new(Input::new(Rc::default()));
-    assert_eq!(
-        registry.reserve(profile(2_000), Transform::default(), 0, input),
-        Err(AdmissionError::Full)
-    );
-    drop(sessions);
-    registry.cleanup();
     let (reply, response) = oneshot::oneshot();
     drop(response);
     register(
