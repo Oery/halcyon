@@ -1,6 +1,6 @@
 # Halcyon bots: expectations and architecture
 
-Status: design spec. No bot code exists yet; see `feature-progress.md` §20.
+Status: embodiment, motor, profiles and navigation are implemented (§8); perception, traits, matches and combat are not. See `feature-progress.md` §20.
 
 ## 1. Goals and non-goals
 
@@ -112,7 +112,7 @@ A bot is a registry player without a socket:
 
 Known engine gaps:
 
-- **Activation:** players become visible only after a confirmed teleport. `Session::activate` is `#[cfg(test)]` only, so bots need a real activation path.
+- **Activation:** solved without engine changes. Bots request their spawn teleport and confirm it like a client, which activates them.
 - **No arm-swing / entity-animation packet,** and no observer-side hurt animation.
 - **Player Info:** no latency or game-mode fields (tab-list ping).
 - **Skins:** bots have no texture properties.
@@ -226,11 +226,9 @@ Level and trait profiles are data, not code: declarative, tunable and comparable
 
 ## 6. Milestones
 
-1. **Embodiment:**
-   - a bot that is visible in the tab list and world, stands, looks around and walks;
-   - activation path and animation packet.
-2. **Motor layer:** humanlike camera and key timing, hand-tuned.
-3. **Parkour skills and route graph** on Parkour Spiral: bots complete the course at different levels.
+1. **Embodiment:** done. Bots are visible, register and respawn like clients. Still missing: animation packet.
+2. **Motor layer:** first version done, hand-tuned.
+3. **Parkour skills and route graph:** navigation done (§8). On Parkour Spiral, bots cross the lily pads to the spire base. Map-specific mechanics then block the climb (§8, "Parkour Spiral status").
 4. **Level, trait and state profiles:** several distinct bots racing together.
 5. **Match director and queue/fill policy** (depends on §18 matches).
 6. **Combat and team-game layers.**
@@ -246,3 +244,79 @@ Decided:
 Open:
 
 - How is disclosure shown: tab-list prefix, queue UI, name suffix? To be determined.
+
+## 8. Navigation (implemented)
+
+Code: `crates/halcyon-server/src/bot/`. Tests: `src/tests/tests_bot_*.rs`. Real-map scenario and survey tools: `src/bench/bot_nav.rs`.
+
+### Graph
+
+- **Nodes** (`nav/stand.rs`): standable cells. A node is the block cell containing the feet; support comes from that cell (slabs, carpets, lily pads, stair steps) or the block below. Lava, unsupported and contextual blocks are never nodes. Ladders and vines are climb nodes.
+- **Candidates** (`nav/moves.rs`): from geometry alone, a node proposes:
+  - walks and step-ups to its 8 neighbours;
+  - drops of up to 3.6 blocks that cost no health (health does not regenerate);
+  - ladder and vine climbs;
+  - jumps of up to 5 blocks horizontally and +1.3 up.
+
+  Cheap filters remove jumps through solid blocks and jumps over continuous floor.
+- **Validation:** a candidate becomes an edge only after a simulation succeeds. The simulation runs the real player physics (`MovementState::step`) under the **same closed-loop controller** live bots use (`nav/follow.rs`), from rest, with ideal hands. It must then settle on the target.
+  - Jumps try several plans: run-up, takeoff point, sprint.
+  - Each accepted jump gets a **robustness** score: the success rate under perturbed aim (±3°), early takeoff and a one-tick-late jump.
+- **Laziness:** the search queues candidates at optimistic costs and validates one only when it reaches the front of the queue. Most candidates are never simulated.
+- **Sharing and invalidation:** one `NavService` per lobby caches stands, candidates and validations for every bot. Arena column revisions drop entries around edited columns.
+
+### Search and execution
+
+- **Search** (`nav/search.rs`): weighted A*. The heuristic counts horizontal distance plus about 15 ticks per block of height. Edge cost is ticks, plus risk aversion × (1 − robustness), plus remembered failures. Searches resume across ticks under a shared validation budget (`HALCYON_BOT_NAV_MS`, default 4 ms per tick). They return a partial route to the closest cell when the goal is unreachable.
+- **Execution:** the brain (`brain.rs`) follows a route edge by edge with the same controller:
+  - jumps back up to the run-up point, line up, hesitate, then commit;
+  - walks steer cell to cell;
+  - climbs push into ladders or hold jump on vines.
+
+  The motor (`motor.rs`) adds humanlike error: eased, rate-limited turning, tremor, committed aim error and occasional late jump presses.
+- **Failure handling:** a failed edge is remembered and penalised for that bot, which pauses and replans. In water, the bot swims to the nearest floor and replans.
+- **Cadence:** live bots decide once per simulation step, woken by the owner's publication.
+
+### Profiles
+
+`HALCYON_BOT_LEVEL` is `n` or `min-max` (default `20-90`). Each bot draws its level once. The level scales turn rate, tremor, aim error and tolerance, late-press probability, hesitation and risk aversion.
+
+### Tools
+
+| Command / variable | What it does |
+| --- | --- |
+| `cargo test --release -p halcyon-server spire_climb_scenario -- --ignored --nocapture` | Headless bots on a real map. Reports route existence, simulation cost, per-bot progress and, when the route is partial, a frontier report. |
+| `survey_map`, `survey_layers`, `survey_box`, `survey_inventory`, `survey_raised_water`, `survey_lily_pads`, `geometric_route`, `trace_edge` | Map forensics: height maps, slices, block inventories, optimistic routes and tick-by-tick traces of one edge. |
+| `HALCYON_DIAGNOSTICS=1` | Prints a `bots:` line every 5 s: modes, failures by cause, heights and navigation cache and cost. |
+| `HALCYON_BOT_TRACE=1` | Logs every failed edge. |
+
+### Parkour Spiral status
+
+**Works:** from the spawn island, bots cross the lily pad trail and reach the spire base cave around `(0, 54, -45)`.
+
+**Performance:**
+- Headless: 8 bots of mixed levels, all arrive.
+- Live: 50 bots arrive about 40 s after they start moving, with a lobby tick under 1.2 ms.
+- The first route takes about 60 s of shared validation budget at the 4 ms default (about 90 s at 2 ms). Later bots reuse it.
+
+**Blocked:** the graph is closed beyond the cave. Even the optimistic geometric search finds no way up. The cave's azalea bush offers footholds at y 53 and y 56 but nothing between, under a canopy. Above it, a chamber with a pressure plate, redstone and sticky pistons (around `(6, 57, -41)`) looks like a mechanism door. Redstone is not simulated.
+
+The spire also relies on mechanics the physics engine does not support:
+
+| Count | Mechanic |
+| --- | --- |
+| 116 | bubble columns |
+| 3 | scaffolding |
+| 7,000+ | water blocks, i.e. swimming routes |
+| 129 | slime blocks (supported by physics; bounce jumps not yet proposed as edges) |
+
+Bots will not climb the spire until the intended route is identified and its mechanics are supported.
+
+### Known gaps
+
+- Swimming routes; bubble columns.
+- Momentum carried between jumps; neo and corner jumps.
+- Slime bounces as edges.
+- Doors and redstone.
+- Fall-damage edges (health does not regenerate).
+- Perception: bots know the terrain but not other players.

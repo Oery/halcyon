@@ -42,8 +42,8 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Sprinting and sneaking | Done — ground speed, crouch clearance and sneak edge protection. |
 | Jumping and falling | Done — ground jumps, gravity, air control, jump timing and supported landing effects. |
 | Swimming and crawling | Done — water travel, sprint swimming, currents, shoreline exits and swim/crawl pose transitions; air and drowning remain unavailable. |
-| Climbing | Not started |
-| Movement surfaces and media | Partial — dry surfaces, honey sliding, landing modifiers, water and lava travel and ladder climbing (including open trapdoors above matching ladders), with aquatic plants, supported waterlogged geometry and offset bamboo stalks; lava burning, bubble columns, vines, scaffolding and webs unavailable. |
+| Climbing | Partial — ladders, open trapdoors above matching ladders and the vine family (vines, cave, weeping and twisting vines) climb by pushing or jumping; scaffolding unavailable. |
+| Movement surfaces and media | Partial — dry surfaces, honey sliding, landing modifiers, water and lava travel and ladder climbing (including open trapdoors above matching ladders), with aquatic plants, supported waterlogged geometry and offset bamboo stalks; lava burning, bubble columns, scaffolding and webs unavailable. |
 | Flight permissions | Not started |
 | Movement abilities and attributes | Not started |
 | Teleportation | Done — validated destinations and position corrections. |
@@ -420,17 +420,17 @@ Design expectations and layered architecture: [bots.md](bots.md).
 
 | Feature | Progress |
 | --- | --- |
-| Native bot participants | Partial — `HALCYON_BOTS=<n>` spawns lobby bots through the human session path; placeholder wander behavior, no navigation. |
+| Native bot participants | Partial — `HALCYON_BOTS=<n>` spawns lobby bots through the human session path, deciding once per simulation step; they climb toward a goal (`HALCYON_BOT_GOAL` or the highest standable cell near spawn). No matches yet. |
 | Bot identity and visual representation | Not started |
-| Shared action/rule path | Partial — human movement/inventory/lifecycle and owner-driven ground/water inputs; no bot participants. |
+| Shared action/rule path | Partial — bots act only through owner-driven movement inputs, teleport confirmation and respawn, like human sessions. |
 | Perception and short-term memory | Not started |
-| Humanlike decisions and reaction timing | Not started |
+| Humanlike decisions and reaction timing | Partial — eased, rate-limited aiming with tremor, committed aim error, late key presses and hesitation before hard jumps; no perception or reaction model yet. |
 | Bot combat and item use | Not started |
-| Bot navigation and local steering | Not started |
-| Navigation invalidation after edits | Not started |
+| Bot navigation and local steering | Partial — lazily validated walk/drop/jump/ladder/vine graph, budgeted A*, closed-loop edge execution and swim-to-shore recovery; no swimming routes, momentum chaining or neo jumps. |
+| Navigation invalidation after edits | Partial — arena column revisions drop cached cells and edges nearby; unit-tested, not exercised by a live minigame. |
 | Team coordination and game objectives | Not started |
-| Difficulty and behavior profiles | Not started |
-| Reproducible bot scenarios | Not started |
+| Difficulty and behavior profiles | Partial — a fixed per-bot level (`HALCYON_BOT_LEVEL`) sets aim, timing, hesitation and risk aversion; no traits or in-match state yet. |
+| Reproducible bot scenarios | Partial — seeded headless bots on synthetic courses (unit tests) and on real maps (`spire_climb_scenario`, survey tools). |
 | Learned behavior or training pipeline | Conditional |
 
 ## 21. Player records and game presentation
