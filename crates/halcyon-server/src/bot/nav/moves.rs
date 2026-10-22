@@ -540,13 +540,20 @@ impl NavGraph {
         };
         // Probe with the farthest-reaching plan: if even it lands well short,
         // no plan can succeed. It is a feasibility check, never a preference.
-        // The whole runway, when it is shorter than the long run-up.
-        let full = runway.min(LONG_RUNUP);
+        // The whole runway, short of its very end where a backing bot may
+        // slip off, when it is shorter than the long run-up.
+        let full = (runway - RUNWAY_STEP).clamp(0.0, LONG_RUNUP);
         let farthest = if long { full } else { full.min(0.3) };
         let hop = long && runway >= MIN_HOP_RUNUP;
         let probe = Plan { runup: farthest, takeoff: rim + 0.2, sprint: true, hop: false };
         let probed = self.simulate(view, from, here, edge_for(probe), Execution::IDEAL, false);
-        if probed.ticks.is_none() && probed.closest > 1.0 && probed.furthest + 1.0 < distance {
+        // Only a probe that got past the rim says anything about reach.
+        let took_off = probed.furthest > f64::from(rim);
+        if probed.ticks.is_none()
+            && took_off
+            && probed.closest > 1.0
+            && probed.furthest + 1.0 < distance
+        {
             return None;
         }
         // Simplest plans first, as a player would: short run-ups before long
@@ -586,7 +593,7 @@ impl NavGraph {
         if hop {
             // From as far back as the runway allows: on a short one the hop
             // starts nearly from a stand, as players chain them on small ledges.
-            let start = runway.min(HOP_RUNUP);
+            let start = (runway - RUNWAY_STEP).min(HOP_RUNUP);
             let hopping = Plan { runup: start, takeoff: rim + 0.2, sprint: true, hop: true };
             // The hop must land just short of the rim: try several phases.
             plans.extend(

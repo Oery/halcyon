@@ -318,6 +318,9 @@ fn trace_bot() {
     let level = env_or("HALCYON_TRACE_LEVEL", 100) as u8;
     let every = env_or("HALCYON_TRACE_EVERY", 10);
     let mut bot = SimBot::new(BotProfile::new(level), 1, at);
+    if std::env::var("HALCYON_BOT_TRACE").is_ok() {
+        bot.brain.traced = Some("sim".into());
+    }
     let mut arena = settled(&world);
     for tick in 0..env_or("HALCYON_BENCH_TICKS", 600) {
         step_with_doors(&mut bot, &mut nav, &mut arena, &world);

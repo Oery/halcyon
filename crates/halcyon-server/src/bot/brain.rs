@@ -256,7 +256,7 @@ impl Brain {
             && self.ticks.is_multiple_of(20)
         {
             eprintln!(
-                "trace {name}: mode={:?} at ({:.1},{:.1},{:.1}) ground={} checkpoint={} target={:?} path={} edge={:?} searching={} starved={}",
+                "trace {name}: mode={:?} at ({:.1},{:.1},{:.1}) ground={} checkpoint={} target={:?} path={:?} edge={:?} searching={} starved={}",
                 self.mode(),
                 position.x,
                 position.y,
@@ -264,7 +264,12 @@ impl Brain {
                 position.on_ground,
                 self.checkpoint,
                 self.target(nav),
-                self.path.len(),
+                self.path.front().map(|step| (
+                    self.path.len(),
+                    step.from,
+                    step.edge.to,
+                    step.edge.kind
+                )),
                 self.run.as_ref().map(|run| (run.from, run.edge.to, run.edge.kind)),
                 self.search.is_active(),
                 self.search.starved,
@@ -388,6 +393,14 @@ impl Brain {
         match self.search.step(nav, view, EXPANSIONS_PER_TICK, &cost) {
             SearchStatus::Running => {}
             SearchStatus::Found(path) | SearchStatus::Partial(path) if !path.is_empty() => {
+                if let Some(name) = &self.traced {
+                    eprintln!(
+                        "trace {name}: route of {} steps to {:?} explored={:?}",
+                        path.len(),
+                        path.last().map(|step| step.edge.to),
+                        self.search.explored()
+                    );
+                }
                 self.path = path.into();
                 self.state = State::Follow;
             }
