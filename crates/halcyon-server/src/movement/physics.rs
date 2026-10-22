@@ -85,6 +85,7 @@ pub struct MotionState {
     /// Blocks per vanilla movement tick, not blocks per owner invocation.
     pub velocity: [f64; 3],
     jump_delay: u8,
+    pub(super) effects: InsideEffects,
 }
 
 /// One shared lookup table matches Java Mth's quantized trigonometry. It is
@@ -102,8 +103,13 @@ fn sin_cos(yaw: f32) -> [f64; 2] {
     ]
 }
 
-fn influencing_surface(terrain: &impl Terrain, position: Transform, depth: f32) -> MotionInfo {
-    let support = position.on_ground.then(|| ground_contact(terrain, position)).flatten();
+fn influencing_surface(
+    terrain: &impl Terrain,
+    position: Transform,
+    depth: f32,
+    context: ShapeContext,
+) -> MotionInfo {
+    let support = position.on_ground.then(|| ground_contact(terrain, position, context)).flatten();
     let mut block = support
         .map_or([position.x.floor() as i32, 0, position.z.floor() as i32], |contact| contact.block);
     let tall = support.is_some()
@@ -147,15 +153,17 @@ impl MovementState {
         query.min[1] -= STEP_HEIGHT + POSITION_TOLERANCE;
         query.max[1] += STEP_HEIGHT;
         let mut cells = 0;
+        let shape_context = self.shape_context(input.sneaking);
         match collect_colliders(
             terrain,
             query,
             inflate(player_box_with_height(self.transform, pose_height(self.pose)), 0.02),
+            shape_context,
             &mut self.colliders,
             &mut cells,
         ) {
-            Some(false) => {}
-            unsupported => return self.blocked(cells, unsupported == Some(true)),
+            Some(context) if !context.unsupported => {}
+            context => return self.blocked(cells, context.is_some_and(|c| c.unsupported)),
         }
         let Some(fluids) = fluid_contact(terrain, self.transform, self.pose, true, &mut cells)
         else {
@@ -173,7 +181,7 @@ impl MovementState {
             POSITION_TOLERANCE,
             &self.colliders,
         );
-        let ground = influencing_surface(terrain, self.transform, 0.500001);
+        let ground = influencing_surface(terrain, self.transform, 0.500001, shape_context);
         let feet = feet_surface(terrain, self.transform);
         let sprinting = wants_sprint
             && (!slow
@@ -244,18 +252,31 @@ impl MovementState {
             velocity[0] = velocity[0].clamp(-limit, limit);
             velocity[2] = velocity[2].clamp(-limit, limit);
             velocity[1] = velocity[1].max(-limit);
-            if velocity[1] < 0.0 && input.sneaking {
+            if velocity[1] < 0.0
+                && input.sneaking
+                && !matches!(feet.surface, Surface::Scaffolding { .. })
+            {
                 velocity[1] = 0.0;
             }
         }
         // LivingEntity.travelInFluid samples falling before the move.
         let falling = velocity[1] <= 0.0;
+        // Entity.move consumes last tick's inside-block multiplier and clears
+        // momentum before travel applies drag/gravity to the remaining velocity.
+        let powder_snow = self.motion.effects.powder_snow;
+        let movement = if let Some(multiplier) = self.motion.effects.stuck.multiplier() {
+            let movement = std::array::from_fn(|axis| velocity[axis] * multiplier[axis]);
+            velocity = [0.0; 3];
+            movement
+        } else {
+            velocity
+        };
         let old = self.transform;
         let proposal = MovementProposal {
             transform: Transform {
-                x: old.x + velocity[0],
-                y: old.y + velocity[1],
-                z: old.z + velocity[2],
+                x: old.x + movement[0],
+                y: old.y + movement[1],
+                z: old.z + movement[2],
                 yaw: input.yaw,
                 pitch: input.pitch,
                 on_ground: false,
@@ -311,15 +332,15 @@ impl MovementState {
             if result.collisions[0] || result.collisions[2] {
                 self.jump_out_of_fluid(terrain, &mut result, old, &mut velocity);
             }
-            self.motion.velocity = velocity;
+            self.finish_velocity(velocity);
             return result;
         }
         if (result.collisions[0] || result.collisions[2] || input.jumping)
-            && climbing(terrain, result.transform)
+            && (climbing(terrain, result.transform) || (powder_snow && self.powder_walk))
         {
             velocity[1] = 0.2;
         }
-        let ground_after = influencing_surface(terrain, result.transform, 0.500001);
+        let ground_after = influencing_surface(terrain, result.transform, 0.500001, shape_context);
         let feet_after = feet_surface(terrain, result.transform);
         let speed_factor = f64::from(if feet_after.speed == 1.0 {
             ground_after.speed
@@ -349,8 +370,13 @@ impl MovementState {
             velocity[0] *= scale;
             velocity[2] *= scale;
         }
-        self.motion.velocity = velocity;
+        self.finish_velocity(velocity);
         result
+    }
+
+    fn finish_velocity(&mut self, mut velocity: [f64; 3]) {
+        velocity[1] = self.motion.effects.bubbles.apply(velocity[1]);
+        self.motion.velocity = velocity;
     }
 }
 

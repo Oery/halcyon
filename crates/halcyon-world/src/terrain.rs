@@ -53,7 +53,9 @@ pub fn fluid_info(id: BlockStateId) -> FluidInfo {
         },
         amount,
         falling: bits & 16 != 0,
-        supported: amount != 0 && bits & 64 == 0,
+        supported: amount != 0
+            && (bits & 64 == 0
+                || matches!(id, 18651..=18652 | 24063..=24094 | 33566..=33605 | 33713..=33744)),
         blocks_flow: bits & (1 << 24) != 0,
         flow_faces: ((bits >> 25) & 15) as u8,
         down_face: bits & (1 << 29) != 0,
@@ -97,6 +99,16 @@ pub enum Surface {
     Slime,
     Honey,
     Hay,
+    BerryBush,
+    Cobweb,
+    PowderSnow,
+    Scaffolding {
+        bottom: bool,
+    },
+    BubbleColumn {
+        down: bool,
+    },
+    DripstoneTip,
     Unsupported,
 }
 
@@ -131,6 +143,34 @@ impl Default for MotionInfo {
 /// support merely because their representative shape is empty.
 pub fn motion_info(id: BlockStateId) -> MotionInfo {
     let state = state_info(id);
+    // Context-dependent movement is resolved by the shared player collision
+    // path. IDs and rules are verified against the official 26.3 client.
+    let surface = match id {
+        2362 => Some(Surface::Cobweb),
+        30519 => Some(Surface::PowderSnow),
+        24063..=24094 => {
+            // The bottom plate collides only for bottom=true, distance>0.
+            Some(Surface::Scaffolding { bottom: matches!(id, 24065..=24078) })
+        }
+        18651..=18652 => Some(Surface::BubbleColumn { down: id == 18651 }),
+        33566..=33605 => Some(if matches!(id, 33570..=33571) {
+            Surface::DripstoneTip
+        } else {
+            Surface::Ordinary
+        }),
+        // No block entities are published: shulkers remain closed, moving
+        // piston placeholders have the client's empty fallback collision.
+        3801..=3812 | 16845..=16946 | 33713..=33744 => Some(Surface::Ordinary),
+        _ => None,
+    };
+    if let Some(surface) = surface {
+        return MotionInfo { surface, ..MotionInfo::default() };
+    }
+    // Sweet berry bushes have empty collision, but apply an inside-block
+    // movement multiplier at every age (official Java 26.3 state IDs).
+    if matches!(id, 24298..=24301) {
+        return MotionInfo { surface: Surface::BerryBush, ..MotionInfo::default() };
+    }
     if xz_offset(id) || matches!(climb(id), Climb::Ladder(_) | Climb::Vine) {
         return MotionInfo::default();
     }
@@ -156,8 +196,7 @@ pub fn motion_info(id: BlockStateId) -> MotionInfo {
 }
 
 /// Climbing context in horizontal facing order N, E, S, W. Of the climbable
-/// tag, ladders and the vine family are supported; scaffolding remains
-/// disabled.
+/// tag, ladders, vines and scaffolding are supported.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Climb {
     #[default]
@@ -168,6 +207,7 @@ pub enum Climb {
     /// Vines, cave vines, weeping vines and twisting vines: no collision and
     /// no facing; climbed by jumping or pushing against a wall.
     Vine,
+    Scaffolding,
 }
 
 /// The vine family of the `#climbable` tag.
@@ -190,6 +230,10 @@ pub fn climb(id: BlockStateId) -> Climb {
         let mut table = vec![0u8; data::STATES.len()].into_boxed_slice();
         for &(key, id) in crate::blockstates::BLOCK_STATES {
             let (name, props) = key.split_once('[').unwrap_or((key, ""));
+            if name == "minecraft:scaffolding" {
+                table[id as usize] = 10;
+                continue;
+            }
             if VINES.contains(&name) {
                 table[id as usize] = VINE;
                 continue;
@@ -212,24 +256,29 @@ pub fn climb(id: BlockStateId) -> Climb {
         0 => Climb::None,
         n @ 1..=4 => Climb::Ladder(n - 1),
         VINE => Climb::Vine,
+        10 => Climb::Scaffolding,
         n => Climb::OpenTrapdoor(n - 5),
     }
 }
 
-/// Bamboo stalks: one static column moved per block column by vanilla's XZ
-/// offset hash. Other offset blocks keep shape rules beyond a translation.
+/// Bamboo stalks and speleothems use static shapes translated per column.
 fn xz_offset(id: BlockStateId) -> bool {
-    matches!(id, 18636..=18647)
+    matches!(id, 18636..=18647 | 33566..=33605)
 }
 
-/// Contextual geometry after position-dependent offsets are resolved.
+/// Geometry still unsupported after the player context and the server's
+/// no-block-entity fallbacks have been accounted for. The raw catalog flags
+/// remain available to non-player simulations with different shape rules.
 pub fn contextual_geometry(id: BlockStateId) -> bool {
-    state_info(id).contextual_geometry() && !xz_offset(id)
+    state_info(id).contextual_geometry()
+        && !xz_offset(id)
+        && !matches!(id, 3801..=3812 | 16845..=16946 | 24063..=24094 | 30519)
 }
 
 /// Translation from the catalog shape to the shape at block column (x, z).
 /// The catalog captured offset shapes at the origin, where vanilla's hash
-/// yields (-0.25, 0, -0.25); every other state is position independent.
+/// yields (-0.25, 0, -0.25) for bamboo and (-0.125, 0, -0.125) for
+/// speleothems, whose target horizontal offset is clamped to 0.125.
 pub fn collision_offset(id: BlockStateId, x: i32, z: i32) -> [f64; 3] {
     if !xz_offset(id) {
         return [0.0; 3];
@@ -239,7 +288,9 @@ pub fn collision_offset(id: BlockStateId, x: i32, z: i32) -> [f64; 3] {
     let seed = i64::from(x.wrapping_mul(3_129_871)) ^ i64::from(z).wrapping_mul(116_129_781);
     let seed = seed.wrapping_mul(seed).wrapping_mul(42_317_861).wrapping_add(seed.wrapping_mul(11));
     let seed = seed >> 16;
-    let axis = |bits: i64| (f64::from((bits & 15) as f32 / 15.0) - 0.5) * 0.5 + 0.25;
+    let max = if matches!(id, 33566..=33605) { 0.125 } else { 0.25 };
+    let axis =
+        |bits: i64| ((f64::from((bits & 15) as f32 / 15.0) - 0.5) * 0.5).clamp(-max, max) + max;
     [axis(seed), 0.0, axis(seed >> 8)]
 }
 

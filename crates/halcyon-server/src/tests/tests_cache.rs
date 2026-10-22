@@ -32,7 +32,7 @@ fn configuration_preserves_tags_and_identifies_supported_movement_blocks_and_flu
             assert_eq!(climbable.len(), 1);
             assert_eq!(
                 climbable[0].entries.iter().map(|id| id.0).collect::<Vec<_>>(),
-                [266, 416, 968, 969, 970, 971, 1225, 1226] // ladder and vine block IDs
+                [266, 416, 927, 968, 969, 970, 971, 1225, 1226] // ladder, scaffolding and vine IDs
             );
             let fluid = tags.registries.iter().find(|r| r.registry == "minecraft:fluid").unwrap();
             let water = fluid.tags.iter().find(|tag| tag.name == "minecraft:water").unwrap();

@@ -206,6 +206,7 @@ impl PlayerState {
         proposals: &mut ProposalQueue,
         update: &mut PlayerUpdate,
     ) {
+        self.movement.set_powder_snow_walk(self.inventory.can_walk_on_powder_snow());
         if self.movement.supports_destination(world, transform)
             && let Some(teleport) = self.life.teleport(transform)
         {
@@ -402,6 +403,7 @@ impl PlayerState {
             proposals.clear();
             return (update, None);
         }
+        self.movement.set_powder_snow_walk(self.inventory.can_walk_on_powder_snow());
         let movement = if let Some(input) = self.movement_input {
             proposals.clear();
             Some(self.movement.step(world, input))

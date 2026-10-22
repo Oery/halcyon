@@ -18,7 +18,11 @@ pub(super) struct GroundContact {
 /// Vanilla chooses the closest supporting block, preferring the greater
 /// (Y, Z, X) position on ties. At most the small foot envelope plus a rim is
 /// inspected; protruding static shapes can extend 0.25 horizontally and 1.5 up.
-pub(super) fn ground_contact(terrain: &impl Terrain, position: Transform) -> Option<GroundContact> {
+pub(super) fn ground_contact(
+    terrain: &impl Terrain,
+    position: Transform,
+    context: ShapeContext,
+) -> Option<GroundContact> {
     let bounds = player_box(position, true);
     let feet = Aabb {
         min: [bounds.min[0], position.y - 1e-6, bounds.min[2]],
@@ -34,7 +38,11 @@ pub(super) fn ground_contact(terrain: &impl Terrain, position: Transform) -> Opt
                 }
                 let origin = [f64::from(x), f64::from(y), f64::from(z)];
                 let placed = cell.placement(origin);
-                if !cell.shapes.iter().any(|shape| intersects(feet, translate(*shape, placed))) {
+                if !cell
+                    .collision_shapes(context, y)
+                    .iter()
+                    .any(|shape| intersects(feet, translate(*shape, placed)))
+                {
                     continue;
                 }
                 let distance = (position.x - origin[0] - 0.5).powi(2)
@@ -53,12 +61,12 @@ pub(super) fn ground_contact(terrain: &impl Terrain, position: Transform) -> Opt
     best.map(|(_, contact)| contact)
 }
 
-/// LivingEntity.onClimbable for the feet cell: a ladder, or an open trapdoor
-/// directly above a ladder with the same facing.
+/// LivingEntity.onClimbable for the feet cell, including matching open
+/// trapdoors directly above ladders.
 pub(super) fn climbing(terrain: &impl Terrain, position: Transform) -> bool {
     let [x, y, z] = [position.x, position.y, position.z].map(|n| n.floor() as i32);
     match terrain.cell(x, y, z).map(|cell| cell.climb) {
-        Some(Climb::Ladder(_) | Climb::Vine) => true,
+        Some(Climb::Ladder(_) | Climb::Vine | Climb::Scaffolding) => true,
         Some(Climb::OpenTrapdoor(facing)) => {
             terrain.cell(x, y - 1, z).is_some_and(|cell| cell.climb == Climb::Ladder(facing))
         }
@@ -67,6 +75,12 @@ pub(super) fn climbing(terrain: &impl Terrain, position: Transform) -> bool {
 }
 
 pub(super) fn landing_damage(distance: f64, surface: MotionInfo, sneaking: bool) -> f32 {
+    if surface.surface == Surface::PowderSnow {
+        return 0.0;
+    }
+    if surface.surface == Surface::DripstoneTip {
+        return ((distance + 2.5 - 3.0) * 2.0).ceil().max(0.0) as f32;
+    }
     if surface.surface == Surface::Slime && !sneaking {
         return 0.0;
     }
@@ -123,6 +137,30 @@ impl TerrainCell {
     pub(super) fn placement(&self, origin: [f64; 3]) -> [f64; 3] {
         std::array::from_fn(|axis| origin[axis] + self.offset[axis])
     }
+
+    pub(super) fn collision_shapes(&self, context: ShapeContext, y: i32) -> &'static [Aabb] {
+        const FULL: &[Aabb] = &[Aabb { min: [0.0; 3], max: [1.0; 3] }];
+        const BOTTOM: &[Aabb] = &[Aabb { min: [0.0; 3], max: [1.0, 0.125, 1.0] }];
+        const SNOW_FALL: &[Aabb] = &[Aabb { min: [0.0; 3], max: [1.0, 0.9f32 as f64, 1.0] }];
+        let above = |height: f64| context.feet > f64::from(y) + height - f64::from(1e-5f32);
+        match self.motion.surface {
+            Surface::Scaffolding { .. } if above(1.0) && !context.descending => self.shapes,
+            Surface::Scaffolding { bottom: true } if above(0.0) => BOTTOM,
+            Surface::Scaffolding { .. } => &[],
+            Surface::PowderSnow if context.fall_distance > 2.5 => SNOW_FALL,
+            Surface::PowderSnow if context.powder_walk && !context.descending && above(1.0) => FULL,
+            Surface::PowderSnow => &[],
+            _ => self.shapes,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+pub(super) struct ShapeContext {
+    pub(super) feet: f64,
+    pub(super) fall_distance: f64,
+    pub(super) descending: bool,
+    pub(super) powder_walk: bool,
 }
 
 pub(super) trait Terrain {
@@ -151,14 +189,21 @@ impl<T: BlockView> Terrain for T {
     }
 }
 
+#[derive(Default)]
+pub(super) struct CollisionContext {
+    pub(super) unsupported: bool,
+    pub(super) inside_effects: bool,
+}
+
 /// None signals unknown terrain or exhausted work, never traversable air.
 pub(super) fn collect_colliders(
     terrain: &impl Terrain,
     query: Aabb,
     contact: Aabb,
+    shape_context: ShapeContext,
     colliders: &mut Vec<Aabb>,
     step_cells: &mut usize,
-) -> Option<bool> {
+) -> Option<CollisionContext> {
     colliders.clear();
     let min = query.min.map(|n| n.floor() as i32 - 1);
     let max = query.max.map(|n| n.floor() as i32 + 1);
@@ -169,7 +214,7 @@ pub(super) fn collect_colliders(
     if count > CELLS_PER_PROPOSAL || count > CELLS_PER_STEP.saturating_sub(*step_cells) {
         return None;
     }
-    let mut uncertain = false;
+    let mut context = CollisionContext::default();
     for x in min[0]..=max[0] {
         for z in min[2]..=max[2] {
             let column_on_path = f64::from(x + 1) > query.min[0]
@@ -188,16 +233,24 @@ pub(super) fn collect_colliders(
                 let Some(cell) = terrain.cell(x, y, z) else { continue };
                 let origin = [f64::from(x), f64::from(y), f64::from(z)];
                 let block = Aabb { min: origin, max: origin.map(|n| n + 1.0) };
-                uncertain |= (cell.uncertain || cell.contextual) && intersects(contact, block);
+                if (cell.uncertain
+                    || cell.contextual
+                    || super::media::has_inside_effects(cell.motion.surface))
+                    && intersects(contact, block)
+                {
+                    context.unsupported |= cell.uncertain || cell.contextual;
+                    context.inside_effects |= super::media::has_inside_effects(cell.motion.surface);
+                }
                 if !cell.contextual {
-                    if cell.shapes.len() > MAX_COLLIDERS.saturating_sub(colliders.len()) {
+                    let shapes = cell.collision_shapes(shape_context, y);
+                    if shapes.len() > MAX_COLLIDERS.saturating_sub(colliders.len()) {
                         return None;
                     }
                     let placed = cell.placement(origin);
-                    colliders.extend(cell.shapes.iter().map(|shape| translate(*shape, placed)));
+                    colliders.extend(shapes.iter().map(|shape| translate(*shape, placed)));
                 }
             }
         }
     }
-    Some(uncertain)
+    Some(context)
 }

@@ -442,3 +442,121 @@ fn vines_accept_client_climbs_and_descents_and_support_input_driven_climbing() {
         }
     }
 }
+
+struct BerryPatch {
+    bush: u16,
+}
+
+impl BlockView for BerryPatch {
+    fn block_at(&self, x: i32, y: i32, z: i32) -> Option<u16> {
+        Some(match (x, y, z) {
+            (_, 0, _) | (0, 1..=3, 3) => 1,
+            (0, 1, 1) => self.bush,
+            _ => 0,
+        })
+    }
+
+    fn contains_column(&self, _: i32, _: i32) -> bool {
+        true
+    }
+}
+
+#[test]
+fn berry_bushes_accept_predictions_at_every_age_without_bypassing_walls() {
+    for age in 0..=3 {
+        let bush = halcyon_world::blockstates::block_state_id(&format!(
+            "minecraft:sweet_berry_bush[age={age}]"
+        ))
+        .unwrap() as u16;
+        let world = BerryPatch { bush };
+        let mut state = MovementState::new(position(0.5, 1.0, 0.5));
+        let mut queue = ProposalQueue::default();
+        for (y, z) in [(1.0, 0.75), (1.1, 1.2), (1.0, 1.6), (1.0, 2.4)] {
+            propose(&mut queue, position(0.5, y, z));
+            let result = state.advance(&world, &mut queue);
+            assert!(!result.correction && !result.uncertain_motion, "age={age}: {result:?}");
+            assert_eq!(result.transform.z, z);
+        }
+        propose(&mut queue, position(0.5, 1.0, 3.2));
+        let result = state.advance(&world, &mut queue);
+        assert!(result.correction && !result.uncertain_motion);
+        assert!((result.transform.z - (3.0 - HALF_WIDTH)).abs() < EPSILON);
+    }
+}
+
+#[test]
+fn berry_bushes_slow_inputs_clear_momentum_and_reset_falls() {
+    let world = BerryPatch {
+        bush: halcyon_world::blockstates::block_state_id("minecraft:sweet_berry_bush[age=3]")
+            .unwrap() as u16,
+    };
+    let input = MovementInput { forward: true, ..Default::default() };
+    let mut state = MovementState::new(position(0.5, 1.0, 1.5));
+    assert!(!state.step(&world, input).correction);
+    let first_move = state.transform().z - 1.5;
+    let previous = state.transform();
+    let result = state.step(&world, input);
+    assert!(!result.correction && !result.uncertain_motion);
+    // Official 26.3 SweetBerryBushBlock applies (0.8f, 0.75, 0.8f),
+    // and Entity.move consumes the multiplier then clears delta movement.
+    assert!((result.transform.z - previous.z - 0.05848641).abs() < 1e-7);
+    assert_eq!(state.motion.velocity[2], 0.0);
+    let previous = state.transform();
+    let result = state.step(&world, input);
+    assert!(!result.correction);
+    assert!((result.transform.z - previous.z - 0.078_400_003_862_381).abs() < 1e-9);
+    let previous = state.transform();
+    let result = state.step(&world, MovementInput { jumping: true, ..Default::default() });
+    assert!(!result.correction);
+    assert!((result.transform.y - previous.y - 0.3149999901652336).abs() < 1e-9);
+
+    // Crossing the entire bush still leaves one pending slowdown on exit.
+    state.reset(position(0.5, 1.0, 0.5));
+    let mut queue = ProposalQueue::default();
+    propose(&mut queue, position(0.5, 1.0, 2.4));
+    assert!(!state.advance(&world, &mut queue).correction);
+    state.motion.velocity[2] = 0.5;
+    let result = state.step(&world, MovementInput::default());
+    assert!(!result.correction);
+    assert!((result.transform.z - (3.0 - HALF_WIDTH)).abs() < EPSILON);
+    assert_eq!(state.motion.velocity[2], 0.0);
+    assert_eq!(state.motion.effects.stuck, media::Stuck::None);
+    assert!(!state.step(&world, MovementInput::default()).correction);
+    let previous = state.transform();
+    let result = state.step(&world, MovementInput { backward: true, ..Default::default() });
+    assert!(!result.correction);
+    assert!((previous.z - result.transform.z - first_move).abs() < 1e-9);
+
+    state.reset(position(0.5, 6.0, 1.5));
+    for y in [2.2, 1.5, 1.0] {
+        propose(&mut queue, position(0.5, y, 1.5));
+        let result = state.advance(&world, &mut queue);
+        assert!(!result.correction, "{result:?}");
+        assert!(result.landed_fall_damage.is_none_or(|damage| damage == 0.0));
+    }
+
+    let bounds = player_box(position(-1.0, 1.0, 1.7), false);
+    let mut cells = 0;
+    let effects = inside_effects(
+        &world,
+        bounds,
+        [1.5, 0.0, 1.5],
+        position(0.5, 1.0, 3.2),
+        ShapeContext::default(),
+        &mut cells,
+    )
+    .unwrap();
+    assert_eq!(effects.stuck, media::Stuck::None);
+    cells = CELLS_PER_STEP;
+    assert!(
+        inside_effects(
+            &world,
+            bounds,
+            [1.5, 0.0, 1.5],
+            position(0.5, 1.0, 3.2),
+            ShapeContext::default(),
+            &mut cells
+        )
+        .is_none()
+    );
+}
