@@ -12,6 +12,7 @@ use halcyon_world::{
 use crate::lobby::Transform;
 
 mod collision;
+mod media;
 mod physics;
 mod terrain;
 mod water;
@@ -23,12 +24,13 @@ use collision::{
     back_off_edges, collide, expand_towards, horizontal_distance, inflate, intersects, player_box,
     player_box_with_height, supported, translate, try_step,
 };
+use media::{InsideEffects, inside_effects};
 #[cfg(test)]
 pub use physics::shared_motion_bytes;
 pub use physics::{MotionState, MovementInput};
 use terrain::{
-    Terrain, TerrainCell, berry_bush_contact, climbing, collect_colliders, ground_contact,
-    honey_slide, landing_damage,
+    ShapeContext, Terrain, TerrainCell, climbing, collect_colliders, ground_contact, honey_slide,
+    landing_damage,
 };
 
 const PROPOSAL_CAPACITY: usize = 32;
@@ -114,6 +116,7 @@ pub struct MovementState {
     swimming: bool,
     sprinting: bool,
     fall_distance: f64,
+    powder_walk: bool,
     pub motion: MotionState,
     colliders: Vec<Aabb>,
     step_heights: Vec<f64>,
@@ -185,6 +188,7 @@ impl MovementState {
             swimming: false,
             sprinting: false,
             fall_distance: 0.0,
+            powder_walk: false,
             motion: MotionState::default(),
             colliders: Vec::with_capacity(64),
             step_heights: Vec::with_capacity(16),
@@ -209,6 +213,19 @@ impl MovementState {
 
     pub fn sprinting(&self) -> bool {
         self.sprinting
+    }
+
+    pub fn set_powder_snow_walk(&mut self, enabled: bool) {
+        self.powder_walk = enabled;
+    }
+
+    fn shape_context(&self, descending: bool) -> ShapeContext {
+        ShapeContext {
+            feet: self.transform.y,
+            fall_distance: self.fall_distance,
+            descending,
+            powder_walk: self.powder_walk,
+        }
     }
 
     /// Vanilla's thin eye-level envelope, rather than the entire player body.
@@ -267,8 +284,17 @@ impl MovementState {
         }
         let bounds = player_box(transform, false);
         let mut cells = 0;
-        collect_colliders(world, bounds, inflate(bounds, 0.02), &mut self.colliders, &mut cells)
-            .is_some_and(|context| !context.unsupported)
+        let context =
+            ShapeContext { feet: transform.y, powder_walk: self.powder_walk, ..Default::default() };
+        collect_colliders(
+            world,
+            bounds,
+            inflate(bounds, 0.02),
+            context,
+            &mut self.colliders,
+            &mut cells,
+        )
+        .is_some_and(|context| !context.unsupported)
             && !self.colliders.iter().any(|shape| intersects(bounds, *shape))
     }
 
@@ -338,10 +364,12 @@ impl MovementState {
                 ),
                 0.02,
             );
+            let shape_context = self.shape_context(proposal.sneaking);
             let Some(context) = collect_colliders(
                 terrain,
                 query,
                 contact,
+                shape_context,
                 &mut self.colliders,
                 &mut result.collision_cells,
             ) else {
@@ -409,7 +437,7 @@ impl MovementState {
             if !prediction {
                 accepted.on_ground = requested[1] < 0.0 && result.collisions[1];
             }
-            let ground = ground_contact(terrain, accepted);
+            let ground = ground_contact(terrain, accepted, shape_context);
             result.ground = ground.map_or_else(MotionInfo::default, |contact| contact.motion);
             let Some(Fluids { water: water_after, .. }) =
                 fluid_contact(terrain, accepted, pose, false, &mut result.collision_cells)
@@ -417,16 +445,21 @@ impl MovementState {
                 result.correction = true;
                 break;
             };
-            let berry_bush = if context.berry_bush {
-                let Some(touching) =
-                    berry_bush_contact(terrain, bounds, resolved, &mut result.collision_cells)
-                else {
+            let effects = if context.inside_effects {
+                let Some(effects) = inside_effects(
+                    terrain,
+                    bounds,
+                    resolved,
+                    accepted,
+                    shape_context,
+                    &mut result.collision_cells,
+                ) else {
                     result.correction = true;
                     break;
                 };
-                touching
+                effects
             } else {
-                false
+                InsideEffects::default()
             };
             if water.touching() || water_after.touching() {
                 self.fall_distance = 0.0;
@@ -450,10 +483,10 @@ impl MovementState {
             // Inside-block effects run after movement and landing. The stuck
             // multiplier is consumed by the next input-driven move; client
             // proposals already include it and must not be slowed a second time.
-            if berry_bush {
+            if effects.reset_fall {
                 self.fall_distance = 0.0;
             }
-            self.motion.berry_stuck = berry_bush;
+            self.motion.effects = effects;
             self.transform = accepted;
             self.sneaking = proposal.sneaking;
             self.pose = select_pose(

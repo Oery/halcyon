@@ -84,6 +84,11 @@ fn equipment_slots_restrict_items_and_number_swaps_relocate_without_loss() {
             .apply(InventoryAction::Select { slot: HotbarSlot::try_from(1usize).unwrap() })
             .equipment_changed
     );
+    assert!(!inventory.can_walk_on_powder_snow());
+    inventory.set_slot(InventorySlot::FEET, item("minecraft:leather_boots", 1)).unwrap();
+    assert!(inventory.can_walk_on_powder_snow());
+    inventory.set_slot(InventorySlot::FEET, item("minecraft:diamond_boots", 1)).unwrap();
+    assert!(!inventory.can_walk_on_powder_snow());
 }
 
 #[test]

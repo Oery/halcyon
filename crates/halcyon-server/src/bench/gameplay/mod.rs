@@ -36,6 +36,7 @@ enum Medium {
     Dry,
     Water,
     Crawl,
+    Contexts,
 }
 
 fn make_terrain(spread: bool, steps: bool, surfaces: bool, medium: Medium) -> World {
@@ -78,8 +79,23 @@ fn make_terrain(spread: bool, steps: bool, surfaces: bool, medium: Medium) -> Wo
                 let mut layer = Box::new([0; 4096]);
                 if medium == Medium::Water {
                     layer[..8 * 256].fill(water);
-                } else {
+                } else if medium == Medium::Crawl {
                     layer[256..512].fill(stone);
+                } else {
+                    let media = [
+                        "minecraft:cobweb",
+                        "minecraft:scaffolding[bottom=false,distance=0,waterlogged=false]",
+                        "minecraft:powder_snow",
+                        "minecraft:bubble_column[drag=false]",
+                    ]
+                    .map(|key| block_state_id(key).unwrap() as u16);
+                    for y in 0..4 {
+                        for z in 0..16 {
+                            for x in 0..16 {
+                                layer[y * 256 + z * 16 + x] = media[x / 4];
+                            }
+                        }
+                    }
                 }
                 sections[8] = Section::from_states(layer);
             }
@@ -196,6 +212,7 @@ async fn measure(case: Scenario, paced: bool) -> Value {
     let mut cells = 0;
     let mut swimming_steps = 0;
     let mut crawling_steps = 0;
+    let mut media_steps = [0usize; 4];
     let mut queue_peak = 0;
     let mut peak_pending_motions = 0;
     let mut max_revision_lag = 0;
@@ -290,6 +307,29 @@ async fn measure(case: Scenario, paced: bool) -> Value {
                         player.state.movement.pose() == crate::movement::PlayerPose::Swimming
                             && !player.state.movement.swimming(),
                     );
+                    if case.medium == Medium::Contexts {
+                        let p = player.state.movement.transform();
+                        let surface = halcyon_world::motion_info(
+                            world
+                                .block_at(
+                                    p.x.floor() as i32,
+                                    p.y.floor() as i32,
+                                    p.z.floor() as i32,
+                                )
+                                .unwrap_or(0),
+                        )
+                        .surface;
+                        let index = match surface {
+                            halcyon_world::Surface::Cobweb => Some(0),
+                            halcyon_world::Surface::Scaffolding { .. } => Some(1),
+                            halcyon_world::Surface::PowderSnow => Some(2),
+                            halcyon_world::Surface::BubbleColumn { .. } => Some(3),
+                            _ => None,
+                        };
+                        if let Some(index) = index {
+                            media_steps[index] += 1;
+                        }
+                    }
                 }
             }
             notices.clear();
@@ -375,8 +415,12 @@ async fn measure(case: Scenario, paced: bool) -> Value {
     if case.medium == Medium::Crawl {
         assert!(crawling_steps >= samples * PLAYERS / 2);
     }
+    if case.medium == Medium::Contexts {
+        assert!(media_steps.iter().all(|&steps| steps > 0), "{media_steps:?}");
+    }
     let result = json!({
         "scenario": case.name,
+        "media_steps_web_scaffold_snow_bubble": media_steps,
         "players": PLAYERS,
         "receivers": PLAYERS,
         "input_period": case.input_period,
@@ -416,7 +460,7 @@ fn report(cases: Vec<Value>, paced: bool) {
         "writer_round_limit": WRITER_ROUNDS,
         "encrypted": true,
         "paced": paced,
-        "excludes": ["sockets", "authentication", "chunk streaming", "unsupported movement media"],
+        "excludes": ["sockets", "authentication", "chunk streaming", "block-entity animation", "freezing"],
         "cases": cases,
     });
     if let Some(path) = std::env::var_os("HALCYON_BENCH_REPORT") {
@@ -440,6 +484,16 @@ fn gameplay_world_benchmark() {
     block_on(async {
         let mut cases = Vec::new();
         for case in [
+            Scenario {
+                name: "crowded_movement_media",
+                spread: false,
+                input_period: 1,
+                steps: false,
+                churn: false,
+                driven: true,
+                falling: false,
+                medium: Medium::Contexts,
+            },
             Scenario {
                 name: "crowded_water_swimming",
                 spread: false,
@@ -521,8 +575,14 @@ fn gameplay_world_benchmark() {
                 medium: Medium::Dry,
             },
         ] {
+            if let Ok(selected) = std::env::var("HALCYON_BENCH_SCENARIO")
+                && selected != case.name
+            {
+                continue;
+            }
             cases.push(measure(case, false).await);
         }
+        assert!(!cases.is_empty(), "no matching gameplay benchmark scenario");
         report(cases, false);
     });
 }

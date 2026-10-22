@@ -83,7 +83,7 @@ fn ground_profiles_match_target_surface_properties_and_keep_media_disabled() {
         "minecraft:powder_snow",
         "minecraft:scaffolding[bottom=false,distance=0,waterlogged=false]",
     ] {
-        assert_eq!(motion(key).surface, Surface::Unsupported, "{key}");
+        assert_ne!(motion(key).surface, Surface::Unsupported, "{key}");
     }
     for age in 0..=3 {
         let key = format!("minecraft:sweet_berry_bush[age={age}]");
@@ -186,7 +186,7 @@ fn bamboo_offsets_match_vanilla_hash_and_lava_has_travel_motion() {
         assert_eq!(offset[1], 0.0);
     }
     assert_eq!(collision_offset(1, 41, -34), [0.0; 3]);
-    assert!(contextual_geometry(block_state_id("minecraft:powder_snow").unwrap() as BlockStateId));
+    assert!(!contextual_geometry(block_state_id("minecraft:powder_snow").unwrap() as BlockStateId));
     for level in [0, 7] {
         let lava = block_state_id(&format!("minecraft:lava[level={level}]")).unwrap() as u16;
         assert_eq!(motion_info(lava), MotionInfo::default());
@@ -229,6 +229,44 @@ fn the_vine_family_is_climbable_and_supported() {
         assert_eq!(motion_info(id(key)).surface, Surface::Ordinary, "{key}");
     }
     let scaffolding = id("minecraft:scaffolding[bottom=false,distance=0,waterlogged=false]");
-    assert_eq!(climb(scaffolding), Climb::None);
-    assert_eq!(motion_info(scaffolding).surface, Surface::Unsupported);
+    assert_eq!(climb(scaffolding), Climb::Scaffolding);
+    assert_eq!(motion_info(scaffolding).surface, Surface::Scaffolding { bottom: false });
+}
+
+#[test]
+fn audited_contexts_have_explicit_supported_motion_and_geometry() {
+    for range in [
+        2362..=2362,
+        3801..=3812,
+        16845..=16946,
+        18651..=18652,
+        24063..=24094,
+        30519..=30519,
+        33566..=33605,
+        33713..=33744,
+    ] {
+        for id in range {
+            assert_ne!(motion_info(id).surface, Surface::Unsupported, "{id}");
+            assert!(!contextual_geometry(id), "{id}");
+            if state_info(id).flags.has_fluid() {
+                assert!(fluid_info(id).supported, "{id}");
+            }
+        }
+    }
+    assert_eq!(motion_info(33570).surface, Surface::DripstoneTip);
+    assert_eq!(motion_info(33590).surface, Surface::Ordinary);
+    assert_eq!(motion_info(24063).surface, Surface::Scaffolding { bottom: false });
+    assert_eq!(motion_info(24065).surface, Surface::Scaffolding { bottom: true });
+    for id in 16845..=16946 {
+        assert_eq!(state_info(id).collision_boxes(), &[Aabb { min: [0.0; 3], max: [1.0; 3] }]);
+    }
+    for id in 3801..=3812 {
+        assert!(state_info(id).collision_boxes().is_empty());
+    }
+    // Official SpeleothemBlock offset at (7, -11), clamped to +/- 0.125.
+    for id in [33570, 33590] {
+        let offset = collision_offset(id, 7, -11);
+        assert_eq!(offset, [0.25, 0.0, 0.25]);
+        assert_eq!(collision_offset(id, 0, 0), [0.0; 3]);
+    }
 }

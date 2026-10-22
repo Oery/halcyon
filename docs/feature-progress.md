@@ -38,12 +38,12 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Spectator mode | Not started |
 | Hardcore rules | Excluded |
 | Ground movement | Done — 20 TPS input-driven ground physics and collision-checked human predictions; no speed/flight enforcement. |
-| Collision and stepping | Partial — static block shapes and stepping; contextual shapes unsupported. |
+| Collision and stepping | Partial — static shapes and stepping, offset bamboo/dripstone/sulfur spikes, scaffolding and powder-snow player contexts, retained dripleaf tilt shapes, closed shulker boxes and empty moving-piston placeholders; animated block entities and scheduled dripleaf tilting unavailable. |
 | Sprinting and sneaking | Done — ground speed, crouch clearance and sneak edge protection. |
 | Jumping and falling | Done — ground jumps, gravity, air control, jump timing and supported landing effects. |
 | Swimming and crawling | Done — water travel, sprint swimming, currents, shoreline exits and swim/crawl pose transitions; air and drowning remain unavailable. |
-| Climbing | Partial — ladders, matching open trapdoors above ladders, vines, cave vines, weeping vines and twisting vines; scaffolding unavailable. |
-| Movement surfaces and media | Partial — dry surfaces, honey sliding, landing modifiers, sweet berry bush slowdown, water and lava travel and ladder/vine climbing (including open trapdoors above matching ladders), with aquatic plants, supported waterlogged geometry and offset bamboo stalks; lava burning, bubble columns, scaffolding and webs unavailable. |
+| Climbing | Done — ladders, matching open trapdoors above ladders, vines and scaffolding, including sneaking to descend scaffolding. |
+| Movement surfaces and media | Partial — dry surfaces, honey sliding, landing modifiers, berry-bush/cobweb slowdown, powder-snow sinking and leather-boot walking, water/lava travel, bubble-column lift/drag and surface launches, ladder/vine/scaffolding climbing, aquatic plants and supported waterlogged geometry; lava burning and freezing unavailable. |
 | Flight permissions | Not started |
 | Movement abilities and attributes | Not started |
 | Teleportation | Done — validated destinations and position corrections. |
@@ -79,7 +79,7 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Eating and drinking | Not started |
 | Status effects | Not started |
 | Splash and lingering effects | Conditional |
-| Environmental damage | Partial — fall damage with supported surface modifiers, void damage and block suffocation; sweet berry bushes reset fall distance, but thorn damage is unavailable. |
+| Environmental damage | Partial — fall damage with surface modifiers, pointed-dripstone tip impacts, powder-snow cushioning, void damage and block suffocation; inside-block fall resets supported, but thorn damage and freezing unavailable. |
 | Air and exposure state | Not started |
 | Death prevention | Not started |
 | Enchantment effects | Conditional |
@@ -242,7 +242,7 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Entity identity and lifecycle | Partial — human players only. |
 | Entity tracking | Partial — players and falling sand/gravel, gated by delivered terrain. |
 | Entity synchronization | Partial — players and falling sand/gravel. |
-| Entity physics | Partial — player ground/water/lava motion, swimming/crawling and sand/gravel falls; other movement media and entity types unavailable. |
+| Entity physics | Partial — player ground/fluid motion, swimming/crawling, climbing, cobwebs, powder snow and bubble columns, plus sand/gravel falls; other entity types unavailable. |
 | Entity interaction | Not started |
 | Living-entity attributes | Not started |
 | Natural spawning | Excluded |

@@ -520,7 +520,7 @@ fn berry_bushes_slow_inputs_clear_momentum_and_reset_falls() {
     assert!(!result.correction);
     assert!((result.transform.z - (3.0 - HALF_WIDTH)).abs() < EPSILON);
     assert_eq!(state.motion.velocity[2], 0.0);
-    assert!(!state.motion.berry_stuck);
+    assert_eq!(state.motion.effects.stuck, media::Stuck::None);
     assert!(!state.step(&world, MovementInput::default()).correction);
     let previous = state.transform();
     let result = state.step(&world, MovementInput { backward: true, ..Default::default() });
@@ -537,7 +537,26 @@ fn berry_bushes_slow_inputs_clear_momentum_and_reset_falls() {
 
     let bounds = player_box(position(-1.0, 1.0, 1.7), false);
     let mut cells = 0;
-    assert_eq!(berry_bush_contact(&world, bounds, [1.5, 0.0, 1.5], &mut cells), Some(false));
+    let effects = inside_effects(
+        &world,
+        bounds,
+        [1.5, 0.0, 1.5],
+        position(0.5, 1.0, 3.2),
+        ShapeContext::default(),
+        &mut cells,
+    )
+    .unwrap();
+    assert_eq!(effects.stuck, media::Stuck::None);
     cells = CELLS_PER_STEP;
-    assert_eq!(berry_bush_contact(&world, bounds, [1.5, 0.0, 1.5], &mut cells), None);
+    assert!(
+        inside_effects(
+            &world,
+            bounds,
+            [1.5, 0.0, 1.5],
+            position(0.5, 1.0, 3.2),
+            ShapeContext::default(),
+            &mut cells
+        )
+        .is_none()
+    );
 }

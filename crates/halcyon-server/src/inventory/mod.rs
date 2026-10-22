@@ -92,6 +92,13 @@ impl Inventory {
         self.selected
     }
 
+    pub fn can_walk_on_powder_snow(&self) -> bool {
+        let boots = &self.slots[InventorySlot::FEET.index()];
+        !boots.is_empty()
+            && mc_protocol::data::items::ITEMS[boots.item_id() as usize].0
+                == "minecraft:leather_boots"
+    }
+
     pub fn equipment(&self) -> [ItemStack; 6] {
         [
             self.slots[self.selected.inventory_slot().index()].clone(),
