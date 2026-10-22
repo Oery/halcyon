@@ -73,6 +73,9 @@ pub enum Packets<'p> {
     PlayerAction(PlayerAction),
     PlayerCommand(PlayerCommand),
     PlayerInput(PlayerInput),
+    PlayerAbilitiesRequest(PlayerAbilitiesRequest),
+    ChatCommand(ChatCommand<'p>),
+    CommandSuggestion(CommandSuggestion<'p>),
 }
 
 impl<'p> Packets<'p> {
@@ -80,6 +83,10 @@ impl<'p> Packets<'p> {
         let id = VarInt::read(buf)?.0;
 
         match (id, ctx.state) {
+            (0x07, State::Play) => Ok(Packets::ChatCommand(ChatCommand::decode_payload(buf)?)),
+            (0x0F, State::Play) => {
+                Ok(Packets::CommandSuggestion(CommandSuggestion::decode_payload(buf)?))
+            }
             (0x0C, State::Play) => Ok(Packets::ClientCommand(ClientCommand::decode_payload(buf)?)),
             (0x12, State::Play) => {
                 Ok(Packets::ClickContainer(ClickContainer::decode_payload(buf)?))
@@ -91,6 +98,9 @@ impl<'p> Packets<'p> {
             (0x29, State::Play) => Ok(Packets::PlayerAction(PlayerAction::decode_payload(buf)?)),
             (0x2A, State::Play) => Ok(Packets::PlayerCommand(PlayerCommand::decode_payload(buf)?)),
             (0x2B, State::Play) => Ok(Packets::PlayerInput(PlayerInput::decode_payload(buf)?)),
+            (0x28, State::Play) => {
+                Ok(Packets::PlayerAbilitiesRequest(PlayerAbilitiesRequest::decode_payload(buf)?))
+            }
             (0x42, State::Play) => Ok(Packets::UseItemOn(UseItemOn::decode_payload(buf)?)),
             (0x43, State::Play) => Ok(Packets::UseItem(UseItem::decode_payload(buf)?)),
             (0x00, State::Handshake) => {

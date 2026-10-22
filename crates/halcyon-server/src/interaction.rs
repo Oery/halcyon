@@ -1,16 +1,16 @@
-//! Owner-validated hand use of doors, trapdoors and fence gates.
+//! Owner-validated hand block interactions, including Creative instant breaking.
 use std::collections::VecDeque;
+use std::sync::OnceLock;
 
 use halcyon_world::{BlockStateId, BlockView, Opening, World, opening};
-use mc_protocol::packets::client::PlayerPose;
+use mc_protocol::packets::client::{InteractionHand, PlayerPose};
+use mc_protocol::types::GameMode;
 
 use crate::arena::{Arena, BlockPos};
 use crate::player::PlayerState;
 
-const MAX_USES: usize = 8;
-pub const USES_PER_STEP: usize = 4;
-/// Survival `block_interaction_range` plus vanilla's one-block server allowance.
-const MAX_REACH_SQ: f64 = (4.5 + 1.0) * (4.5 + 1.0);
+const MAX_BLOCK_ACTIONS: usize = 8;
+pub const BLOCK_ACTIONS_PER_STEP: usize = 4;
 
 #[derive(Clone, Copy, Debug)]
 pub struct BlockUse {
@@ -21,23 +21,190 @@ pub struct BlockUse {
     pub main_hand: bool,
 }
 
-#[derive(Default)]
-pub struct UseQueue {
-    pending: VecDeque<BlockUse>,
+#[derive(Clone, Copy, Debug)]
+pub struct BlockBreak {
+    pub sequence: i32,
+    pub pos: BlockPos,
 }
 
-impl UseQueue {
-    pub fn push(&mut self, used: BlockUse) -> bool {
-        if self.pending.len() == MAX_USES {
+#[derive(Clone, Copy, Debug)]
+pub enum BlockInteraction {
+    Use(BlockUse),
+    Break(BlockBreak),
+}
+
+impl BlockInteraction {
+    pub fn sequence(self) -> i32 {
+        match self {
+            Self::Use(used) => used.sequence,
+            Self::Break(broken) => broken.sequence,
+        }
+    }
+
+    pub fn pos(self) -> BlockPos {
+        match self {
+            Self::Use(used) => used.pos,
+            Self::Break(broken) => broken.pos,
+        }
+    }
+
+    pub fn hand(self) -> InteractionHand {
+        match self {
+            Self::Use(BlockUse { main_hand: false, .. }) => InteractionHand::Off,
+            _ => InteractionHand::Main,
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct BlockQueue {
+    pending: VecDeque<(u64, BlockInteraction)>,
+}
+
+impl BlockQueue {
+    pub fn push(&mut self, generation: u64, used: BlockInteraction) -> bool {
+        if self.pending.len() == MAX_BLOCK_ACTIONS {
             return false;
         }
-        self.pending.push_back(used);
+        self.pending.push_back((generation, used));
         true
     }
 
-    pub fn pop(&mut self) -> Option<BlockUse> {
+    pub fn pop(&mut self) -> Option<(u64, BlockInteraction)> {
         self.pending.pop_front()
     }
+}
+
+fn within_reach(player: &PlayerState, pos: BlockPos) -> bool {
+    let transform = player.movement.transform();
+    let eye = match player.movement.pose() {
+        PlayerPose::Standing => 1.62,
+        PlayerPose::Crouching => 1.27,
+        PlayerPose::Swimming => 0.4,
+    };
+    let [x, y, z] = pos;
+    let gap = |v: f64, min: i32| (f64::from(min) - v).max(v - f64::from(min) - 1.0).max(0.0);
+    let distance = gap(transform.x, x).powi(2)
+        + gap(transform.y + eye, y).powi(2)
+        + gap(transform.z, z).powi(2);
+    // block_interaction_range plus vanilla's one-block server allowance.
+    let reach: f64 = if player.game_mode.current == GameMode::Creative {
+        6.0
+    } else {
+        5.5
+    };
+    distance < reach * reach
+}
+
+#[derive(Clone, Copy, Default)]
+struct BreakState {
+    replacement: Option<BlockStateId>,
+    partner: Option<([i8; 3], BlockStateId)>,
+}
+
+static BREAK_STATES: OnceLock<Box<[BreakState]>> = OnceLock::new();
+
+/// Shared immutable lookup, built once before gameplay, never by scanning on a break.
+pub fn initialize() {
+    break_states();
+}
+
+fn break_states() -> &'static [BreakState] {
+    BREAK_STATES.get_or_init(|| {
+        use halcyon_world::blockstates::{BLOCK_STATES, block_state_id};
+        use halcyon_world::{FluidKind, fluid_info};
+        let water = block_state_id("minecraft:water[level=0]").expect("water state") as u16;
+        let lava = block_state_id("minecraft:lava[level=0]").expect("lava state") as u16;
+        let mut states = vec![BreakState::default(); BLOCK_STATES.len()];
+        for &(key, id) in BLOCK_STATES {
+            let name = key.split('[').next().unwrap_or(key);
+            if matches!(
+                name,
+                "minecraft:air"
+                    | "minecraft:cave_air"
+                    | "minecraft:void_air"
+                    | "minecraft:water"
+                    | "minecraft:lava"
+                    | "minecraft:bubble_column"
+            ) {
+                continue;
+            }
+            let partner = if key.contains("half=upper") {
+                Some(([0, -1, 0], key.replace("half=upper", "half=lower")))
+            } else if key.contains("half=lower") {
+                Some(([0, 1, 0], key.replace("half=lower", "half=upper")))
+            } else if name.ends_with("_bed") {
+                let mut offset = if key.contains("facing=north") {
+                    [0, 0, -1]
+                } else if key.contains("facing=south") {
+                    [0, 0, 1]
+                } else if key.contains("facing=west") {
+                    [-1, 0, 0]
+                } else {
+                    [1, 0, 0]
+                };
+                if key.contains("part=head") {
+                    offset = offset.map(|axis| -axis);
+                    Some((offset, key.replace("part=head", "part=foot")))
+                } else {
+                    Some((offset, key.replace("part=foot", "part=head")))
+                }
+            } else {
+                None
+            };
+            states[id as usize] = BreakState {
+                replacement: Some(match fluid_info(id as u16).kind {
+                    FluidKind::Empty => 0,
+                    FluidKind::Water => water,
+                    FluidKind::Lava => lava,
+                }),
+                partner: partner
+                    .and_then(|(offset, key)| block_state_id(&key).map(|id| (offset, id as u16))),
+            };
+        }
+        states.into_boxed_slice()
+    })
+}
+
+/// The target plus a matching paired half; also used to restore rejected predictions.
+pub fn break_cells(view: &impl BlockView, pos: BlockPos) -> Vec<BlockPos> {
+    let mut cells = vec![pos];
+    if let Some(state) = view.block_at(pos[0], pos[1], pos[2])
+        && let Some((offset, expected)) = break_states()[state as usize].partner
+    {
+        let other = std::array::from_fn(|axis| pos[axis] + i32::from(offset[axis]));
+        if view.block_at(other[0], other[1], other[2]) == Some(expected) {
+            cells.push(other);
+        }
+    }
+    cells
+}
+
+/// A Creative start-dig request removes its target immediately, with no drops.
+pub fn break_block(
+    arena: &mut Arena,
+    base: &World,
+    player: &PlayerState,
+    broken: BlockBreak,
+) -> Option<Vec<BlockPos>> {
+    if player.game_mode.current != GameMode::Creative
+        || !player.life.alive()
+        || player.life.pending_teleport().is_some()
+        || !within_reach(player, broken.pos)
+    {
+        return None;
+    }
+    let view = arena.view(base);
+    let positions = break_cells(&view, broken.pos);
+    let cells: Option<Vec<_>> = positions
+        .iter()
+        .map(|&pos| {
+            let state = view.block_at(pos[0], pos[1], pos[2])?;
+            Some((pos, break_states()[state as usize].replacement?))
+        })
+        .collect();
+    arena.edit_all(base, &cells?).ok()?;
+    Some(positions)
 }
 
 /// Returns the changed cells. A rejection leaves authority unchanged and the
@@ -60,17 +227,8 @@ pub fn use_block(
         return None;
     }
     let transform = player.movement.transform();
-    let eye = match player.movement.pose() {
-        PlayerPose::Standing => 1.62,
-        PlayerPose::Crouching => 1.27,
-        PlayerPose::Swimming => 0.4,
-    };
     let [x, y, z] = used.pos;
-    let gap = |v: f64, min: i32| (f64::from(min) - v).max(v - f64::from(min) - 1.0).max(0.0);
-    let distance = gap(transform.x, x).powi(2)
-        + gap(transform.y + eye, y).powi(2)
-        + gap(transform.z, z).powi(2);
-    if distance >= MAX_REACH_SQ {
+    if !within_reach(player, used.pos) {
         return None;
     }
     let view = arena.view(base);

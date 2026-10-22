@@ -1,6 +1,19 @@
 use super::*;
 
 #[test]
+fn flight_requests_dispatch_with_a_single_flags_byte() {
+    use crate::packets::{Context, Packets};
+    let ctx = Context { state: State::Play, ..Default::default() };
+    let mut input = [0x28, 0x02].as_slice();
+    let Packets::PlayerAbilitiesRequest(request) = Packets::read(&mut input, &ctx).unwrap() else {
+        panic!("wrong abilities packet");
+    };
+    assert!(input.is_empty());
+    assert_eq!(request.flags, 2);
+    assert!(PlayerAbilitiesRequest::decode_payload(&mut [].as_slice()).is_err());
+}
+
+#[test]
 fn hashed_predictions_are_bounded_and_never_become_items() {
     // window/state/slot/button/mode/count, slot36 -> stone x64/no overrides, cursor empty
     let bytes = [0, 0, 0, 36, 0, 0, 1, 0, 36, 1, 1, 64, 0, 0, 0];

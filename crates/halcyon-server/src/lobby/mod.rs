@@ -30,6 +30,11 @@ pub struct Transform {
     pub on_ground: bool,
 }
 
+pub enum TeleportDestination<'p> {
+    Player(&'p str),
+    Position(halcyon_commands::Position),
+}
+
 impl Transform {
     pub fn chunk(self) -> (i32, i32) {
         ((self.x.floor() as i32) >> 4, (self.z.floor() as i32) >> 4)
@@ -58,6 +63,7 @@ pub struct Profile {
 
 #[derive(Clone, Debug)]
 pub struct PlayerSnapshot {
+    pub game_mode: mc_protocol::types::GameMode,
     pub entity_id: i32,
     pub profile: Rc<Profile>,
     pub transform: Transform,
@@ -159,6 +165,7 @@ impl Lobby {
         state.arena.initialize(&world)?;
         // Build the shared openings catalog before the first use reaches a tick.
         halcyon_world::opening(0);
+        crate::interaction::initialize();
         let registry = Rc::new(RefCell::new(state));
         let (sender, receiver) = local_channel::new_bounded(REGISTRATION_CAPACITY);
         let owner = Rc::new(Signal::default());
@@ -205,6 +212,32 @@ impl Lobby {
 
     pub fn active_count(&self) -> usize {
         self.registry.borrow().active_count()
+    }
+
+    /// Resolve and enqueue while borrowed; wait for the owner after releasing it.
+    pub async fn set_game_mode(
+        &self,
+        sender: i32,
+        target: Option<&str>,
+        mode: mc_protocol::types::GameMode,
+    ) -> Result<String, crate::player::PlayerActionError> {
+        use crate::player::PlayerActionError;
+        let (name, response) = self.registry.borrow().request_game_mode(sender, target, mode)?;
+        response.await.map_err(|_| PlayerActionError::Closed)??;
+        Ok(name)
+    }
+
+    pub async fn teleport_player(
+        &self,
+        sender: i32,
+        target: Option<&str>,
+        destination: TeleportDestination<'_>,
+    ) -> Result<(String, Transform), crate::player::PlayerActionError> {
+        use crate::player::PlayerActionError;
+        let (name, position, response) =
+            self.registry.borrow().request_teleport(sender, target, destination)?;
+        response.await.map_err(|_| PlayerActionError::Closed)??;
+        Ok((name, position))
     }
 
     pub fn record_sent(&self, bytes: usize) {

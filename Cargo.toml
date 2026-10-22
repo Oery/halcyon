@@ -3,6 +3,8 @@ members = [
     "crates/mc-protocol",
     "crates/halcyon-server",
     "crates/halcyon-world",
+    "crates/halcyon-commands",
+    "crates/halcyon-commands-macros",
 ]
 resolver = "3"
 

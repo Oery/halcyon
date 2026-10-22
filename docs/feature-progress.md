@@ -33,9 +33,9 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Feature | Progress |
 | --- | --- |
 | Survival mode | Partial — player lifecycle and damage rules; no survival loop. |
-| Creative mode | Conditional |
-| Adventure mode | Not started |
-| Spectator mode | Not started |
+| Creative mode | Partial — mode switching, flight, invulnerability and instant block breaking with no drops; creative item acquisition remains unavailable. |
+| Adventure mode | Partial — mode switching and client synchronization; lobby gameplay rules remain shared. |
+| Spectator mode | Partial — mode switching and client synchronization; spectator movement remains unavailable. |
 | Hardcore rules | Excluded |
 | Ground movement | Done — 20 TPS input-driven ground physics and collision-checked human predictions; no speed/flight enforcement. |
 | Collision and stepping | Partial — static shapes and stepping, offset bamboo/dripstone/sulfur spikes, scaffolding and powder-snow player contexts, retained dripleaf tilt shapes, closed shulker boxes and empty moving-piston placeholders; animated block entities and scheduled dripleaf tilting unavailable. |
@@ -44,8 +44,8 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Swimming and crawling | Done — water travel, sprint swimming, currents, shoreline exits and swim/crawl pose transitions; air and drowning remain unavailable. |
 | Climbing | Done — ladders, matching open trapdoors above ladders, vines and scaffolding, including sneaking to descend scaffolding. |
 | Movement surfaces and media | Partial — dry surfaces, honey sliding, landing modifiers, berry-bush/cobweb slowdown, powder-snow sinking and leather-boot walking, water/lava travel, bubble-column lift/drag and surface launches, ladder/vine/scaffolding climbing, aquatic plants and supported waterlogged geometry; lava burning and freezing unavailable. |
-| Flight permissions | Not started |
-| Movement abilities and attributes | Not started |
+| Flight permissions | Partial — Creative permits client-toggled flight; leaving Creative revokes it. |
+| Movement abilities and attributes | Partial — Creative flight and instant-break abilities synchronize to the client. |
 | Teleportation | Done — validated destinations and position corrections. |
 | Initial spawning | Partial — imported spawn with bounded recovery to nearby clear supported terrain; no team assignment. |
 | Personal respawn points | Partial — per-player destinations; no team assignment. |
@@ -136,10 +136,10 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | --- | --- |
 | Block states | Partial — imported states, authoritative queries and bounded game-owned terrain edits; no saving. |
 | Block placement | Not started |
-| Block breaking | Not started |
+| Block breaking | Partial — instant Creative breaking with reach and terrain-capacity checks, paired-block removal, water preservation and no drops; Survival digging remains disabled. |
 | Break feedback | Not started |
 | Block drops | Conditional |
-| Interaction validation | Partial — door, trapdoor and fence-gate use checks reach, hand and sneaking with held items; digging and other item/block use rejected and corrected. |
+| Interaction validation | Partial — door, trapdoor and fence-gate use checks reach, hand and sneaking with held items; Creative breaking checks mode, reach and player life; unsupported predictions are corrected. |
 | Predicted-action correction | Partial — block states and sequence acknowledgements restore rejected edits; collision corrections resend nearby terrain. |
 | Neighbor and shape updates | Partial — sand/gravel support changes; no general shape updates. |
 | Block entities | Not started |
@@ -324,9 +324,9 @@ Update this tracker when feature support changes. Packet definitions, static cli
 
 | Feature | Progress |
 | --- | --- |
-| Command parsing and execution | Not started |
-| Command suggestions | Not started |
-| Command permissions | Not started |
+| Command parsing and execution | Partial — `/gamemode <mode> [player]` accepts four mode names and numeric IDs 0–3; mode survives respawn. `/tp <player>`, `/tp <target> <player>` and `/tp [target] <x> <y> <z>` support world coordinates and issuer-relative `~` offsets, with validated destinations and readable success/error feedback. |
+| Command suggestions | Partial — native `/gamemode` and `/tp` discovery, mode completion, online-player names and world coordinates. |
+| Command permissions | Not started — `/gamemode` and `/tp` are available to all connected players. |
 | Selectors and execution contexts | Excluded |
 | World and entity manipulation | Partial — player teleport, health, inventory and game-owned block changes. |
 | Data inspection and modification | Not started |
@@ -373,7 +373,7 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Allowlist | Not started |
 | Player and IP bans | Not started |
 | Kicking | Not started |
-| Spawn protection | Partial — read-only lobby; no editable-region permissions. |
+| Spawn protection | Partial — placement and non-Creative digging disabled; Creative breaking allowed; no editable-region permissions. |
 | Server code of conduct | Not started |
 | Console | Not started |
 | RCON | Conditional |

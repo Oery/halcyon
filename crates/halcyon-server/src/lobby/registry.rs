@@ -10,7 +10,9 @@ use uuid::Uuid;
 
 use super::session::Input;
 use super::{AdmissionError, PlayerSnapshot, Profile, StepMetrics, Transform, WorldAction};
-use crate::interaction::{USES_PER_STEP, use_block};
+use crate::interaction::{
+    BLOCK_ACTIONS_PER_STEP, BlockInteraction, break_block, break_cells, use_block,
+};
 use crate::inventory::InventoryAction;
 use crate::player::{PlayerAction, PlayerState, PlayerUpdate};
 
@@ -22,6 +24,8 @@ pub(super) struct Player {
 }
 
 type ColumnMove = (i32, Option<(i32, i32)>, (i32, i32));
+type ActionResponse =
+    glommio::channels::oneshot::Receiver<Result<(), crate::player::PlayerActionError>>;
 
 /// Read-only access to the current published lobby state.
 #[derive(Default)]
@@ -44,6 +48,108 @@ pub struct Registry {
 }
 
 impl Registry {
+    fn command_player(
+        &self,
+        sender: i32,
+        target: Option<&str>,
+    ) -> Result<&Player, crate::player::PlayerActionError> {
+        use crate::player::PlayerActionError;
+        let player = if let Some(name) = target {
+            let mut matches = self.players.values().filter(|player| {
+                player.active
+                    && !player.input.closed.get()
+                    && player.snapshot.profile.username.eq_ignore_ascii_case(name)
+            });
+            let player = matches.next().ok_or(PlayerActionError::NotFound)?;
+            if matches.next().is_some() {
+                return Err(PlayerActionError::Ambiguous);
+            }
+            player
+        } else {
+            self.players.get(&sender).ok_or(PlayerActionError::NotFound)?
+        };
+        if player.input.closed.get() {
+            return Err(PlayerActionError::Closed);
+        }
+        if !player.active || !player.input.ready.get() {
+            return Err(PlayerActionError::NotReady);
+        }
+        Ok(player)
+    }
+
+    pub(super) fn request_game_mode(
+        &self,
+        sender: i32,
+        target: Option<&str>,
+        mode: mc_protocol::types::GameMode,
+    ) -> Result<(String, ActionResponse), crate::player::PlayerActionError> {
+        use crate::player::PlayerActionError;
+        let player = self.command_player(sender, target)?;
+        let (reply, response) = glommio::channels::oneshot::oneshot();
+        if !player
+            .input
+            .actions
+            .borrow_mut()
+            .push(player.input.generation.get(), PlayerAction::SetGameMode { mode, reply })
+        {
+            return Err(PlayerActionError::QueueFull);
+        }
+        Ok((player.snapshot.profile.username.clone(), response))
+    }
+
+    pub fn command_player_names(&self, prefix: &str) -> Vec<String> {
+        if prefix.len() > 16 || !prefix.is_ascii() {
+            return Vec::new();
+        }
+        let mut names: Vec<_> = self
+            .players
+            .values()
+            .filter(|player| {
+                player.active && player.input.ready.get() && !player.input.closed.get()
+            })
+            .map(|player| &player.snapshot.profile.username)
+            .filter(|name| {
+                name.get(..prefix.len()).is_some_and(|start| start.eq_ignore_ascii_case(prefix))
+            })
+            .cloned()
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        names.truncate(64);
+        names
+    }
+
+    pub(super) fn request_teleport(
+        &self,
+        sender: i32,
+        target: Option<&str>,
+        destination: super::TeleportDestination<'_>,
+    ) -> Result<(String, Transform, ActionResponse), crate::player::PlayerActionError> {
+        use crate::player::PlayerActionError;
+        let player = self.command_player(sender, target)?;
+        let position = match destination {
+            super::TeleportDestination::Player(name) => {
+                self.command_player(sender, Some(name))?.state.movement.transform()
+            }
+            super::TeleportDestination::Position(position) => {
+                let origin = self.command_player(sender, None)?.state.movement.transform();
+                let [x, y, z] = position.resolve([origin.x, origin.y, origin.z]);
+                Transform { x, y, z, ..player.state.movement.transform() }
+            }
+        };
+        if !position.is_valid() {
+            return Err(PlayerActionError::InvalidDestination);
+        }
+        let (reply, response) = glommio::channels::oneshot::oneshot();
+        if !player.input.actions.borrow_mut().push(
+            player.input.generation.get(),
+            PlayerAction::TeleportRequest { destination: position, reply },
+        ) {
+            return Err(PlayerActionError::QueueFull);
+        }
+        Ok((player.snapshot.profile.username.clone(), position, response))
+    }
+
     #[cfg(test)]
     pub(crate) fn from_snapshots(players: Vec<PlayerSnapshot>, publication: u64) -> Self {
         let mut registry = Self {
@@ -64,7 +170,11 @@ impl Registry {
             registry.players.insert(
                 snapshot.entity_id,
                 Player {
-                    state: PlayerState::new(snapshot.transform),
+                    state: {
+                        let mut state = PlayerState::new(snapshot.transform);
+                        state.game_mode.current = snapshot.game_mode;
+                        state
+                    },
                     snapshot,
                     active: true,
                     input: Rc::new(Input::new(Rc::default())),
@@ -200,6 +310,7 @@ impl Registry {
             entity_id,
             Player {
                 snapshot: PlayerSnapshot {
+                    game_mode: Default::default(),
                     entity_id,
                     profile,
                     transform,
@@ -276,25 +387,39 @@ impl Registry {
         }
         for (&id, player) in &self.players {
             let mut update = PlayerUpdate::default();
-            for _ in 0..USES_PER_STEP {
-                let Some(used) = player.input.uses.borrow_mut().pop() else {
+            for _ in 0..BLOCK_ACTIONS_PER_STEP {
+                let Some((generation, action)) = player.input.block_actions.borrow_mut().pop()
+                else {
                     break;
                 };
-                update.block_ack = update.block_ack.max(Some(used.sequence));
-                if let Some(cells) = use_block(&mut self.arena, world, &player.state, used) {
+                update.block_ack = update.block_ack.max(Some(action.sequence()));
+                let cells = if generation != player.state.life.generation {
+                    None
+                } else {
+                    match action {
+                        BlockInteraction::Use(used) => {
+                            use_block(&mut self.arena, world, &player.state, used)
+                        }
+                        BlockInteraction::Break(broken) => {
+                            break_block(&mut self.arena, world, &player.state, broken)
+                        }
+                    }
+                };
+                if let Some(cells) = cells {
                     update.used_blocks.extend(cells);
                     // The user's client swings when it predicts the use.
-                    let hand = if used.main_hand {
-                        InteractionHand::Main
-                    } else {
-                        InteractionHand::Off
-                    };
                     if player.active {
-                        self.effects.swing(id, hand, Some(id));
+                        self.effects.swing(id, action.hand(), Some(id));
                     }
                 } else {
+                    if matches!(action, BlockInteraction::Break(_)) {
+                        update
+                            .used_blocks
+                            .extend(break_cells(&self.arena.view(world), action.pos()));
+                        continue;
+                    }
                     // Restore a predicted opening, placement or item use.
-                    let [x, y, z] = used.pos.map(f64::from);
+                    let [x, y, z] = action.pos().map(f64::from);
                     update.block_resync =
                         Some(Transform { x: x + 0.5, y, z: z + 0.5, ..Default::default() });
                     player.input.actions.borrow_mut().push(
@@ -378,6 +503,11 @@ impl Registry {
             self.coalesced = self.coalesced.saturating_add(player.input.coalesced.replace(0));
             let old_column = player.snapshot.transform.chunk();
             let mut player_changed = false;
+            if player.snapshot.game_mode != player.state.game_mode.current {
+                player.snapshot.game_mode = player.state.game_mode.current;
+                self.roster_revision = self.roster_revision.wrapping_add(1);
+                player_changed = true;
+            }
             let sneaking = player.state.movement.sneaking();
             let pose = player.state.movement.pose();
             let swimming = player.state.movement.swimming();

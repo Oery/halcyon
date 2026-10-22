@@ -467,11 +467,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "halcyon-commands"
+version = "0.1.0"
+dependencies = [
+ "halcyon-commands-macros",
+]
+
+[[package]]
+name = "halcyon-commands-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.6",
+]
+
+[[package]]
 name = "halcyon-server"
 version = "0.1.0"
 dependencies = [
  "futures-lite",
  "glommio-ng",
+ "halcyon-commands",
  "halcyon-world",
  "mc_protocol",
  "mimalloc",

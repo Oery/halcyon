@@ -16,6 +16,7 @@ pub struct EncodedChunk {
 }
 
 pub struct PacketCache {
+    pub commands: Box<[u8]>,
     pub configuration: Vec<Box<[u8]>>,
     pub chunks: HashMap<(i32, i32), EncodedChunk>,
     pub empty: EncodedChunk,
@@ -59,6 +60,7 @@ async fn chunk_header(
 
 impl PacketCache {
     pub async fn new(world: &halcyon_world::World) -> Result<Self, Error> {
+        let commands = encode(&crate::commands::tree()).await?;
         let mut configuration = Vec::new();
         configuration.push(
             encode(&KnownPacks {
@@ -153,6 +155,7 @@ impl PacketCache {
         let (header, empty_coordinates) =
             chunk_header(0, 0, &[0; 37], data.len(), suffix.len()).await?;
         Ok(Self {
+            commands,
             configuration,
             chunks,
             empty: EncodedChunk { header, data },

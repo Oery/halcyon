@@ -56,9 +56,24 @@ impl Observer {
         match frame.delivery {
             Delivery::RosterAdd(entries) => {
                 self.roster.extend(entries);
+                // Revisit mode changes that occurred while admission was queued.
+                self.roster_revision = None;
+            }
+            Delivery::RosterModes(entries) => {
+                for (id, mode) in entries {
+                    if self.roster.contains_key(&id)
+                        && mode != mc_protocol::types::GameMode::Survival
+                    {
+                        self.roster_modes.insert(id, mode);
+                    } else {
+                        self.roster_modes.remove(&id);
+                    }
+                }
+                self.roster_revision = None;
             }
             Delivery::RosterRemove(id) => {
                 self.roster.remove(&id);
+                self.roster_modes.remove(&id);
             }
             Delivery::Spawn(player) | Delivery::Move(player) => {
                 self.rendered.insert(player.entity_id, rendered(&player));
@@ -89,6 +104,9 @@ impl Observer {
         match &frame.delivery {
             Delivery::RosterAdd(entries) => {
                 self.pending_roster.extend(entries.iter().map(|(id, _)| *id));
+            }
+            Delivery::RosterModes(entries) => {
+                self.pending_modes.extend(entries.iter().map(|(id, _)| *id));
             }
             Delivery::RosterRemove(_) => {
                 self.pending_departures.insert(id);
@@ -149,6 +167,11 @@ impl Observer {
             Delivery::RosterAdd(entries) => {
                 for (id, _) in entries {
                     self.pending_roster.remove(id);
+                }
+            }
+            Delivery::RosterModes(entries) => {
+                for (id, _) in entries {
+                    self.pending_modes.remove(id);
                 }
             }
             Delivery::RosterRemove(_) => {

@@ -51,6 +51,30 @@ fn propose(queue: &mut ProposalQueue, transform: Transform) {
 }
 
 #[test]
+fn flight_descends_over_edges_without_crouching_and_still_collides() {
+    let mut terrain = Map::floor();
+    terrain.blocks.retain(|&(x, _, _), _| x <= 0);
+    let mut movement = MovementState::new(position(0.5, 1.0, 0.5));
+    movement.set_flying(true);
+    let mut proposals = ProposalQueue::default();
+    for target in [position(1.5, 1.0, 0.5), position(1.5, 0.5, 0.5)] {
+        proposals.push(MovementProposal { transform: target, sneaking: true, sprinting: false });
+        let result = movement.advance_with(&terrain, &mut proposals);
+        assert!(!result.correction);
+        assert_eq!(result.transform.x, target.x);
+        assert_eq!(result.transform.y, target.y);
+        assert_eq!(result.pose, PlayerPose::Standing);
+        assert!(result.landed_fall_damage.is_none());
+        assert!(result.collision_cells <= CELLS_PER_STEP);
+    }
+    terrain.blocks.insert((2, 1, 0), (FULL, false));
+    propose(&mut proposals, position(2.5, 0.5, 0.5));
+    let result = movement.advance_with(&terrain, &mut proposals);
+    assert!(result.correction);
+    assert!(result.transform.x < 2.0);
+}
+
+#[test]
 fn imported_spawn_preserves_clear_positions_and_recovers_bounded_obstructions() {
     use halcyon_world::loader::{LoadedChunk, LoadedWorld};
     use halcyon_world::{SECTION_COUNT, Section};

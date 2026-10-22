@@ -8,7 +8,7 @@ use halcyon_world::BlockView;
 #[cfg(test)]
 use halcyon_world::World;
 use mc_protocol::packets::client::InteractionHand;
-use mc_protocol::types::ItemStack;
+use mc_protocol::types::{GameMode, ItemStack};
 
 use crate::inventory::{
     HotbarSlot, Inventory, InventoryAction, InventoryChange, InventoryError, InventorySlot,
@@ -26,7 +26,16 @@ const MAX_USED_BLOCKS: usize = 16;
 /// Arena hooks deliberately precede the first minigame implementation.
 #[allow(dead_code)]
 pub enum PlayerAction {
+    SetFlying(bool),
+    SetGameMode {
+        mode: GameMode,
+        reply: glommio::channels::oneshot::Sender<Result<(), PlayerActionError>>,
+    },
     Teleport(Transform),
+    TeleportRequest {
+        destination: Transform,
+        reply: glommio::channels::oneshot::Sender<Result<(), PlayerActionError>>,
+    },
     Damage(Damage),
     Heal(f32),
     Rules(PlayerRules),
@@ -41,6 +50,42 @@ pub enum PlayerAction {
         edit: InventoryEdit,
         reply: glommio::channels::oneshot::Sender<Result<ItemStack, InventoryEditError>>,
     },
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GameModeState {
+    pub current: GameMode,
+    pub previous: Option<GameMode>,
+    pub flying: bool,
+}
+
+impl GameModeState {
+    pub fn ability_flags(self) -> u8 {
+        if self.current == GameMode::Creative {
+            // Invulnerable, allow flight, instant break; flight itself is opt-in.
+            0x0d | if self.flying { 0x02 } else { 0 }
+        } else {
+            0
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum PlayerActionError {
+    #[error("Player not found.")]
+    NotFound,
+    #[error("More than one player matches that name.")]
+    Ambiguous,
+    #[error("The player is not ready for this action.")]
+    NotReady,
+    #[error("The player's action queue is full. Try again shortly.")]
+    QueueFull,
+    #[error("The player disconnected before the action completed.")]
+    Closed,
+    #[error("The player respawned before the action completed. Try again.")]
+    StaleLife,
+    #[error("The destination is outside loaded terrain, obstructed or unsupported.")]
+    InvalidDestination,
 }
 
 #[cfg(test)]
@@ -102,6 +147,7 @@ impl ActionQueue {
 /// Replaceable self state; it never accumulates one packet per simulation step.
 #[derive(Default)]
 pub struct PlayerUpdate {
+    pub game_mode: Option<GameModeState>,
     pub block_resync: Option<Transform>,
     /// Cells changed by accepted block uses, resent before `block_ack`.
     pub used_blocks: Vec<crate::arena::BlockPos>,
@@ -126,6 +172,9 @@ impl PlayerUpdate {
     }
 
     pub fn merge(&mut self, newer: Self) {
+        if newer.game_mode.is_some() {
+            self.game_mode = newer.game_mode;
+        }
         if newer.respawn {
             // A replacement life supersedes transient events from the old one.
             self.clear_life_events();
@@ -160,7 +209,8 @@ impl PlayerUpdate {
     }
 
     pub fn changed(&self) -> bool {
-        self.block_resync.is_some()
+        self.game_mode.is_some()
+            || self.block_resync.is_some()
             || self.block_ack.is_some()
             || self.teleport.is_some()
             || self.health.is_some()
@@ -172,6 +222,7 @@ impl PlayerUpdate {
 }
 
 pub struct PlayerState {
+    pub game_mode: GameModeState,
     pub movement: MovementState,
     pub life: PlayerLife,
     pub inventory: Inventory,
@@ -185,6 +236,7 @@ pub struct PlayerState {
 impl PlayerState {
     pub fn new(transform: Transform) -> Self {
         Self {
+            game_mode: GameModeState::default(),
             movement: MovementState::new(transform),
             life: PlayerLife::new(transform),
             inventory: Inventory::default(),
@@ -205,7 +257,7 @@ impl PlayerState {
         transform: Transform,
         proposals: &mut ProposalQueue,
         update: &mut PlayerUpdate,
-    ) {
+    ) -> bool {
         self.movement.set_powder_snow_walk(self.inventory.can_walk_on_powder_snow());
         if self.movement.supports_destination(world, transform)
             && let Some(teleport) = self.life.teleport(transform)
@@ -214,6 +266,9 @@ impl PlayerState {
             self.movement_input = None;
             proposals.clear();
             update.teleport = Some(teleport);
+            true
+        } else {
+            false
         }
     }
 
@@ -252,6 +307,8 @@ impl PlayerState {
             self.inventory.begin_life();
             update.health = Some(self.life.health());
             update.respawn = true;
+            self.game_mode.flying = false;
+            update.game_mode = Some(self.game_mode);
             update.inventory = Some(self.inventory.snapshot());
             update.inventory_full = true;
             self.teleport(world, destination, proposals, update);
@@ -269,6 +326,16 @@ impl PlayerState {
                 self.movement_input = None;
                 self.movement.reset(self.movement.transform());
             }
+        }
+    }
+
+    fn apply_damage(&mut self, damage: Damage, now: Instant) -> DamageResult {
+        if self.game_mode.current == GameMode::Creative
+            && damage.kind != crate::lifecycle::DamageKind::Void
+        {
+            DamageResult::Ignored
+        } else {
+            self.life.damage(damage, now)
         }
     }
 
@@ -322,6 +389,7 @@ impl PlayerState {
             self.respawn(world, false, proposals, &mut update);
         }
         if std::mem::take(&mut actions.overflow) {
+            update.game_mode = Some(self.game_mode);
             update.inventory = Some(self.inventory.snapshot());
             update.inventory_full = true;
         }
@@ -330,17 +398,54 @@ impl PlayerState {
                 break;
             };
             if queued.generation != self.life.generation {
-                if let PlayerAction::EditInventory { reply, .. } = queued.action {
-                    let _ = reply.send(Err(InventoryEditError::StaleLife));
+                match queued.action {
+                    PlayerAction::EditInventory { reply, .. } => {
+                        let _ = reply.send(Err(InventoryEditError::StaleLife));
+                    }
+                    PlayerAction::SetGameMode { reply, .. }
+                    | PlayerAction::TeleportRequest { reply, .. } => {
+                        let _ = reply.send(Err(PlayerActionError::StaleLife));
+                    }
+                    _ => {}
                 }
                 continue;
             }
             match queued.action {
+                PlayerAction::SetFlying(flying) => {
+                    self.game_mode.flying = flying
+                        && self.game_mode.current == GameMode::Creative
+                        && self.life.alive()
+                        && self.life.pending_teleport().is_none();
+                    update.game_mode = Some(self.game_mode);
+                }
+                PlayerAction::SetGameMode { mode, reply } => {
+                    if !self.life.alive() || self.life.pending_teleport().is_some() {
+                        let _ = reply.send(Err(PlayerActionError::NotReady));
+                        continue;
+                    }
+                    if mode != self.game_mode.current {
+                        self.game_mode.previous = Some(self.game_mode.current);
+                        self.game_mode.current = mode;
+                        self.game_mode.flying = false;
+                        update.game_mode = Some(self.game_mode);
+                    }
+                    let _ = reply.send(Ok(()));
+                }
                 PlayerAction::Teleport(transform) => {
-                    self.teleport(world, transform, proposals, &mut update)
+                    self.teleport(world, transform, proposals, &mut update);
+                }
+                PlayerAction::TeleportRequest { destination, reply } => {
+                    let result = if !self.life.alive() || self.life.pending_teleport().is_some() {
+                        Err(PlayerActionError::NotReady)
+                    } else if self.teleport(world, destination, proposals, &mut update) {
+                        Ok(())
+                    } else {
+                        Err(PlayerActionError::InvalidDestination)
+                    };
+                    let _ = reply.send(result);
                 }
                 PlayerAction::Damage(damage) => {
-                    let result = self.life.damage(damage, now);
+                    let result = self.apply_damage(damage, now);
                     self.damaged(damage, result, &mut update);
                 }
                 PlayerAction::Heal(amount) => {
@@ -394,10 +499,11 @@ impl PlayerState {
             // ordinary teleport keeps the same player life generation.
             actions.pending.retain(|queued| !matches!(queued.action, PlayerAction::Drive(_)));
         }
+        self.movement.set_flying(self.game_mode.flying);
         if !self.life.alive() || self.life.pending_teleport().is_some() {
             if self.movement.suffocating(world) {
                 let damage = Damage { kind: DamageKind::Suffocation, amount: 1.0, source: None };
-                let result = self.life.damage(damage, now);
+                let result = self.apply_damage(damage, now);
                 self.damaged(damage, result, &mut update);
             }
             proposals.clear();
@@ -423,10 +529,12 @@ impl PlayerState {
         }
         if self.movement.suffocating(world) {
             let damage = Damage { kind: DamageKind::Suffocation, amount: 1.0, source: None };
-            let result = self.life.damage(damage, now);
+            let result = self.apply_damage(damage, now);
             self.damaged(damage, result, &mut update);
         }
-        if let Some(amount) = movement.and_then(|movement| movement.landed_fall_damage) {
+        if self.game_mode.current != GameMode::Creative
+            && let Some(amount) = movement.and_then(|movement| movement.landed_fall_damage)
+        {
             let result = self.life.landing_damage(amount, now);
             self.damaged(
                 Damage { kind: DamageKind::Fall, amount, source: None },

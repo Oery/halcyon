@@ -22,6 +22,8 @@ mod gameplay;
 pub use gameplay::*;
 mod player;
 pub use player::*;
+mod commands;
+pub use commands::*;
 
 // TODO: how to handle borrowing here
 #[packet(Status, 0x00, Client)]
