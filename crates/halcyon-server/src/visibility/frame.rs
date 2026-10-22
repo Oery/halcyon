@@ -35,6 +35,45 @@ pub(super) fn encode<'p>(packet: &impl Payload<'p>) -> Result<Rc<[u8]>, EncodeEr
     Ok(Rc::from(bytes))
 }
 
+/// The entry body of a single-player `PlayerInfoUpdate` frame: everything
+/// after the action mask and entry count.
+pub(super) fn roster_entry(info: &[u8]) -> Option<&[u8]> {
+    use mc_protocol::PacketWriter;
+    use mc_protocol::packets::client::PlayerInfoUpdate;
+    use mc_protocol::types::VarInt;
+    let mut bytes = info;
+    let length = VarInt::read(&mut bytes).ok()?.0;
+    if usize::try_from(length).ok()? != bytes.len()
+        || VarInt::read(&mut bytes).ok()?.0 != PlayerInfoUpdate::ID.0
+        || u8::read(&mut bytes).ok()? != 0x09
+        || VarInt::read(&mut bytes).ok()?.0 != 1
+    {
+        return None;
+    }
+    Some(bytes)
+}
+
+/// One `PlayerInfoUpdate` carrying every entry, with the same action mask.
+pub(super) fn roster_frame(entries: &[&[u8]]) -> Result<Rc<[u8]>, EncodeError> {
+    use mc_protocol::PacketWriter;
+    use mc_protocol::packets::client::PlayerInfoUpdate;
+    use mc_protocol::types::VarInt;
+    let count = VarInt(entries.len() as i32);
+    let body: usize = entries.iter().map(|entry| entry.len()).sum();
+    let length = PlayerInfoUpdate::ID.body_len() + 1 + count.body_len() + body;
+    let mut bytes = Vec::with_capacity(length + 5);
+    block_on(async {
+        VarInt(length as i32).write(&mut bytes).await?;
+        PlayerInfoUpdate::ID.write(&mut bytes).await?;
+        0x09u8.write(&mut bytes).await?;
+        count.write(&mut bytes).await
+    })?;
+    for entry in entries {
+        bytes.extend_from_slice(entry);
+    }
+    Ok(Rc::from(bytes))
+}
+
 fn append<'p>(packet: &impl Payload<'p>, bytes: &mut Vec<u8>) -> Result<(), EncodeError> {
     // Vec's AsyncWrite is immediately ready; this cannot suspend an executor.
     block_on(packet.write_packet(bytes))
