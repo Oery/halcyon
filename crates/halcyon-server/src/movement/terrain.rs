@@ -58,7 +58,7 @@ pub(super) fn ground_contact(terrain: &impl Terrain, position: Transform) -> Opt
 pub(super) fn climbing(terrain: &impl Terrain, position: Transform) -> bool {
     let [x, y, z] = [position.x, position.y, position.z].map(|n| n.floor() as i32);
     match terrain.cell(x, y, z).map(|cell| cell.climb) {
-        Some(Climb::Ladder(_)) => true,
+        Some(Climb::Ladder(_) | Climb::Vine) => true,
         Some(Climb::OpenTrapdoor(facing)) => {
             terrain.cell(x, y - 1, z).is_some_and(|cell| cell.climb == Climb::Ladder(facing))
         }

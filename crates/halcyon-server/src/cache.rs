@@ -116,9 +116,13 @@ impl PacketCache {
                 },
                 Tag {
                     name: "minecraft:climbable",
-                    // Built-in block ID verified against the official 26.3 client.
-                    // Only ladders are supported by the owner's climbing rules.
-                    entries: vec![VarInt(266)],
+                    // Built-in block IDs verified against the official 26.3 client:
+                    // ladder, vine, weeping/twisting vines and plants, cave vines and plant.
+                    // Scaffolding remains unsupported by the owner.
+                    entries: [266, 416, 968, 969, 970, 971, 1225, 1226]
+                        .into_iter()
+                        .map(VarInt)
+                        .collect(),
                 },
             ]);
         // Built-in fluid registry IDs, verified against the official 26.3 client:

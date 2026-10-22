@@ -42,8 +42,8 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Sprinting and sneaking | Done — ground speed, crouch clearance and sneak edge protection. |
 | Jumping and falling | Done — ground jumps, gravity, air control, jump timing and supported landing effects. |
 | Swimming and crawling | Done — water travel, sprint swimming, currents, shoreline exits and swim/crawl pose transitions; air and drowning remain unavailable. |
-| Climbing | Not started |
-| Movement surfaces and media | Partial — dry surfaces, honey sliding, landing modifiers, water and lava travel and ladder climbing (including open trapdoors above matching ladders), with aquatic plants, supported waterlogged geometry and offset bamboo stalks; lava burning, bubble columns, vines, scaffolding and webs unavailable. |
+| Climbing | Partial — ladders, matching open trapdoors above ladders, vines, cave vines, weeping vines and twisting vines; scaffolding unavailable. |
+| Movement surfaces and media | Partial — dry surfaces, honey sliding, landing modifiers, water and lava travel and ladder/vine climbing (including open trapdoors above matching ladders), with aquatic plants, supported waterlogged geometry and offset bamboo stalks; lava burning, bubble columns, scaffolding and webs unavailable. |
 | Flight permissions | Not started |
 | Movement abilities and attributes | Not started |
 | Teleportation | Done — validated destinations and position corrections. |
