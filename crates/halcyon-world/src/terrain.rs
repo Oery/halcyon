@@ -131,7 +131,7 @@ impl Default for MotionInfo {
 /// support merely because their representative shape is empty.
 pub fn motion_info(id: BlockStateId) -> MotionInfo {
     let state = state_info(id);
-    if xz_offset(id) || matches!(climb(id), Climb::Ladder(_)) {
+    if xz_offset(id) || matches!(climb(id), Climb::Ladder(_) | Climb::Vine) {
         return MotionInfo::default();
     }
     if state.contextual_geometry() {
@@ -156,7 +156,8 @@ pub fn motion_info(id: BlockStateId) -> MotionInfo {
 }
 
 /// Climbing context in horizontal facing order N, E, S, W. Of the climbable
-/// tag only ladders are supported; vines and scaffolding remain disabled.
+/// tag, ladders and the vine family are supported; scaffolding remains
+/// disabled.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Climb {
     #[default]
@@ -164,7 +165,22 @@ pub enum Climb {
     Ladder(u8),
     /// Climbable only directly above a ladder with the same facing.
     OpenTrapdoor(u8),
+    /// Vines, cave vines, weeping vines and twisting vines: no collision and
+    /// no facing; climbed by jumping or pushing against a wall.
+    Vine,
 }
+
+/// The vine family of the `#climbable` tag.
+const VINES: [&str; 7] = [
+    "minecraft:vine",
+    "minecraft:cave_vines",
+    "minecraft:cave_vines_plant",
+    "minecraft:weeping_vines",
+    "minecraft:weeping_vines_plant",
+    "minecraft:twisting_vines",
+    "minecraft:twisting_vines_plant",
+];
+const VINE: u8 = 9;
 
 static CLIMB: OnceLock<Box<[u8]>> = OnceLock::new();
 
@@ -173,9 +189,11 @@ pub fn climb(id: BlockStateId) -> Climb {
     let table = CLIMB.get_or_init(|| {
         let mut table = vec![0u8; data::STATES.len()].into_boxed_slice();
         for &(key, id) in crate::blockstates::BLOCK_STATES {
-            let Some((name, props)) = key.split_once('[') else {
+            let (name, props) = key.split_once('[').unwrap_or((key, ""));
+            if VINES.contains(&name) {
+                table[id as usize] = VINE;
                 continue;
-            };
+            }
             let ladder = name == "minecraft:ladder";
             if !ladder && !(name.ends_with("_trapdoor") && props.contains("open=true")) {
                 continue;
@@ -193,6 +211,7 @@ pub fn climb(id: BlockStateId) -> Climb {
     match table.get(id as usize).copied().unwrap_or(0) {
         0 => Climb::None,
         n @ 1..=4 => Climb::Ladder(n - 1),
+        VINE => Climb::Vine,
         n => Climb::OpenTrapdoor(n - 5),
     }
 }

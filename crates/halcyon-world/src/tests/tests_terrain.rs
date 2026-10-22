@@ -81,7 +81,7 @@ fn ground_profiles_match_target_surface_properties_and_keep_media_disabled() {
     for key in [
         "minecraft:cobweb",
         "minecraft:powder_snow",
-        "minecraft:vine[east=false,north=false,south=false,up=false,west=true]",
+        "minecraft:scaffolding[bottom=false,distance=0,waterlogged=false]",
     ] {
         assert_eq!(motion(key).surface, Surface::Unsupported, "{key}");
     }
@@ -206,4 +206,24 @@ fn ladders_and_open_trapdoors_carry_climbing_facing() {
         assert_eq!(climb(trapdoor(false)), Climb::None);
     }
     assert_eq!(climb(1), Climb::None);
+}
+
+#[test]
+fn the_vine_family_is_climbable_and_supported() {
+    let id = |key: &str| block_state_id(key).unwrap() as BlockStateId;
+    for key in [
+        "minecraft:vine[east=false,north=true,south=false,up=false,west=false]",
+        "minecraft:cave_vines[age=0,berries=true]",
+        "minecraft:cave_vines_plant[berries=false]",
+        "minecraft:weeping_vines[age=3]",
+        "minecraft:weeping_vines_plant",
+        "minecraft:twisting_vines[age=25]",
+        "minecraft:twisting_vines_plant",
+    ] {
+        assert_eq!(climb(id(key)), Climb::Vine, "{key}");
+        assert_eq!(motion_info(id(key)).surface, Surface::Ordinary, "{key}");
+    }
+    let scaffolding = id("minecraft:scaffolding[bottom=false,distance=0,waterlogged=false]");
+    assert_eq!(climb(scaffolding), Climb::None);
+    assert_eq!(motion_info(scaffolding).surface, Surface::Unsupported);
 }
