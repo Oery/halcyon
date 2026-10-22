@@ -166,6 +166,7 @@ async fn run(server: Arc<Server>, lobby: Lobby, bot: Bot) -> Result<(), crate::e
     let Bot { index, seed, profile: skill, nav, report } = bot;
     let mut rng = Rng::new(seed);
     let username = format!("Bot{}", index + 1);
+    let name = username.clone();
     let uuid = Uuid::from_u64_pair(rng.next(), rng.next());
     let mut info = Vec::new();
     PlayerInfoUpdate { uuid, username: &username, properties: vec![] }
@@ -201,6 +202,9 @@ async fn run(server: Arc<Server>, lobby: Lobby, bot: Bot) -> Result<(), crate::e
     session.teleport(spawn);
 
     let mut brain = Brain::new(skill, rng.next(), spawn);
+    if std::env::var("HALCYON_BOT_TRACE").is_ok_and(|traced| traced == name || traced == "all") {
+        brain.traced = Some(name.clone());
+    }
     let mut body = Body::default();
     let mut decided_at = None;
     loop {

@@ -146,6 +146,8 @@ pub struct Brain {
     door_wait: u16,
     ticks: u64,
     pub stats: BrainStats,
+    /// Print this bot's state every second (`HALCYON_BOT_TRACE=<name>`).
+    pub traced: Option<String>,
 }
 
 impl Brain {
@@ -171,6 +173,7 @@ impl Brain {
             door_wait: 0,
             ticks: 0,
             stats: BrainStats::default(),
+            traced: None,
         }
     }
 
@@ -248,6 +251,24 @@ impl Brain {
                 self.forget_route();
                 self.state = State::Plan;
             }
+        }
+        if let Some(name) = &self.traced
+            && self.ticks.is_multiple_of(20)
+        {
+            eprintln!(
+                "trace {name}: mode={:?} at ({:.1},{:.1},{:.1}) ground={} checkpoint={} target={:?} path={} edge={:?} searching={} starved={}",
+                self.mode(),
+                position.x,
+                position.y,
+                position.z,
+                position.on_ground,
+                self.checkpoint,
+                self.target(nav),
+                self.path.len(),
+                self.run.as_ref().map(|run| (run.from, run.edge.to, run.edge.kind)),
+                self.search.is_active(),
+                self.search.starved,
+            );
         }
         let obs = Obs { position, velocity };
         // Plan as if doors were open; the real view shows which still need opening.
@@ -370,7 +391,34 @@ impl Brain {
                 self.path = path.into();
                 self.state = State::Follow;
             }
-            _ => {
+            status => {
+                if let Some(name) = &self.traced {
+                    let start = self.locate(position, nav, view);
+                    eprintln!(
+                        "trace {name}: search failed {:?} from {start:?} explored={:?}",
+                        matches!(status, SearchStatus::Unreachable),
+                        self.search.explored()
+                    );
+                    for cell in start.into_iter().flat_map(|s| {
+                        (-1..=1).flat_map(move |dx| {
+                            (-1..=1).map(move |dz| [s[0] + dx, s[1], s[2] + dz])
+                        })
+                    }) {
+                        let Some(candidates) = nav.candidates(view, cell) else {
+                            continue;
+                        };
+                        for c in candidates.iter() {
+                            eprintln!(
+                                "  {cell:?} -> {:?} {:?} cached={:?}",
+                                c.to,
+                                c.kind,
+                                nav.graph
+                                    .checked(cell, c)
+                                    .map(|e| e.map(|e| (e.robustness, e.plan)))
+                            );
+                        }
+                    }
+                }
                 // Stranded where no route leads on: after a few tries, go
                 // back to the checkpoint like a player who fell would.
                 self.stranded = self.stranded.saturating_add(1);

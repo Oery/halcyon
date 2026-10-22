@@ -91,6 +91,8 @@ pub struct Search {
     goal: Option<Cell>,
     best: Option<(f32, Cell)>,
     expansions: usize,
+    /// The last step stopped because the shared validation budget was spent.
+    pub starved: bool,
 }
 
 impl Search {
@@ -108,6 +110,11 @@ impl Search {
             via: Via::Start,
         });
         self.queued.insert(start, 0.0);
+    }
+
+    /// Expansions so far and cells closed, for traces.
+    pub fn explored(&self) -> (usize, usize) {
+        (self.expansions, self.closed.len())
     }
 
     pub fn is_active(&self) -> bool {
@@ -181,7 +188,10 @@ impl Search {
             match open.via {
                 Via::Pending(from, candidate) => {
                     let edge = match nav.validate(view, from, &candidate) {
-                        Validation::Busy => return SearchStatus::Running,
+                        Validation::Busy => {
+                            self.starved = true;
+                            return SearchStatus::Running;
+                        }
                         Validation::Invalid => {
                             self.open.pop();
                             continue;
