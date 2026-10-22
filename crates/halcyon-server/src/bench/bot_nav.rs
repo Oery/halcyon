@@ -304,14 +304,22 @@ fn trace_edge() {
     let mut nav = NavService::new(Budget::Unlimited);
     let here = nav.stand(&world, from).expect("from is standable");
     let there = nav.stand(&world, to).expect("to is standable");
+    // Trace the graph's own candidate for this pair when there is one.
+    let candidate = nav
+        .graph
+        .candidates(&world, from)
+        .and_then(|found| found.iter().find(|c| c.to == to).copied());
+    eprintln!("candidate {candidate:?}");
+    let (kind, via) = candidate.map_or((EdgeKind::Jump, None), |c| (c.kind, c.via));
     for (runup, takeoff, sprint) in [(0.3f32, 0.6f32, true), (0.0, 0.2, false)] {
         let edge = Edge {
             to,
             to_feet: there.feet_y,
-            kind: EdgeKind::Jump,
+            kind,
             plan: Plan { runup, takeoff, sprint },
             ticks: 0,
             robustness: 0.0,
+            via,
         };
         let mut run = EdgeRun::new(from, &here, edge, Execution::IDEAL);
         let [x, z] = super::stand::centre(from);
@@ -424,6 +432,59 @@ fn geometric_route() {
         }
     }
     let end = reached.unwrap_or(closest.1);
+    // Near misses: unreached floors right next to reached ones, higher up.
+    let mut misses: Vec<(i32, Cell, Cell)> = Vec::new();
+    let floor = env_or("HALCYON_MISS_FLOOR", 0) as i32;
+    for from in best
+        .keys()
+        .filter(|c| (c[0] - end[0]).abs() <= 24 && (c[2] - end[2]).abs() <= 24 && c[1] >= floor)
+    {
+        for dx in -2..=2 {
+            for dz in -2..=2 {
+                for dy in 1..=6 {
+                    let to = [from[0] + dx, from[1] + dy, from[2] + dz];
+                    if !best.contains_key(&to) && nav.stand(&world, to).is_some() {
+                        misses.push((to[1], *from, to));
+                    }
+                }
+            }
+        }
+    }
+    misses.sort();
+    misses.dedup_by_key(|(_, _, to)| *to);
+    eprintln!("near misses (lowest first):");
+    for (_, from, to) in misses.iter().take(env_or("HALCYON_MISS_COUNT", 25) as usize) {
+        let column: Vec<String> =
+            (from[1] - 1..=to[1]).map(|y| name(world.block_at(to[0], y, to[2]))).collect();
+        eprintln!("  {from:?} -> {to:?} column below target: {column:?}");
+    }
+    // Highest standable cell per column near the end: digit = y % 10 if the
+    // search reached it, letter (a = 0) if not.
+    let radius = env_or("HALCYON_FRONTIER_RADIUS", 14) as i32;
+    let centre = cell("HALCYON_MAP_AT").unwrap_or(end);
+    eprintln!("geometric map around {centre:?} (x left to right, z top to bottom):");
+    for z in centre[2] - radius..=centre[2] + radius {
+        let mut row = String::new();
+        for x in centre[0] - radius..=centre[0] + radius {
+            let heights = (centre[1] - 8..=centre[1] + 15).rev();
+            let reached = heights.clone().find(|&y| best.contains_key(&[x, y, z]));
+            let found = reached.map(|y| ([x, y, z], true)).or_else(|| {
+                heights
+                    .clone()
+                    .find(|&y| nav.stand(&world, [x, y, z]).is_some())
+                    .map(|y| ([x, y, z], false))
+            });
+            row.push(match found {
+                None => '.',
+                Some((cell, _)) if cell == end => '@',
+                Some((cell, reached)) => {
+                    let digit = cell[1].rem_euclid(10) as u8;
+                    char::from(if reached { b'0' } else { b'a' } + digit)
+                }
+            });
+        }
+        eprintln!("  {row}");
+    }
     eprintln!(
         "geometric: reached_goal={} expanded={expanded} end={end:?} goal={goal:?} in {}ms nodes={}",
         reached.is_some(),
@@ -628,6 +689,8 @@ fn spire_climb_scenario() {
         })
         .or_else(|| nav.detect_goal(&world, around, 128));
     let goal = nav.goal.expect("a goal exists");
+    nav.checkpoints = nav.detect_checkpoints(&world, around, 128);
+    eprintln!("checkpoints: {:?}", nav.checkpoints);
     eprintln!("spawn {spawn:?} goal {goal:?} detected in {}ms", started.elapsed().as_millis());
 
     // Route existence from spawn, independent of execution quality.
@@ -703,9 +766,10 @@ fn spire_climb_scenario() {
     for bot in &bots {
         let stats = bot.brain.stats;
         eprintln!(
-            "bot level={} mode={:?} max_y={:.1} y={:.1} finished_at={:?} falls={} deaths={} edges={}",
+            "bot level={} mode={:?} checkpoint={} max_y={:.1} y={:.1} finished_at={:?} falls={} deaths={} edges={}",
             bot.brain.profile.level,
             bot.brain.mode(),
+            bot.brain.checkpoint(),
             bot.max_y,
             bot.position().y,
             stats.finished_at,

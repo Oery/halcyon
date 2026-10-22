@@ -58,6 +58,8 @@ const EYE_HEIGHT: f64 = 1.62;
 const LANDING_MARGIN: f64 = 0.29;
 /// Arrival radius when stepping onto the current cell's centre.
 pub const CENTRED: f64 = 0.3;
+/// How far past a slime pad's centre a bounce aims, toward its target.
+const PAD_LEAD: f64 = 0.3;
 /// How far a walk may stray from the line between its cells.
 const CORRIDOR: f64 = 1.3;
 /// Jump before this tick's motion would carry the centre this far past the rim.
@@ -79,6 +81,10 @@ pub struct EdgeRun {
     waited: u16,
     jumped_at: Option<u16>,
     airborne: bool,
+    /// Feet height of the floor currently aimed at: a bounce's slime first.
+    aim_feet: f64,
+    /// When a bounce touched its slime block.
+    bounced_at: Option<u16>,
     /// Closest horizontal approach to the target centre, for diagnostics.
     pub closest: f64,
 }
@@ -109,7 +115,19 @@ fn sub(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
 impl EdgeRun {
     pub fn new(from: Cell, from_stand: &Stand, edge: Edge, exec: Execution) -> Self {
         let origin = centre(from);
-        let target = centre(edge.to);
+        let (aim, aim_feet) = edge.via.unwrap_or((edge.to, edge.to_feet));
+        let mut target = centre(aim);
+        if edge.via.is_some() {
+            // Land on the pad's far side: the rebound starts closer to the goal.
+            let beyond = sub(centre(edge.to), target);
+            let length = beyond[0].hypot(beyond[1]);
+            if length > 1e-6 {
+                target = [
+                    target[0] + beyond[0] / length * PAD_LEAD,
+                    target[1] + beyond[1] / length * PAD_LEAD,
+                ];
+            }
+        }
         let delta = sub(target, origin);
         let length = delta[0].hypot(delta[1]);
         let dir = if length > 1e-6 {
@@ -130,7 +148,7 @@ impl EdgeRun {
             rim: from_stand.rim(dir),
             from_kind: from_stand.kind,
             exec,
-            phase: if edge.kind == EdgeKind::Jump {
+            phase: if edge.kind.is_jump() {
                 Phase::Approach
             } else {
                 Phase::Execute
@@ -139,6 +157,8 @@ impl EdgeRun {
             waited: 0,
             jumped_at: None,
             airborne: false,
+            aim_feet,
+            bounced_at: None,
             closest: f64::INFINITY,
         }
     }
@@ -180,7 +200,7 @@ impl EdgeRun {
     fn look(&self, position: Transform, yaw: f32) -> Intent {
         let to = sub(self.target, [position.x, position.z]);
         let horizontal = to[0].hypot(to[1]).max(0.5);
-        let rise = self.edge.to_feet - (position.y + EYE_HEIGHT);
+        let rise = self.aim_feet - (position.y + EYE_HEIGHT);
         let pitch = (-rise).atan2(horizontal).to_degrees().clamp(-30.0, 60.0) as f32;
         Intent { yaw: wrap_degrees(yaw), pitch, ..Intent::default() }
     }
@@ -201,10 +221,13 @@ impl EdgeRun {
         self.closest = self.closest.min(to_target[0].hypot(to_target[1]));
         self.ticks = self.ticks.saturating_add(1);
         let idle = self.look(position, position.yaw);
-        if self.arrived(position) && (self.edge.kind != EdgeKind::Jump || self.airborne) {
+        let rebounded = self.edge.via.is_none() || self.bounced_at.is_some();
+        if self.arrived(position) && (!self.edge.kind.is_jump() || self.airborne) && rebounded {
             return (idle, Status::Done);
         }
-        if position.y < self.from_feet.min(self.edge.to_feet) - 1.5 {
+        let pad = self.edge.via.map_or(f64::INFINITY, |(_, feet)| feet);
+        let lowest = self.from_feet.min(self.edge.to_feet).min(pad);
+        if position.y < lowest - 1.5 {
             return (idle, Status::Failed(Failure::Fell));
         }
         if self.ticks > self.limit() {
@@ -220,7 +243,7 @@ impl EdgeRun {
                     Intent { forward: ladder, jump: true, ..self.look(position, self.dir_yaw) };
                 (intent, Status::Running)
             }
-            EdgeKind::Jump => self.jump(obs),
+            EdgeKind::Jump | EdgeKind::Bounce => self.jump(obs),
         }
     }
 
@@ -326,9 +349,28 @@ impl EdgeRun {
                     self.airborne = true;
                 }
                 if position.on_ground && self.airborne {
+                    let on_pad = self.edge.via.is_some_and(|(pad, feet)| {
+                        (position.y - feet).abs() < 0.3
+                            && (position.x - (f64::from(pad[0]) + 0.5)).abs() < 0.5 + LANDING_MARGIN
+                            && (position.z - (f64::from(pad[2]) + 0.5)).abs() < 0.5 + LANDING_MARGIN
+                    });
+                    if !on_pad || self.bounced_at.is_some() {
+                        return (intent, Status::Failed(Failure::Missed));
+                    }
+                    // The slime threw us back up: now steer for the real target.
+                    self.bounced_at = Some(self.ticks);
+                    self.airborne = false;
+                    self.target = centre(self.edge.to);
+                    self.aim_feet = self.edge.to_feet;
+                }
+                if !self.airborne && self.bounced_at.is_some_and(|at| self.ticks > at + 3) {
+                    // Too weak a bounce to leave the pad.
                     return (intent, Status::Failed(Failure::Missed));
                 }
-                if !self.airborne && self.jumped_at.is_some_and(|at| self.ticks > at + 3) {
+                if !self.airborne
+                    && self.bounced_at.is_none()
+                    && self.jumped_at.is_some_and(|at| self.ticks > at + 3)
+                {
                     // The jump never left the ground (head blocked, jump delay).
                     return (intent, Status::Failed(Failure::Missed));
                 }
@@ -339,6 +381,12 @@ impl EdgeRun {
                     self.air_control(obs, &mut intent);
                 } else {
                     intent.forward = true;
+                }
+                if self.bounced_at == Some(self.ticks) {
+                    // Sprint-jump off the slime: keeps the rebound and adds
+                    // the jump's horizontal boost.
+                    intent.jump = true;
+                    intent.sprint = true;
                 }
                 (intent, Status::Running)
             }
@@ -357,7 +405,7 @@ impl EdgeRun {
             self.dir
         };
         let speed = dot([obs.velocity[0], obs.velocity[2]], heading).max(0.0);
-        let airtime = airtime(position.y, obs.velocity[1], self.edge.to_feet);
+        let airtime = airtime(position.y, obs.velocity[1], self.aim_feet);
         let glide = speed * 0.91 * (1.0 - 0.91f64.powi(airtime as i32)) / 0.09;
         if glide < remaining - 0.1 {
             intent.forward = true;

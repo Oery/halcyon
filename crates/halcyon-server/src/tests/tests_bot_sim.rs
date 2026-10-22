@@ -110,6 +110,30 @@ fn an_off_centre_start_steps_onto_its_cell_first() {
 }
 
 #[test]
+fn bots_pass_gold_plate_checkpoints_in_order() {
+    let (mut view, spawn, goal) = spiral();
+    // The fifth step, [-1, 15, 3] top, carries a gold pressure plate.
+    view.set([-1, 16, 3], map::id("minecraft:light_weighted_pressure_plate[power=0]"));
+    let mut nav = NavService::new(Budget::Unlimited);
+    nav.checkpoints = nav.detect_checkpoints(&view, [0, 11, 0], 10);
+    assert_eq!(nav.checkpoints, vec![[-1, 16, 3]]);
+    nav.goal = Some(goal);
+    let mut bot = SimBot::new(BotProfile::new(90), 2, spawn);
+    let mut passed_at = None;
+    for tick in 0..6_000 {
+        bot.step(&mut nav, &view);
+        if bot.brain.checkpoint() == 1 && passed_at.is_none() {
+            passed_at = Some(tick);
+        }
+        if bot.brain.mode() == Mode::Finished {
+            break;
+        }
+    }
+    assert_eq!(bot.brain.mode(), Mode::Finished);
+    assert!(passed_at.is_some());
+}
+
+#[test]
 fn runs_are_reproducible() {
     let (a, ta) = climb(50, 9, 10_000);
     let (b, tb) = climb(50, 9, 10_000);

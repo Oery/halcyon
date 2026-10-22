@@ -36,6 +36,15 @@ pub enum EdgeKind {
     Jump,
     /// Climbs a ladder one cell up.
     Climb,
+    /// Jumps onto a slime block (`Edge::via`) and rebounds onto `to`.
+    Bounce,
+}
+
+impl EdgeKind {
+    /// Committed airborne maneuvers: lined up, then jumped.
+    pub fn is_jump(self) -> bool {
+        matches!(self, EdgeKind::Jump | EdgeKind::Bounce)
+    }
 }
 
 /// How a validated edge is executed; replayed verbatim at runtime.
@@ -62,6 +71,8 @@ pub struct Edge {
     pub ticks: u16,
     /// Fraction of perturbed executions that still succeed.
     pub robustness: f32,
+    /// For bounces: the slime cell landed on first, and its feet height.
+    pub via: Option<(Cell, f64)>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -94,6 +105,8 @@ pub struct NavService {
     arena_revision: Option<u64>,
     columns: HashMap<Column, u64>,
     pub goal: Option<Cell>,
+    /// Intermediate goals in course order, before `goal`.
+    pub checkpoints: Vec<Cell>,
 }
 
 pub enum Validation {
@@ -113,6 +126,7 @@ impl NavService {
             arena_revision: None,
             columns: HashMap::new(),
             goal: None,
+            checkpoints: Vec::new(),
         }
     }
 
@@ -185,6 +199,55 @@ impl NavService {
         if !dirty.is_empty() {
             self.graph.invalidate(&dirty);
         }
+    }
+
+    /// Gold (light weighted) pressure plates within `radius` blocks of
+    /// `around`, the course's checkpoints. Ordered by height, ties broken
+    /// by distance from the previous checkpoint.
+    pub fn detect_checkpoints(
+        &mut self,
+        view: &impl BlockView,
+        around: Cell,
+        radius: i32,
+    ) -> Vec<Cell> {
+        use halcyon_world::{MAX_BLOCK_Y, MIN_BLOCK_Y};
+        let plates: HashSet<u16> = halcyon_world::blockstates::BLOCK_STATES
+            .iter()
+            .filter(|(key, _)| key.starts_with("minecraft:light_weighted_pressure_plate"))
+            .map(|&(_, id)| id as u16)
+            .collect();
+        let mut found = Vec::new();
+        for x in around[0] - radius..=around[0] + radius {
+            for z in around[2] - radius..=around[2] + radius {
+                if !view.contains_column(x >> 4, z >> 4) {
+                    continue;
+                }
+                for y in MIN_BLOCK_Y..MAX_BLOCK_Y {
+                    if view.block_at(x, y, z).is_some_and(|id| plates.contains(&id))
+                        && self.graph.stand(view, [x, y, z]).is_some()
+                    {
+                        found.push([x, y, z]);
+                    }
+                }
+            }
+        }
+        found.sort_by_key(|cell| cell[1]);
+        let mut ordered: Vec<Cell> = Vec::with_capacity(found.len());
+        let mut previous = around;
+        while !found.is_empty() {
+            let height = found[0][1];
+            let (index, _) = found
+                .iter()
+                .enumerate()
+                .take_while(|(_, cell)| cell[1] == height)
+                .min_by_key(|(_, cell)| {
+                    (cell[0] - previous[0]).pow(2) + (cell[2] - previous[2]).pow(2)
+                })
+                .expect("found is not empty");
+            previous = found.remove(index);
+            ordered.push(previous);
+        }
+        ordered
     }
 
     /// The highest standable cell within `radius` blocks of `around`.

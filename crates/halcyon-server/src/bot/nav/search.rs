@@ -11,7 +11,7 @@ use std::collections::{BinaryHeap, HashMap};
 
 use halcyon_world::BlockView;
 
-use super::{Candidate, Cell, Edge, EdgeKind, NavService, Validation};
+use super::{Candidate, Cell, Edge, NavService, Validation};
 
 /// Inflation of the heuristic: faster searches, somewhat longer routes.
 const WEIGHT: f32 = 1.5;
@@ -191,7 +191,7 @@ impl Search {
                         continue;
                     };
                     let mut g = from_g + f32::from(edge.ticks) + cost(from, &edge);
-                    if edge.kind == EdgeKind::Jump {
+                    if edge.kind.is_jump() {
                         g += JUMP_COST;
                     }
                     self.push(open.cell, g, Via::Valid(Step { from, edge }), goal);
@@ -221,7 +221,7 @@ impl Search {
                     };
                     for candidate in candidates.iter() {
                         let mut g = open.g + candidate.estimate;
-                        if candidate.kind == EdgeKind::Jump {
+                        if candidate.kind.is_jump() {
                             g += JUMP_COST;
                         }
                         self.push(candidate.to, g, Via::Pending(open.cell, *candidate), goal);

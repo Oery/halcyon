@@ -23,6 +23,12 @@ const SETTLE_TICKS: u16 = 10;
 const WALK_SPEED: f32 = 0.3;
 const JUMP_SPEED: f32 = 0.45;
 const CLIMB_SPEED: f32 = 0.2;
+/// Height of a standing jump's apex above the feet.
+const JUMP_APEX: f64 = 1.25;
+/// Optimistic fraction of a fall's height a slime bounce gives back.
+const BOUNCE_RETURN: f64 = 0.9;
+const BOUNCE_REACH: i32 = 4;
+const MAX_BOUNCE_CANDIDATES: usize = 24;
 
 const NEIGHBOURS: [[i32; 2]; 8] =
     [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
@@ -30,7 +36,7 @@ const NEIGHBOURS: [[i32; 2]; 8] =
 /// Generous horizontal reach of a sprint jump with a short run-up.
 fn reach(rise: f64) -> f64 {
     if rise > 0.0 {
-        4.9 - rise * 1.5
+        4.9 - rise * 0.9
     } else {
         4.9 + (-rise).min(3.0) * 0.4
     }
@@ -73,6 +79,8 @@ pub struct Candidate {
     pub kind: EdgeKind,
     /// Lower bound on the validated duration, in ticks.
     pub estimate: f32,
+    /// For bounces: the slime cell to land on first, and its feet height.
+    pub via: Option<(Cell, f64)>,
 }
 
 /// Result of one simulated execution.
@@ -200,6 +208,7 @@ impl NavGraph {
                     to_feet: there.feet_y,
                     kind: EdgeKind::Walk,
                     estimate: length / WALK_SPEED,
+                    via: None,
                 });
             }
         }
@@ -214,6 +223,7 @@ impl NavGraph {
                     to_feet: there.feet_y,
                     kind: EdgeKind::Climb,
                     estimate: 1.0 / CLIMB_SPEED,
+                    via: None,
                 });
             }
         } else {
@@ -229,6 +239,7 @@ impl NavGraph {
                             to_feet: there.feet_y,
                             kind: EdgeKind::Drop,
                             estimate: 1.0 / WALK_SPEED,
+                            via: None,
                         });
                     }
                     break;
@@ -239,7 +250,72 @@ impl NavGraph {
         if here.kind == StandKind::Ground {
             let jumps = self.jump_candidates(view, from, here, &found);
             found.extend(jumps);
+            let bounces = self.bounce_candidates(view, from, here, &found);
+            found.extend(bounces);
         }
+        found
+    }
+
+    /// Floors reachable by landing on a nearby slime block and rebounding.
+    fn bounce_candidates(
+        &mut self,
+        view: &impl BlockView,
+        from: Cell,
+        here: Stand,
+        existing: &[Candidate],
+    ) -> Vec<Candidate> {
+        let mut found: Vec<Candidate> = Vec::new();
+        for dx in -MAX_REACH..=MAX_REACH {
+            for dz in -MAX_REACH..=MAX_REACH {
+                let distance = f64::from(dx).hypot(f64::from(dz));
+                if distance > f64::from(MAX_REACH) + 0.3 {
+                    continue;
+                }
+                for dy in -6..=1 {
+                    let slime = [from[0] + dx, from[1] + dy, from[2] + dz];
+                    let below = view.block_at(slime[0], slime[1] - 1, slime[2]);
+                    if !below.is_some_and(|id| {
+                        halcyon_world::motion_info(id).surface == halcyon_world::Surface::Slime
+                    }) {
+                        continue;
+                    }
+                    let Some(pad) = self.stand(view, slime) else { continue };
+                    // Jump apex above the pad, mostly returned by the bounce.
+                    let fall = here.feet_y + JUMP_APEX - pad.feet_y;
+                    let rebound = fall * BOUNCE_RETURN;
+                    if rebound <= MAX_RISE {
+                        continue;
+                    }
+                    for tx in -BOUNCE_REACH..=BOUNCE_REACH {
+                        for tz in -BOUNCE_REACH..=BOUNCE_REACH {
+                            for ty in 1..=rebound.ceil() as i32 {
+                                let to = [slime[0] + tx, slime[1] + ty, slime[2] + tz];
+                                let Some(there) = self.stand(view, to) else { continue };
+                                let rise = there.feet_y - pad.feet_y;
+                                if there.kind != StandKind::Ground
+                                    || rise <= MAX_RISE
+                                    || rise > rebound
+                                    || to == from
+                                    || existing.iter().chain(&found).any(|c| c.to == to)
+                                {
+                                    continue;
+                                }
+                                let span = f64::from(tx).hypot(f64::from(tz));
+                                found.push(Candidate {
+                                    to,
+                                    to_feet: there.feet_y,
+                                    kind: EdgeKind::Bounce,
+                                    estimate: (distance + span) as f32 / JUMP_SPEED,
+                                    via: Some((slime, pad.feet_y)),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        found.sort_by(|a, b| a.estimate.total_cmp(&b.estimate));
+        found.truncate(MAX_BOUNCE_CANDIDATES);
         found
     }
 
@@ -260,9 +336,12 @@ impl NavGraph {
             plan: Plan::WALK,
             ticks: 1,
             robustness: 1.0,
+            via: None,
         };
         match candidate.kind {
-            EdgeKind::Jump => self.validate_jump(view, from, here, to, there),
+            EdgeKind::Jump | EdgeKind::Bounce => {
+                self.validate_jump(view, from, here, to, there, candidate.via)
+            }
             EdgeKind::Walk if self.trivial_walk(view, from, here, to, there) => {
                 edge.ticks = if from[0] != to[0] && from[2] != to[2] { 7 } else { 5 };
                 Some(edge)
@@ -335,6 +414,7 @@ impl NavGraph {
                             to_feet: there.feet_y,
                             kind: EdgeKind::Jump,
                             estimate: distance as f32 / JUMP_SPEED,
+                            via: None,
                         });
                     }
                 }
@@ -382,14 +462,16 @@ impl NavGraph {
         here: Stand,
         to: Cell,
         there: Stand,
+        via: Option<(Cell, f64)>,
     ) -> Option<Edge> {
         let [ax, az] = centre(from);
-        let [bx, bz] = centre(to);
+        // A bounce is lined up on its slime block, not on the final floor.
+        let [bx, bz] = centre(via.map_or(to, |(slime, _)| slime));
         let distance = (bx - ax).hypot(bz - az);
         let dir = [(bx - ax) / distance, (bz - az) / distance];
         let rim = here.rim(dir) as f32;
         let back = here.rim([-dir[0], -dir[1]]) as f32;
-        let rise = there.feet_y - here.feet_y;
+        let rise = via.map_or(there.feet_y, |(_, feet)| feet) - here.feet_y;
         let long = distance >= 2.5 || (rise > STEP && distance > 1.6);
         let runup_ok = |graph: &mut Self, runup: f32| {
             // Stay on the support while backing up.
@@ -425,10 +507,15 @@ impl NavGraph {
             let edge = Edge {
                 to,
                 to_feet: there.feet_y,
-                kind: EdgeKind::Jump,
+                kind: if via.is_some() {
+                    EdgeKind::Bounce
+                } else {
+                    EdgeKind::Jump
+                },
                 plan,
                 ticks: 0,
                 robustness: 0.0,
+                via,
             };
             let outcome = self.simulate(view, from, here, edge, Execution::IDEAL, false);
             let Some(ticks) = outcome.ticks else {

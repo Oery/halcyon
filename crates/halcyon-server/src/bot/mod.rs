@@ -47,7 +47,7 @@ const GOAL_RADIUS: i32 = 128;
 /// Live per-bot summaries for diagnostics.
 #[derive(Default)]
 struct Report {
-    bots: Vec<(Mode, f64, [u32; 3])>,
+    bots: Vec<(Mode, f64, [u32; 3], usize)>,
 }
 
 /// Spawn `count` bots on the current executor. They share one navigation
@@ -71,8 +71,21 @@ pub fn spawn(server: Arc<Server>, lobby: Lobby, count: usize, seed: u64) {
         });
         println!("bots: goal {:?} detected in {}ms", service.goal, start.elapsed().as_millis());
     }
+    if std::env::var_os("HALCYON_BOT_NO_CHECKPOINTS").is_none() {
+        let (x, y, z, _, _) = server.lobby.spawn;
+        let around = [x.floor() as i32, y.floor() as i32, z.floor() as i32];
+        let start = Instant::now();
+        service.checkpoints = lobby.with_registry(|registry| {
+            service.detect_checkpoints(&registry.arena.view(&server.lobby), around, GOAL_RADIUS)
+        });
+        println!(
+            "bots: {} checkpoints detected in {}ms",
+            service.checkpoints.len(),
+            start.elapsed().as_millis()
+        );
+    }
     let nav = Rc::new(RefCell::new(service));
-    let report = Rc::new(RefCell::new(Report { bots: vec![(Mode::Idle, 0.0, [0; 3]); count] }));
+    let report = Rc::new(RefCell::new(Report { bots: vec![(Mode::Idle, 0.0, [0; 3], 0); count] }));
     let (low, high) = profile::parse_levels(std::env::var("HALCYON_BOT_LEVEL").ok().as_deref());
     for index in 0..count {
         let server = server.clone();
@@ -104,15 +117,17 @@ async fn report_loop(nav: Rc<RefCell<NavService>>, report: Rc<RefCell<Report>>) 
         Timer::new(Duration::from_secs(5)).await;
         let report = report.borrow();
         let stats = nav.borrow().stats();
-        let count = |mode| report.bots.iter().filter(|(m, _, _)| *m == mode).count();
-        let mut heights: Vec<f64> = report.bots.iter().map(|(_, y, _)| *y).collect();
+        let count = |mode| report.bots.iter().filter(|(m, ..)| *m == mode).count();
+        let mut heights: Vec<f64> = report.bots.iter().map(|(_, y, ..)| *y).collect();
+        let mut checkpoints: Vec<usize> = report.bots.iter().map(|(.., c)| *c).collect();
+        checkpoints.sort_unstable();
         heights.sort_by(f64::total_cmp);
         let failures = report
             .bots
             .iter()
-            .fold([0u32; 3], |sum, (_, _, f)| [sum[0] + f[0], sum[1] + f[1], sum[2] + f[2]]);
+            .fold([0u32; 3], |sum, (_, _, f, _)| [sum[0] + f[0], sum[1] + f[1], sum[2] + f[2]]);
         eprintln!(
-            "bots: idle={} planning={} moving={} recovering={} swimming={} finished={} stuck={} fell={} missed={} timeouts={} y_median={:.1} y_max={:.1} nav_nodes={} nav_edges={} nav_cells={} sims={} sim_ticks={} build_ms={} expansions={}",
+            "bots: idle={} planning={} moving={} recovering={} swimming={} finished={} stuck={} fell={} missed={} timeouts={} checkpoint_median={} checkpoint_max={}/{} y_median={:.1} y_max={:.1} nav_nodes={} nav_edges={} nav_cells={} sims={} sim_ticks={} build_ms={} expansions={}",
             count(Mode::Idle),
             count(Mode::Planning),
             count(Mode::Moving),
@@ -123,6 +138,9 @@ async fn report_loop(nav: Rc<RefCell<NavService>>, report: Rc<RefCell<Report>>) 
             failures[0],
             failures[1],
             failures[2],
+            checkpoints.get(checkpoints.len() / 2).copied().unwrap_or(0),
+            checkpoints.last().copied().unwrap_or(0),
+            nav.borrow().checkpoints.len(),
             heights.get(heights.len() / 2).copied().unwrap_or(0.0),
             heights.last().copied().unwrap_or(0.0),
             stats.nodes,
@@ -209,7 +227,8 @@ async fn run(server: Arc<Server>, lobby: Lobby, bot: Bot) -> Result<(), crate::e
         });
         let Some(input) = input else { continue };
         body.drive(&session, input);
-        report.borrow_mut().bots[index] = (brain.mode(), position.y, brain.stats.failures);
+        report.borrow_mut().bots[index] =
+            (brain.mode(), position.y, brain.stats.failures, brain.checkpoint());
     }
 }
 

@@ -238,6 +238,31 @@ fn arena_edits_invalidate_cached_routes() {
     assert!(!found(&mut nav, &arena));
 }
 
+/// A pillar, a slime pad three blocks lower and a ledge too far for any jump.
+/// A slime bounce returns about three quarters of the fall's height.
+fn bounce_course() -> MapView {
+    let mut view = MapView::default();
+    view.pillar(0, 12, 0).pillar(6, 11, 0);
+    for y in 0..9 {
+        view.set([3, y, 0], stone());
+    }
+    view.set([3, 9, 0], id("minecraft:slime_block"));
+    view
+}
+
+#[test]
+fn slime_pads_bounce_bots_onto_out_of_reach_ledges() {
+    let view = bounce_course();
+    let mut nav = nav();
+    let found = edge(&mut nav, &view, [0, 13, 0], [6, 12, 0]).expect("a bounce");
+    assert_eq!(found.kind, EdgeKind::Bounce);
+    assert_eq!(found.via.map(|(pad, _)| pad), Some([3, 10, 0]));
+    // Without the pad there is no way across.
+    let mut flat = bounce_course();
+    flat.set([3, 9, 0], stone());
+    assert_eq!(edge(&mut self::nav(), &flat, [0, 13, 0], [6, 12, 0]), None);
+}
+
 #[test]
 fn the_goal_is_the_highest_standable_cell_nearby() {
     let mut view = MapView::default();

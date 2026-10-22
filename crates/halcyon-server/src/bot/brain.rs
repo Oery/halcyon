@@ -19,6 +19,8 @@ use crate::movement::MovementInput;
 const EXPANSIONS_PER_TICK: usize = 2_000;
 /// Planning cost added per remembered failure of an edge, in ticks.
 const FAILURE_COST: f32 = 60.0;
+/// Partial routes toward one checkpoint before skipping it.
+const SKIP_AFTER: u8 = 3;
 /// Farther than this from a walk's starting cell, walk onto it first.
 const APPROACH_OFFSET: f64 = super::nav::follow::CENTRED + 0.15;
 /// Ticks a bot keeps swimming toward a floor before giving up.
@@ -99,6 +101,13 @@ pub struct Brain {
     gaze: Gaze,
     /// Destination of the last completed edge: where the route says we are.
     arrived: Option<Cell>,
+    /// Index of the next checkpoint to reach.
+    checkpoint: usize,
+    /// Routes toward the current target that ended short of it, at the same
+    /// place as the previous one: no progress.
+    attempts: u8,
+    /// Where the last partial route ended.
+    stalled_at: Option<Cell>,
     ticks: u64,
     pub stats: BrainStats,
 }
@@ -119,8 +128,48 @@ impl Brain {
             failures: HashMap::new(),
             gaze: Gaze { yaw: facing.yaw, pitch: 0.0, hold: 0 },
             arrived: None,
+            checkpoint: 0,
+            attempts: 0,
+            stalled_at: None,
             ticks: 0,
             stats: BrainStats::default(),
+        }
+    }
+
+    /// Checkpoints reached so far.
+    pub fn checkpoint(&self) -> usize {
+        self.checkpoint
+    }
+
+    /// The next checkpoint, or the final goal once every checkpoint is behind.
+    fn target(&self, nav: &NavService) -> Option<Cell> {
+        nav.checkpoints.get(self.checkpoint).copied().or(nav.goal)
+    }
+
+    /// Advance past any upcoming checkpoint at `cell`, skipping missed ones.
+    fn pass_checkpoint(&mut self, cell: Option<Cell>, nav: &NavService) -> bool {
+        let Some(cell) = cell else { return false };
+        let ahead = nav.checkpoints.iter().skip(self.checkpoint).position(|&c| c == cell);
+        if let Some(offset) = ahead {
+            self.checkpoint += offset + 1;
+            self.attempts = 0;
+        }
+        ahead.is_some()
+    }
+
+    /// A route toward the current target ended short at `end`. Progress is
+    /// fine; after a few routes ending at the same place, give that
+    /// checkpoint up and aim for the next one.
+    fn fell_short(&mut self, end: Option<Cell>, nav: &NavService) {
+        if end.is_some() && self.stalled_at != end {
+            self.stalled_at = end;
+            self.attempts = 0;
+            return;
+        }
+        self.attempts = self.attempts.saturating_add(1);
+        if self.attempts >= SKIP_AFTER && self.checkpoint < nav.checkpoints.len() {
+            self.checkpoint += 1;
+            self.attempts = 0;
         }
     }
 
@@ -161,6 +210,13 @@ impl Brain {
         if !matches!(self.state, State::Swim(_)) && super::nav::moves::in_water(view, position) {
             self.forget_route();
             self.state = State::Swim(0);
+        }
+        if position.on_ground && self.pass_checkpoint(Some(cell_of(position)), nav) {
+            // Any route in progress led here; plan toward the next target.
+            if matches!(self.state, State::Follow) && self.path.is_empty() {
+                self.forget_route();
+                self.state = State::Plan;
+            }
         }
         let obs = Obs { position, velocity };
         let intent = self.decide(&obs, nav, view);
@@ -242,7 +298,7 @@ impl Brain {
     }
 
     fn plan(&mut self, position: Transform, nav: &mut NavService, view: &impl BlockView) -> Intent {
-        let Some(goal) = nav.goal else {
+        let Some(goal) = self.target(nav) else {
             self.state = State::Idle(200);
             return self.idle(position);
         };
@@ -254,6 +310,9 @@ impl Brain {
                 self.state = State::Stuck(self.rng.ticks(20, 60));
                 return self.idle(position);
             };
+            if self.pass_checkpoint(Some(start), nav) {
+                return self.idle(position);
+            }
             if start == goal {
                 self.finish();
                 return self.idle(position);
@@ -272,7 +331,10 @@ impl Brain {
                 self.path = path.into();
                 self.state = State::Follow;
             }
-            _ => self.state = State::Stuck(self.rng.ticks(100, 300)),
+            _ => {
+                self.fell_short(None, nav);
+                self.state = State::Stuck(self.rng.ticks(100, 300));
+            }
         }
         self.idle(position)
     }
@@ -335,10 +397,16 @@ impl Brain {
             if self.run.is_none() {
                 let Some(step) = self.path.pop_front() else {
                     let here = self.arrived.or_else(|| self.locate(position, nav, view));
-                    if nav.goal.is_some() && here == nav.goal {
+                    if self.pass_checkpoint(here, nav) {
+                        self.state = State::Plan;
+                    } else if self.checkpoint >= nav.checkpoints.len()
+                        && nav.goal.is_some()
+                        && here == nav.goal
+                    {
                         self.finish();
                     } else {
                         // A partial route ended: plan the next stretch.
+                        self.fell_short(here, nav);
                         self.state = State::Plan;
                     }
                     return self.idle(position);
@@ -350,7 +418,7 @@ impl Brain {
                 };
                 let [cx, cz] = super::nav::stand::centre(step.from);
                 let offset = (position.x - cx).hypot(position.z - cz);
-                let step = if step.edge.kind != EdgeKind::Jump
+                let step = if !step.edge.kind.is_jump()
                     && step.edge.to != step.from
                     && offset > APPROACH_OFFSET
                     && position.on_ground
@@ -367,12 +435,13 @@ impl Brain {
                             plan: super::nav::Plan::WALK,
                             ticks: 10,
                             robustness: 1.0,
+                            via: None,
                         },
                     }
                 } else {
                     step
                 };
-                let hesitation = if step.edge.kind == EdgeKind::Jump {
+                let hesitation = if step.edge.kind.is_jump() {
                     self.profile.hesitation(step.edge.robustness, &mut self.rng)
                 } else {
                     0
