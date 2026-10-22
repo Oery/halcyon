@@ -54,8 +54,8 @@ impl Observer {
         self.sent_bytes += frame.bytes.len() as u64;
         self.forget_pending(&frame.delivery);
         match frame.delivery {
-            Delivery::RosterAdd { entity_id, uuid } => {
-                self.roster.insert(entity_id, uuid);
+            Delivery::RosterAdd(entries) => {
+                self.roster.extend(entries);
             }
             Delivery::RosterRemove(id) => {
                 self.roster.remove(&id);
@@ -86,9 +86,9 @@ impl Observer {
     pub(super) fn push(&mut self, frame: Frame) -> Result<(), VisibilityError> {
         self.reserve(frame.bytes.len(), frame.frames)?;
         let id = frame.delivery.id();
-        match frame.delivery {
-            Delivery::RosterAdd { .. } => {
-                self.pending_roster.insert(id);
+        match &frame.delivery {
+            Delivery::RosterAdd(entries) => {
+                self.pending_roster.extend(entries.iter().map(|(id, _)| *id));
             }
             Delivery::RosterRemove(_) => {
                 self.pending_departures.insert(id);
@@ -146,8 +146,10 @@ impl Observer {
     pub(super) fn forget_pending(&mut self, delivery: &Delivery) {
         let id = delivery.id();
         match delivery {
-            Delivery::RosterAdd { .. } => {
-                self.pending_roster.remove(&id);
+            Delivery::RosterAdd(entries) => {
+                for (id, _) in entries {
+                    self.pending_roster.remove(id);
+                }
             }
             Delivery::RosterRemove(_) => {
                 self.pending_departures.remove(&id);

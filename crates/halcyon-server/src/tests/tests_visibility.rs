@@ -307,17 +307,18 @@ fn unpublished_spawn_and_selected_movement_are_cancelled_before_unload() {
 
 #[test]
 fn admissions_are_paced_per_publication_and_backlog_is_bounded() {
-    let records: Vec<_> = (0..40).map(|id| player(id, 1.0, 1)).collect();
+    let records: Vec<_> = (0..300).map(|id| player(id, 1.0, 1)).collect();
     let registry = Registry::from_snapshots(records.clone(), 1);
     let mut observer = Observer::default();
     observer.reconcile(&registry, 0, &HashSet::new()).unwrap();
-    drain(&mut observer);
+    let delivered = drain(&mut observer);
+    assert_eq!(delivered.len(), ROSTER_BATCHES_PER_PUBLICATION);
     observer.reconcile(&registry, 0, &HashSet::new()).unwrap();
     assert!(drain(&mut observer).is_empty());
-    assert_eq!(observer.roster_count(), 16);
+    assert_eq!(observer.roster_count(), ROSTER_BATCHES_PER_PUBLICATION * ROSTER_BATCH_ENTRIES);
     observer.reconcile(&Registry::from_snapshots(records, 2), 0, &HashSet::new()).unwrap();
     drain(&mut observer);
-    assert_eq!(observer.roster_count(), 32);
+    assert_eq!(observer.roster_count(), 300);
 
     let mut observer = Observer::default();
     assert!(matches!(observer.reserve(MAX_BYTES + 1, 1), Err(VisibilityError::Overflow)));
@@ -358,4 +359,18 @@ fn continuously_moving_players_share_a_limited_writer_budget() {
         assert!(observer.has_pending());
     }
     assert!(observer.rendered.values().all(|player| player.transform.x > 1.0));
+}
+
+#[test]
+fn roster_batches_concatenate_single_player_entries() {
+    let players = [player(1, 1.0, 1), player(2, 2.0, 1)];
+    let bodies: Vec<_> =
+        players.iter().map(|p| frame::roster_entry(&p.profile.info).unwrap()).collect();
+    let batch = frame::roster_frame(&bodies).unwrap();
+    let decoded = packets(&batch);
+    assert_eq!(decoded.len(), 1);
+    assert_eq!(decoded[0].0, PlayerInfoUpdate::ID.0);
+    let expected: Vec<u8> = [&[0x09, 2][..], bodies[0], bodies[1]].concat();
+    assert_eq!(decoded[0].1, expected);
+    assert!(frame::roster_entry(&batch).is_none());
 }

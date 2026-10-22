@@ -13,13 +13,18 @@ use crate::lobby::{PlayerSnapshot, Registry, Transform};
 mod delivery;
 mod frame;
 
-use frame::{encode, spawn_frame};
+use frame::{encode, roster_entry, roster_frame, spawn_frame};
 
 type Column = (i32, i32);
 
 const MAX_BYTES: usize = 256 * 1024;
 const MAX_FRAMES: usize = 2048;
-const ADMISSIONS_PER_PUBLICATION: usize = 16;
+const ADMISSIONS_PER_PUBLICATION: usize = 64;
+/// Tab-list additions travel as multi-entry Player Info Update packets and
+/// are paced separately from entity spawns.
+const ROSTER_BATCH_ENTRIES: usize = 64;
+const ROSTER_BATCH_BYTES: usize = 32 * 1024;
+const ROSTER_BATCHES_PER_PUBLICATION: usize = 4;
 pub(crate) const WRITE_SLICE_FRAMES: usize = 32;
 pub(crate) const WRITE_SLICE_BYTES: usize = 64 * 1024;
 
@@ -46,7 +51,7 @@ struct Rendered {
 }
 
 enum Delivery {
-    RosterAdd { entity_id: i32, uuid: Uuid },
+    RosterAdd(Vec<(i32, Uuid)>),
     RosterRemove(i32),
     Spawn(PlayerSnapshot),
     Remove(i32),
@@ -56,9 +61,8 @@ enum Delivery {
 impl Delivery {
     fn id(&self) -> i32 {
         match self {
-            Self::RosterAdd { entity_id, .. }
-            | Self::RosterRemove(entity_id)
-            | Self::Remove(entity_id) => *entity_id,
+            Self::RosterAdd(entries) => entries.first().map_or(0, |(id, _)| *id),
+            Self::RosterRemove(entity_id) | Self::Remove(entity_id) => *entity_id,
             Self::Spawn(player) | Self::Move(player) => player.entity_id,
         }
     }
@@ -94,6 +98,7 @@ pub struct Observer {
     roster_waiting: VecDeque<i32>,
     spawn_waiting: VecDeque<i32>,
     admitted: HashSet<i32>,
+    roster_batches: usize,
     queued_bytes: usize,
     queued_frames: usize,
     high_water_bytes: usize,
@@ -112,6 +117,7 @@ impl Observer {
         if new_publication {
             self.publication = Some(registry.publication());
             self.admitted.clear();
+            self.roster_batches = 0;
         }
         let terrain_changed = self.resident != *resident;
         let content_changed = self.content_revision != Some(registry.revision());
@@ -161,8 +167,8 @@ impl Observer {
         }
         if roster_changed {
             self.cancel_where(|frame| {
-                matches!(&frame.delivery, Delivery::RosterAdd { entity_id, .. }
-                    if registry.get(*entity_id).is_none())
+                matches!(&frame.delivery, Delivery::RosterAdd(entries)
+                    if entries.iter().any(|(id, _)| registry.get(*id).is_none()))
             });
             let departures: Vec<(i32, Uuid)> = self
                 .roster
@@ -190,19 +196,40 @@ impl Observer {
         }
 
         // Tab membership is independent of terrain and includes the local player.
-        while let Some(&id) = self.roster_waiting.front() {
-            let Some(player) = registry.get(id) else {
+        while self.roster_batches < ROSTER_BATCHES_PER_PUBLICATION {
+            let mut entries = Vec::new();
+            let mut bodies = Vec::new();
+            let mut bytes = 0;
+            while let Some(&id) = self.roster_waiting.front() {
+                if entries.len() == ROSTER_BATCH_ENTRIES {
+                    break;
+                }
+                let Some(player) = registry.get(id) else {
+                    self.roster_waiting.pop_front();
+                    continue;
+                };
+                let Some(body) = roster_entry(&player.profile.info) else {
+                    // Profiles are encoded by this server; skip rather than
+                    // retry a malformed one forever.
+                    self.roster_waiting.pop_front();
+                    continue;
+                };
+                if !entries.is_empty() && bytes + body.len() > ROSTER_BATCH_BYTES {
+                    break;
+                }
                 self.roster_waiting.pop_front();
-                continue;
-            };
-            if !self.admit(id) {
+                bytes += body.len();
+                entries.push((id, player.profile.uuid));
+                bodies.push(body);
+            }
+            if entries.is_empty() {
                 break;
             }
-            self.roster_waiting.pop_front();
+            self.roster_batches += 1;
             self.push(Frame {
-                bytes: Rc::clone(&player.profile.info),
+                bytes: roster_frame(&bodies)?,
                 frames: 1,
-                delivery: Delivery::RosterAdd { entity_id: id, uuid: player.profile.uuid },
+                delivery: Delivery::RosterAdd(entries),
                 unload_barrier: false,
             })?;
         }
@@ -397,7 +424,7 @@ impl Observer {
                 .iter()
                 .chain(self.reliable.iter())
                 .chain(self.priority.iter())
-                .filter(|frame| !matches!(frame.delivery, Delivery::RosterAdd { .. }))
+                .filter(|frame| !matches!(frame.delivery, Delivery::RosterAdd(_)))
                 .map(|frame| frame.bytes.len())
                 .sum::<usize>()
     }
