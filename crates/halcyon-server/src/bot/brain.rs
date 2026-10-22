@@ -151,7 +151,7 @@ pub struct Brain {
 impl Brain {
     pub fn new(profile: BotProfile, seed: u64, facing: Transform) -> Self {
         let mut rng = Rng::new(seed);
-        let delay = rng.ticks(20, 200);
+        let delay = rng.ticks(20, 60);
         Self {
             profile,
             rng,

@@ -40,7 +40,7 @@ const TICK: Duration = Duration::from_millis(50);
 const RESPAWN_DELAY: u32 = 30;
 /// Route validation time shared by all bots per server tick, unless
 /// `HALCYON_BOT_NAV_MS` overrides it. Searches pause when it is spent.
-const NAV_BUDGET: Duration = Duration::from_millis(4);
+const NAV_BUDGET: Duration = Duration::from_millis(8);
 /// How far from spawn the climb goal is searched for.
 const GOAL_RADIUS: i32 = 128;
 
