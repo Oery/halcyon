@@ -98,6 +98,26 @@ fn walks_drops_slabs_and_ladders_are_validated() {
 }
 
 #[test]
+fn vines_are_climbed_along_walls_and_hanging_free() {
+    let vine = id("minecraft:vine[east=false,north=false,south=true,up=false,west=false]");
+    let weeping = id("minecraft:weeping_vines_plant");
+    let mut view = MapView::default();
+    view.floor([-2, 4], 10, [-2, 2]);
+    for y in 11..15 {
+        view.set([0, y, 1], stone()).set([0, y, 0], vine);
+        view.set([3, y, 0], weeping);
+    }
+    view.set([3, 15, 0], stone());
+    let mut nav = nav();
+    assert_eq!(nav.stand(&view, [0, 12, 0]).map(|s| s.kind), Some(StandKind::Vine));
+    assert!(
+        edge(&mut nav, &view, [0, 11, 0], [0, 12, 0]).is_some_and(|e| e.kind == EdgeKind::Climb)
+    );
+    assert!(edge(&mut nav, &view, [0, 14, 0], [0, 15, 1]).is_some(), "over the top of the wall");
+    assert!(edge(&mut nav, &view, [3, 11, 0], [3, 12, 0]).is_some(), "a free-hanging vine");
+}
+
+#[test]
 fn a_low_ceiling_shortens_jumps() {
     let mut view = gap_course(3);
     let mut nav = nav();

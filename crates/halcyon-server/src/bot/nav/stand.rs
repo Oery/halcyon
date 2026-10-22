@@ -18,6 +18,14 @@ pub enum StandKind {
     Ground,
     /// Facing index (north, east, south, west) of the ladder, away from its wall.
     Ladder(u8),
+    /// Vines of any kind: climbable, without a facing.
+    Vine,
+}
+
+impl StandKind {
+    pub fn climbable(self) -> bool {
+        matches!(self, StandKind::Ladder(_) | StandKind::Vine)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -92,12 +100,13 @@ pub fn stand(view: &impl BlockView, probe: &mut MovementState, cell: Cell) -> Op
         // Swimming routes are not planned yet.
         return None;
     }
-    let mut found = if let halcyon_world::Climb::Ladder(facing) = climb(here) {
-        Some(Stand {
-            feet_y: f64::from(y),
-            kind: StandKind::Ladder(facing),
-            extent: [0.0, 1.0, 0.0, 1.0],
-        })
+    let climbable = match climb(here) {
+        halcyon_world::Climb::Ladder(facing) => Some(StandKind::Ladder(facing)),
+        halcyon_world::Climb::Vine => Some(StandKind::Vine),
+        _ => None,
+    };
+    let mut found = if let Some(kind) = climbable {
+        Some(Stand { feet_y: f64::from(y), kind, extent: [0.0, 1.0, 0.0, 1.0] })
     } else if let Some((top, extent)) = support(here, x, z) {
         // A full-height shape here is a wall, not a floor.
         (top < 1.0 - EPSILON).then(|| Stand {

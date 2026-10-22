@@ -104,11 +104,12 @@ async fn report_loop(nav: Rc<RefCell<NavService>>, report: Rc<RefCell<Report>>) 
         heights.sort_by(f64::total_cmp);
         let falls: u32 = report.bots.iter().map(|(_, _, falls)| falls).sum();
         eprintln!(
-            "bots: idle={} planning={} moving={} recovering={} finished={} stuck={} falls={} y_median={:.1} y_max={:.1} nav_nodes={} nav_edges={} nav_cells={} sims={} sim_ticks={} build_ms={} expansions={}",
+            "bots: idle={} planning={} moving={} recovering={} swimming={} finished={} stuck={} falls={} y_median={:.1} y_max={:.1} nav_nodes={} nav_edges={} nav_cells={} sims={} sim_ticks={} build_ms={} expansions={}",
             count(Mode::Idle),
             count(Mode::Planning),
             count(Mode::Moving),
             count(Mode::Recovering),
+            count(Mode::Swimming),
             count(Mode::Finished),
             count(Mode::Stuck),
             falls,

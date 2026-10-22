@@ -68,6 +68,7 @@ pub struct EdgeRun {
     dir: [f64; 2],
     dir_yaw: f32,
     rim: f64,
+    from_kind: StandKind,
     exec: Execution,
     phase: Phase,
     ticks: u16,
@@ -123,6 +124,7 @@ impl EdgeRun {
             dir,
             dir_yaw: yaw_of(dir),
             rim: from_stand.rim(dir),
+            from_kind: from_stand.kind,
             exec,
             phase: if edge.kind == EdgeKind::Jump {
                 Phase::Approach
@@ -200,7 +202,11 @@ impl EdgeRun {
         match self.edge.kind {
             EdgeKind::Walk | EdgeKind::Drop => self.walk(obs),
             EdgeKind::Climb => {
-                let intent = Intent { forward: true, ..self.look(position, self.dir_yaw) };
+                // Ladders climb by pushing into their wall; vines have no
+                // wall to push, so hold jump and stay inside the vine.
+                let ladder = matches!(self.from_kind, StandKind::Ladder(_));
+                let intent =
+                    Intent { forward: ladder, jump: true, ..self.look(position, self.dir_yaw) };
                 (intent, Status::Running)
             }
             EdgeKind::Jump => self.jump(obs),
@@ -223,6 +229,8 @@ impl EdgeRun {
         if position.on_ground || self.edge.kind == EdgeKind::Walk {
             intent.forward = true;
             intent.sprint = self.edge.plan.sprint;
+            // Leaving a climbable upwards: keep climbing until over the ledge.
+            intent.jump = self.from_kind.climbable() && self.edge.to_feet > position.y + 0.1;
         } else {
             self.air_control(obs, &mut intent);
         }

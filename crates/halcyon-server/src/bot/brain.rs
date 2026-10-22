@@ -9,7 +9,7 @@ use super::motor::{Intent, Motor};
 use super::nav::follow::{EdgeRun, Execution, Failure, Obs, Status};
 use super::nav::search::{Search, SearchStatus, Step};
 use super::nav::stand::cell_of;
-use super::nav::{Cell, Edge, EdgeKind, NavService, StandKind};
+use super::nav::{Cell, Edge, EdgeKind, NavService};
 use super::profile::BotProfile;
 use super::rng::Rng;
 use crate::lobby::Transform;
@@ -19,6 +19,10 @@ use crate::movement::MovementInput;
 const EXPANSIONS_PER_TICK: usize = 2_000;
 /// Planning cost added per remembered failure of an edge, in ticks.
 const FAILURE_COST: f32 = 60.0;
+/// Ticks a bot keeps swimming toward a floor before giving up.
+const SWIM_LIMIT: u32 = 600;
+/// How far a swimming bot looks for a floor to climb onto.
+const SWIM_RADIUS: i32 = 8;
 /// A position jump this large is a teleport or respawn, not movement.
 const TELEPORT_DISTANCE: f64 = 4.0;
 
@@ -30,6 +34,7 @@ pub enum Mode {
     Recovering,
     Finished,
     Stuck,
+    Swimming,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -40,6 +45,8 @@ enum State {
     Recover(u32),
     Finished,
     Stuck(u32),
+    /// Fell into water: swim to the nearest floor, then replan.
+    Swim(u32),
 }
 
 /// Unhurried looking around between actions.
@@ -112,6 +119,7 @@ impl Brain {
             State::Recover(_) => Mode::Recovering,
             State::Finished => Mode::Finished,
             State::Stuck(_) => Mode::Stuck,
+            State::Swim(_) => Mode::Swimming,
         }
     }
 
@@ -136,6 +144,10 @@ impl Brain {
             self.state = State::Recover(self.rng.ticks(10, 30));
         }
         self.last = Some(position);
+        if !matches!(self.state, State::Swim(_)) && super::nav::moves::in_water(view, position) {
+            self.forget_route();
+            self.state = State::Swim(0);
+        }
         let obs = Obs { position, velocity };
         let intent = self.decide(&obs, nav, view);
         self.motor.tick(intent, self.profile, &mut self.rng)
@@ -158,6 +170,7 @@ impl Brain {
                 };
                 self.idle(position)
             }
+            State::Swim(ticks) => self.swim(position, nav, view, ticks),
             State::Recover(ticks) => {
                 if position.on_ground {
                     self.state = if ticks == 0 {
@@ -190,8 +203,7 @@ impl Brain {
     ) -> Option<Cell> {
         let cell = cell_of(position);
         if let Some(stand) = nav.stand(view, cell)
-            && (matches!(stand.kind, StandKind::Ladder(_))
-                || (stand.feet_y - position.y).abs() < 0.3)
+            && (stand.kind.climbable() || (stand.feet_y - position.y).abs() < 0.3)
         {
             return Some(cell);
         }
@@ -249,6 +261,50 @@ impl Brain {
             _ => self.state = State::Stuck(self.rng.ticks(100, 300)),
         }
         self.idle(position)
+    }
+
+    /// Head for the nearest floor at about water level, holding jump to stay
+    /// afloat and to climb out.
+    fn swim(
+        &mut self,
+        position: Transform,
+        nav: &mut NavService,
+        view: &impl BlockView,
+        ticks: u32,
+    ) -> Intent {
+        if !super::nav::moves::in_water(view, position) && position.on_ground {
+            self.state = State::Recover(self.rng.ticks(5, 20));
+            return self.idle(position);
+        }
+        if ticks > SWIM_LIMIT {
+            self.state = State::Stuck(self.rng.ticks(100, 300));
+            return self.idle(position);
+        }
+        self.state = State::Swim(ticks + 1);
+        let here = cell_of(position);
+        let mut best: Option<(f64, [f64; 2])> = None;
+        for dx in -SWIM_RADIUS..=SWIM_RADIUS {
+            for dz in -SWIM_RADIUS..=SWIM_RADIUS {
+                for dy in -1..=2 {
+                    let cell = [here[0] + dx, here[1] + dy, here[2] + dz];
+                    let Some(stand) = nav.stand(view, cell) else { continue };
+                    if stand.kind.climbable() || stand.feet_y > position.y + 1.3 {
+                        continue;
+                    }
+                    let centre = [f64::from(cell[0]) + 0.5, f64::from(cell[2]) + 0.5];
+                    let d = (centre[0] - position.x).hypot(centre[1] - position.z);
+                    if best.is_none_or(|(b, _)| d < b) {
+                        best = Some((d, centre));
+                    }
+                }
+            }
+        }
+        let Some((_, [x, z])) = best else {
+            // Nothing nearby: tread water and look around.
+            return Intent { jump: true, ..self.idle(position) };
+        };
+        let yaw = super::nav::follow::yaw_of([x - position.x, z - position.z]);
+        Intent { yaw, pitch: 10.0, forward: true, jump: true, ..Intent::default() }
     }
 
     fn finish(&mut self) {

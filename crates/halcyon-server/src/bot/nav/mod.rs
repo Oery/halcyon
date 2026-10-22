@@ -21,6 +21,7 @@ pub mod search;
 pub mod stand;
 
 pub use graph::NavGraph;
+pub use moves::Candidate;
 pub use stand::{Stand, StandKind};
 
 pub type Cell = BlockPos;
@@ -95,10 +96,9 @@ pub struct NavService {
     pub goal: Option<Cell>,
 }
 
-pub enum Expand {
-    Ready(Rc<[Edge]>),
-    /// Not a standable cell.
-    Missing,
+pub enum Validation {
+    Valid(Edge),
+    Invalid,
     /// The validation budget is spent; try again later.
     Busy,
 }
@@ -137,21 +137,34 @@ impl NavService {
         self.graph.stand(view, cell)
     }
 
-    /// Outgoing edges of `cell`, validating them first if needed.
-    pub fn expand(&mut self, view: &impl BlockView, cell: Cell) -> Expand {
-        if let Some(edges) = self.graph.cached_edges(cell) {
-            return Expand::Ready(edges);
-        }
-        if self.graph.stand(view, cell).is_none() {
-            return Expand::Missing;
-        }
-        if !self.has_budget() {
-            return Expand::Busy;
-        }
+    /// Unvalidated moves out of `cell`; `None` if it is not standable.
+    pub fn candidates(&mut self, view: &impl BlockView, cell: Cell) -> Option<Rc<[Candidate]>> {
         let start = Instant::now();
-        let edges = self.graph.edges(view, cell);
+        let found = self.graph.candidates(view, cell);
         self.spent += start.elapsed();
-        edges.map_or(Expand::Missing, Expand::Ready)
+        found
+    }
+
+    /// Validate a candidate within the shared budget.
+    pub fn validate(
+        &mut self,
+        view: &impl BlockView,
+        from: Cell,
+        candidate: &Candidate,
+    ) -> Validation {
+        let known = match self.graph.checked(from, candidate.to) {
+            Some(known) => known,
+            None => {
+                if !self.has_budget() {
+                    return Validation::Busy;
+                }
+                let start = Instant::now();
+                let edge = self.graph.validate(view, from, candidate);
+                self.spent += start.elapsed();
+                edge
+            }
+        };
+        known.map_or(Validation::Invalid, Validation::Valid)
     }
 
     /// Drop cached navigation around columns edited since the last call.

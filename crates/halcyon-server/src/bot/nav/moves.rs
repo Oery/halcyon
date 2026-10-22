@@ -1,4 +1,7 @@
-//! Edge candidates and their validation by simulation.
+//! Move candidates from geometry, and their validation by simulation.
+//!
+//! Candidates are cheap and optimistic; a search validates only those it
+//! actually pursues, so most never cost a simulation.
 
 use halcyon_world::BlockView;
 
@@ -16,6 +19,10 @@ const MAX_REACH: i32 = 5;
 const MAX_JUMP_CANDIDATES: usize = 40;
 const SIM_LIMIT: u16 = 200;
 const SETTLE_TICKS: u16 = 10;
+/// Optimistic speeds for candidate cost estimates, in blocks per tick.
+const WALK_SPEED: f32 = 0.3;
+const JUMP_SPEED: f32 = 0.45;
+const CLIMB_SPEED: f32 = 0.2;
 
 const NEIGHBOURS: [[i32; 2]; 8] =
     [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
@@ -40,12 +47,32 @@ fn clear_flight(view: &impl BlockView, from: Cell, here: Stand, to: Cell, there:
         let t = f64::from(k) / f64::from(samples);
         let x = (ax + (bx - ax) * t).floor() as i32;
         let z = (az + (bz - az) * t).floor() as i32;
-        let feet = here.feet_y.max(there.feet_y) + 0.5;
-        [feet, feet + 1.0].into_iter().all(|y| {
-            view.block_at(x, y.floor() as i32, z)
-                .is_some_and(|id| halcyon_world::state_info(id).collision_boxes().is_empty())
+        let feet = here.feet_y.max(there.feet_y);
+        [feet + 0.6, feet + 1.4].into_iter().all(|height| {
+            let y = height.floor() as i32;
+            view.block_at(x, y, z).is_some_and(|id| {
+                // Thin floors such as lily pads and carpets sit below the body.
+                halcyon_world::state_info(id).collision_boxes().iter().all(|shape| {
+                    f64::from(y) + shape.max[1] < height || f64::from(y) + shape.min[1] > height
+                })
+            })
         })
     })
+}
+
+pub fn in_water(view: &impl BlockView, at: Transform) -> bool {
+    view.block_at(at.x.floor() as i32, (at.y + 0.1).floor() as i32, at.z.floor() as i32)
+        .is_some_and(|id| halcyon_world::fluid_info(id).kind != halcyon_world::FluidKind::Empty)
+}
+
+/// A move suggested by geometry, not yet validated.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Candidate {
+    pub to: Cell,
+    pub to_feet: f64,
+    pub kind: EdgeKind,
+    /// Lower bound on the validated duration, in ticks.
+    pub estimate: f32,
 }
 
 /// Result of one simulated execution.
@@ -83,6 +110,7 @@ impl NavGraph {
         let mut velocity = [0.0; 3];
         let mut delayed = false;
         let mut settled: Option<u16> = None;
+        let mut ticks = SIM_LIMIT;
         for tick in 0..SIM_LIMIT {
             let position = self.sim.transform();
             let intent = if let Some(done) = settled {
@@ -91,6 +119,7 @@ impl NavGraph {
                     return Outcome { ticks: Some(done), closest: 0.0 };
                 }
                 if !run.arrived(position) {
+                    ticks = tick;
                     break;
                 }
                 // Brake to a stop; on a ladder, sneaking holds position.
@@ -107,7 +136,10 @@ impl NavGraph {
                         settled = Some(tick);
                         continue;
                     }
-                    Status::Failed(_) => break,
+                    Status::Failed(_) => {
+                        ticks = tick;
+                        break;
+                    }
                 }
             };
             let mut input = intent.exact();
@@ -121,112 +153,83 @@ impl NavGraph {
                 }
             }
             let advance = self.sim.step(view, input);
+            let now = self.sim.transform();
             if advance.correction
                 || advance.uncertain_motion
                 || advance.landed_fall_damage.is_some_and(|damage| damage > 0.0)
+                // Swimming is not planned: a splash is a miss.
+                || in_water(view, now)
             {
+                ticks = tick;
                 break;
             }
-            let now = self.sim.transform();
             velocity = [now.x - previous.x, now.y - previous.y, now.z - previous.z];
             previous = now;
         }
-        self.stats.simulated_ticks += u64::from(SIM_LIMIT);
+        self.stats.simulated_ticks += u64::from(ticks);
         Outcome { ticks: None, closest: run.closest }
     }
 
-    pub(super) fn build_edges(
+    /// Every move worth trying from `from`, from geometry alone.
+    pub(super) fn build_candidates(
         &mut self,
         view: &impl BlockView,
         from: Cell,
         here: Stand,
-    ) -> Vec<Edge> {
-        let mut edges: Vec<Edge> = Vec::new();
-        let on_ladder = matches!(here.kind, StandKind::Ladder(_));
+    ) -> Vec<Candidate> {
+        let mut found: Vec<Candidate> = Vec::new();
+        let on_ladder = here.kind.climbable();
 
         // Walks, step-ups and ladder exits to the eight neighbours.
         for [dx, dz] in NEIGHBOURS {
-            let diagonal = dx != 0 && dz != 0;
+            let length = if dx != 0 && dz != 0 {
+                std::f32::consts::SQRT_2
+            } else {
+                1.0
+            };
             for dy in -1..=2 {
                 let to = [from[0] + dx, from[1] + dy, from[2] + dz];
                 let Some(there) = self.stand(view, to) else { continue };
                 let rise = there.feet_y - here.feet_y;
                 let limit = if on_ladder { 1.6 } else { STEP };
-                if rise.abs() > limit || (rise < -STEP) {
+                if rise > limit || rise < -STEP {
                     continue;
                 }
-                let trivial = rise == 0.0
-                    && here.kind == StandKind::Ground
-                    && there.kind == StandKind::Ground
-                    && here.extent == [0.0, 1.0, 0.0, 1.0]
-                    && there.extent == [0.0, 1.0, 0.0, 1.0]
-                    && (!diagonal || {
-                        let a = self.stand(view, [from[0] + dx, from[1], from[2]]);
-                        let b = self.stand(view, [from[0], from[1], from[2] + dz]);
-                        a.is_some_and(|s| s.feet_y == here.feet_y)
-                            && b.is_some_and(|s| s.feet_y == here.feet_y)
-                    });
-                let mut edge = Edge {
+                found.push(Candidate {
                     to,
                     to_feet: there.feet_y,
                     kind: EdgeKind::Walk,
-                    plan: Plan::WALK,
-                    ticks: if diagonal { 7 } else { 5 },
-                    robustness: 1.0,
-                };
-                if !trivial {
-                    match self.simulate(view, from, here, edge, Execution::IDEAL, false).ticks {
-                        Some(ticks) => edge.ticks = ticks.max(1),
-                        None => continue,
-                    }
-                }
-                edges.push(edge);
+                    estimate: length / WALK_SPEED,
+                });
             }
         }
 
-        // Ladder climbs.
         if on_ladder {
             let up = [from[0], from[1] + 1, from[2]];
             if let Some(there) = self.stand(view, up)
-                && matches!(there.kind, StandKind::Ladder(_))
+                && there.kind.climbable()
             {
-                let edge = Edge {
+                found.push(Candidate {
                     to: up,
                     to_feet: there.feet_y,
                     kind: EdgeKind::Climb,
-                    plan: Plan::WALK,
-                    ticks: 6,
-                    robustness: 1.0,
-                };
-                if let Some(ticks) =
-                    self.simulate(view, from, here, edge, Execution::IDEAL, false).ticks
-                {
-                    edges.push(Edge { ticks: ticks.max(1), ..edge });
-                }
+                    estimate: 1.0 / CLIMB_SPEED,
+                });
             }
-        }
-
-        // Drops: walk off onto the first floor below a neighbour.
-        if !on_ladder {
+        } else {
+            // Drops: walk off onto the first floor below a neighbour.
             for [dx, dz] in NEIGHBOURS {
                 for dy in (-4..=-1).rev() {
                     let to = [from[0] + dx, from[1] + dy, from[2] + dz];
                     let Some(there) = self.stand(view, to) else { continue };
                     let fall = here.feet_y - there.feet_y;
-                    if fall > STEP && fall <= MAX_DROP && !edges.iter().any(|e| e.to == to) {
-                        let edge = Edge {
+                    if fall > STEP && fall <= MAX_DROP && !found.iter().any(|c| c.to == to) {
+                        found.push(Candidate {
                             to,
                             to_feet: there.feet_y,
                             kind: EdgeKind::Drop,
-                            plan: Plan::WALK,
-                            ticks: 10,
-                            robustness: 1.0,
-                        };
-                        if let Some(ticks) =
-                            self.simulate(view, from, here, edge, Execution::IDEAL, false).ticks
-                        {
-                            edges.push(Edge { ticks: ticks.max(1), ..edge });
-                        }
+                            estimate: 1.0 / WALK_SPEED,
+                        });
                     }
                     break;
                 }
@@ -234,13 +237,66 @@ impl NavGraph {
         }
 
         if here.kind == StandKind::Ground {
-            for (to, there) in self.jump_candidates(view, from, here, &edges) {
-                if let Some(edge) = self.validate_jump(view, from, here, to, there) {
-                    edges.push(edge);
-                }
+            let jumps = self.jump_candidates(view, from, here, &found);
+            found.extend(jumps);
+        }
+        found
+    }
+
+    /// Validate one candidate by simulation; `None` if it cannot be done.
+    pub(super) fn validate_candidate(
+        &mut self,
+        view: &impl BlockView,
+        from: Cell,
+        here: Stand,
+        candidate: &Candidate,
+    ) -> Option<Edge> {
+        let to = candidate.to;
+        let there = self.stand(view, to)?;
+        let mut edge = Edge {
+            to,
+            to_feet: there.feet_y,
+            kind: candidate.kind,
+            plan: Plan::WALK,
+            ticks: 1,
+            robustness: 1.0,
+        };
+        match candidate.kind {
+            EdgeKind::Jump => self.validate_jump(view, from, here, to, there),
+            EdgeKind::Walk if self.trivial_walk(view, from, here, to, there) => {
+                edge.ticks = if from[0] != to[0] && from[2] != to[2] { 7 } else { 5 };
+                Some(edge)
+            }
+            _ => {
+                let ticks = self.simulate(view, from, here, edge, Execution::IDEAL, false).ticks?;
+                edge.ticks = ticks.max(1);
+                Some(edge)
             }
         }
-        edges
+    }
+
+    /// Level walks between full floors need no simulation.
+    fn trivial_walk(
+        &mut self,
+        view: &impl BlockView,
+        from: Cell,
+        here: Stand,
+        to: Cell,
+        there: Stand,
+    ) -> bool {
+        const FULL: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
+        let (dx, dz) = (to[0] - from[0], to[2] - from[2]);
+        there.feet_y == here.feet_y
+            && here.kind == StandKind::Ground
+            && there.kind == StandKind::Ground
+            && here.extent == FULL
+            && there.extent == FULL
+            && (dx == 0 || dz == 0 || {
+                let a = self.stand(view, [from[0] + dx, from[1], from[2]]);
+                let b = self.stand(view, [from[0], from[1], from[2] + dz]);
+                a.is_some_and(|s| s.feet_y == here.feet_y)
+                    && b.is_some_and(|s| s.feet_y == here.feet_y)
+            })
     }
 
     fn jump_candidates(
@@ -248,8 +304,8 @@ impl NavGraph {
         view: &impl BlockView,
         from: Cell,
         here: Stand,
-        existing: &[Edge],
-    ) -> Vec<(Cell, Stand)> {
+        existing: &[Candidate],
+    ) -> Vec<Candidate> {
         let mut found = Vec::new();
         for dx in -MAX_REACH..=MAX_REACH {
             for dz in -MAX_REACH..=MAX_REACH {
@@ -260,7 +316,7 @@ impl NavGraph {
                 for dy in (-4..=2).rev() {
                     let to = [from[0] + dx, from[1] + dy, from[2] + dz];
                     let Some(there) = self.stand(view, to) else { continue };
-                    if there.kind != StandKind::Ground || existing.iter().any(|e| e.to == to) {
+                    if there.kind != StandKind::Ground || existing.iter().any(|c| c.to == to) {
                         continue;
                     }
                     let rise = there.feet_y - here.feet_y;
@@ -274,14 +330,19 @@ impl NavGraph {
                         && clear_flight(view, from, here, to, there)
                         && (adjacent || !self.walkable_line(view, from, here, to, there))
                     {
-                        found.push((distance, to, there));
+                        found.push(Candidate {
+                            to,
+                            to_feet: there.feet_y,
+                            kind: EdgeKind::Jump,
+                            estimate: distance as f32 / JUMP_SPEED,
+                        });
                     }
                 }
             }
         }
-        found.sort_by(|a, b| a.0.total_cmp(&b.0));
+        found.sort_by(|a, b| a.estimate.total_cmp(&b.estimate));
         found.truncate(MAX_JUMP_CANDIDATES);
-        found.into_iter().map(|(_, to, there)| (to, there)).collect()
+        found
     }
 
     /// Whether the straight line between two cells is continuous floor, in
@@ -330,6 +391,14 @@ impl NavGraph {
         let back = here.rim([-dir[0], -dir[1]]) as f32;
         let rise = there.feet_y - here.feet_y;
         let long = distance >= 2.5 || (rise > STEP && distance > 1.6);
+        let runup_ok = |graph: &mut Self, runup: f32| {
+            // Stay on the support while backing up.
+            runup <= back + 0.2 && (runup == 0.0 || graph.clear_runup(view, from, here, dir, runup))
+        };
+        // The farthest-reaching attempt first: if it lands well short, no
+        // gentler variant can succeed.
+        let farthest = if runup_ok(self, 0.3) { 0.3 } else { 0.0 };
+        let mut plans = vec![Plan { runup: farthest, takeoff: rim + 0.2, sprint: true }];
         let sprints: [bool; 2] = if long { [true, false] } else { [false, true] };
         let runups: [f32; 2] = if long { [0.3, 0.0] } else { [0.0, 0.3] };
         let takeoffs: [f32; 3] = if long {
@@ -337,52 +406,50 @@ impl NavGraph {
         } else {
             [rim - 0.35, rim, rim + 0.2]
         };
-        let mut best: Option<Edge> = None;
-        let mut successes = 0;
-        let mut first = true;
         for sprint in sprints {
             for runup in runups {
-                // Stay on the support while backing up.
-                if runup > back + 0.2
-                    || (runup > 0.0 && !self.clear_runup(view, from, here, dir, runup))
-                {
+                if !runup_ok(self, runup) {
                     continue;
                 }
                 for takeoff in takeoffs {
-                    let edge = Edge {
-                        to,
-                        to_feet: there.feet_y,
-                        kind: EdgeKind::Jump,
-                        plan: Plan { runup, takeoff: takeoff.max(-0.3), sprint },
-                        ticks: 0,
-                        robustness: 0.0,
-                    };
-                    let outcome = self.simulate(view, from, here, edge, Execution::IDEAL, false);
-                    let Some(ticks) = outcome.ticks else {
-                        // The most forgiving attempt fell well short: give up early.
-                        if first && long && outcome.closest > 1.2 {
-                            return None;
-                        }
-                        first = false;
-                        continue;
-                    };
-                    first = false;
-                    let edge = Edge {
-                        ticks: ticks.max(1),
-                        robustness: self.robustness(view, from, here, edge),
-                        ..edge
-                    };
-                    successes += 1;
-                    if best.is_none_or(|b| {
-                        (edge.robustness, -i32::from(edge.ticks))
-                            > (b.robustness, -i32::from(b.ticks))
-                    }) {
-                        best = Some(edge);
-                    }
-                    if edge.robustness >= 1.0 || successes >= 3 {
-                        return best;
+                    let plan = Plan { runup, takeoff: takeoff.max(-0.3), sprint };
+                    if !plans.contains(&plan) {
+                        plans.push(plan);
                     }
                 }
+            }
+        }
+        let mut best: Option<Edge> = None;
+        let mut successes = 0;
+        for (index, plan) in plans.into_iter().enumerate() {
+            let edge = Edge {
+                to,
+                to_feet: there.feet_y,
+                kind: EdgeKind::Jump,
+                plan,
+                ticks: 0,
+                robustness: 0.0,
+            };
+            let outcome = self.simulate(view, from, here, edge, Execution::IDEAL, false);
+            let Some(ticks) = outcome.ticks else {
+                if index == 0 && outcome.closest > 1.0 {
+                    return None;
+                }
+                continue;
+            };
+            let edge = Edge {
+                ticks: ticks.max(1),
+                robustness: self.robustness(view, from, here, edge),
+                ..edge
+            };
+            successes += 1;
+            if best.is_none_or(|b| {
+                (edge.robustness, -i32::from(edge.ticks)) > (b.robustness, -i32::from(b.ticks))
+            }) {
+                best = Some(edge);
+            }
+            if edge.robustness >= 0.75 || successes >= 3 {
+                break;
             }
         }
         best

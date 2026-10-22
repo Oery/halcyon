@@ -67,6 +67,32 @@ fn weak_bots_climb_too_with_mistakes_and_recoveries() {
 }
 
 #[test]
+fn a_bot_that_falls_in_water_swims_ashore_and_carries_on() {
+    let water = map::id("minecraft:water[level=0]");
+    let mut view = MapView::default();
+    view.floor([-6, 6], 10, [-6, 6]);
+    for x in -3..=3 {
+        for z in -3..=3 {
+            view.set([x, 8, z], map::stone()).set([x, 9, z], water).set([x, 10, z], water);
+        }
+    }
+    let spawn = Transform { x: 0.5, y: 10.2, z: 0.5, ..Transform::default() };
+    let mut nav = NavService::new(Budget::Unlimited);
+    nav.goal = Some([5, 11, 5]);
+    let mut bot = SimBot::new(BotProfile::new(50), 3, spawn);
+    let mut swam = false;
+    for _ in 0..2_000 {
+        bot.step(&mut nav, &view);
+        swam |= bot.brain.mode() == Mode::Swimming;
+        if bot.brain.mode() == Mode::Finished {
+            break;
+        }
+    }
+    assert!(swam);
+    assert_eq!(bot.brain.mode(), Mode::Finished, "ended at {:?}", bot.position());
+}
+
+#[test]
 fn runs_are_reproducible() {
     let (a, ta) = climb(50, 9, 10_000);
     let (b, tb) = climb(50, 9, 10_000);
