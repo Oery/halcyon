@@ -97,6 +97,7 @@ pub enum Surface {
     Slime,
     Honey,
     Hay,
+    BerryBush,
     Unsupported,
 }
 
@@ -131,6 +132,11 @@ impl Default for MotionInfo {
 /// support merely because their representative shape is empty.
 pub fn motion_info(id: BlockStateId) -> MotionInfo {
     let state = state_info(id);
+    // Sweet berry bushes have empty collision, but apply an inside-block
+    // movement multiplier at every age (official Java 26.3 state IDs).
+    if matches!(id, 24298..=24301) {
+        return MotionInfo { surface: Surface::BerryBush, ..MotionInfo::default() };
+    }
     if xz_offset(id) || matches!(climb(id), Climb::Ladder(_) | Climb::Vine) {
         return MotionInfo::default();
     }

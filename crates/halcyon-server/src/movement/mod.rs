@@ -27,7 +27,8 @@ use collision::{
 pub use physics::shared_motion_bytes;
 pub use physics::{MotionState, MovementInput};
 use terrain::{
-    Terrain, TerrainCell, climbing, collect_colliders, ground_contact, honey_slide, landing_damage,
+    Terrain, TerrainCell, berry_bush_contact, climbing, collect_colliders, ground_contact,
+    honey_slide, landing_damage,
 };
 
 const PROPOSAL_CAPACITY: usize = 32;
@@ -267,7 +268,7 @@ impl MovementState {
         let bounds = player_box(transform, false);
         let mut cells = 0;
         collect_colliders(world, bounds, inflate(bounds, 0.02), &mut self.colliders, &mut cells)
-            == Some(false)
+            .is_some_and(|context| !context.unsupported)
             && !self.colliders.iter().any(|shape| intersects(bounds, *shape))
     }
 
@@ -337,7 +338,7 @@ impl MovementState {
                 ),
                 0.02,
             );
-            let Some(unsupported) = collect_colliders(
+            let Some(context) = collect_colliders(
                 terrain,
                 query,
                 contact,
@@ -347,7 +348,7 @@ impl MovementState {
                 result.correction = true;
                 break;
             };
-            if unsupported {
+            if context.unsupported {
                 result.uncertain_motion = true;
                 result.correction = true;
                 break;
@@ -416,6 +417,17 @@ impl MovementState {
                 result.correction = true;
                 break;
             };
+            let berry_bush = if context.berry_bush {
+                let Some(touching) =
+                    berry_bush_contact(terrain, bounds, resolved, &mut result.collision_cells)
+                else {
+                    result.correction = true;
+                    break;
+                };
+                touching
+            } else {
+                false
+            };
             if water.touching() || water_after.touching() {
                 self.fall_distance = 0.0;
             } else if resolved[1] < 0.0 {
@@ -435,6 +447,13 @@ impl MovementState {
             if honey_slide(terrain, accepted, pose, resolved[1]) {
                 self.fall_distance = 0.0;
             }
+            // Inside-block effects run after movement and landing. The stuck
+            // multiplier is consumed by the next input-driven move; client
+            // proposals already include it and must not be slowed a second time.
+            if berry_bush {
+                self.fall_distance = 0.0;
+            }
+            self.motion.berry_stuck = berry_bush;
             self.transform = accepted;
             self.sneaking = proposal.sneaking;
             self.pose = select_pose(

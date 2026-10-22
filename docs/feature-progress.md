@@ -43,7 +43,7 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Jumping and falling | Done — ground jumps, gravity, air control, jump timing and supported landing effects. |
 | Swimming and crawling | Done — water travel, sprint swimming, currents, shoreline exits and swim/crawl pose transitions; air and drowning remain unavailable. |
 | Climbing | Partial — ladders, matching open trapdoors above ladders, vines, cave vines, weeping vines and twisting vines; scaffolding unavailable. |
-| Movement surfaces and media | Partial — dry surfaces, honey sliding, landing modifiers, water and lava travel and ladder/vine climbing (including open trapdoors above matching ladders), with aquatic plants, supported waterlogged geometry and offset bamboo stalks; lava burning, bubble columns, scaffolding and webs unavailable. |
+| Movement surfaces and media | Partial — dry surfaces, honey sliding, landing modifiers, sweet berry bush slowdown, water and lava travel and ladder/vine climbing (including open trapdoors above matching ladders), with aquatic plants, supported waterlogged geometry and offset bamboo stalks; lava burning, bubble columns, scaffolding and webs unavailable. |
 | Flight permissions | Not started |
 | Movement abilities and attributes | Not started |
 | Teleportation | Done — validated destinations and position corrections. |
@@ -79,7 +79,7 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Eating and drinking | Not started |
 | Status effects | Not started |
 | Splash and lingering effects | Conditional |
-| Environmental damage | Partial — fall damage with supported surface modifiers, void damage and block suffocation. |
+| Environmental damage | Partial — fall damage with supported surface modifiers, void damage and block suffocation; sweet berry bushes reset fall distance, but thorn damage is unavailable. |
 | Air and exposure state | Not started |
 | Death prevention | Not started |
 | Enchantment effects | Conditional |

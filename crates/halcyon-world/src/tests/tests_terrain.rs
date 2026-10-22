@@ -85,6 +85,11 @@ fn ground_profiles_match_target_surface_properties_and_keep_media_disabled() {
     ] {
         assert_eq!(motion(key).surface, Surface::Unsupported, "{key}");
     }
+    for age in 0..=3 {
+        let key = format!("minecraft:sweet_berry_bush[age={age}]");
+        assert_eq!(motion_info(block_state_id(&key).unwrap() as u16).surface, Surface::BerryBush);
+        assert!(info(&key).collision_boxes().is_empty());
+    }
 }
 
 #[test]

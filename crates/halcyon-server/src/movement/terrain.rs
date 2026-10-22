@@ -5,7 +5,7 @@ use halcyon_world::{
     contextual_geometry, motion_info, state_info,
 };
 
-use super::collision::{intersects, player_box, translate};
+use super::collision::{expand_towards, inflate, intersects, player_box, translate};
 use super::{CELLS_PER_PROPOSAL, CELLS_PER_STEP, EPSILON, HALF_WIDTH, MAX_COLLIDERS};
 use crate::lobby::Transform;
 
@@ -151,6 +151,12 @@ impl<T: BlockView> Terrain for T {
     }
 }
 
+#[derive(Default)]
+pub(super) struct CollisionContext {
+    pub(super) unsupported: bool,
+    pub(super) berry_bush: bool,
+}
+
 /// None signals unknown terrain or exhausted work, never traversable air.
 pub(super) fn collect_colliders(
     terrain: &impl Terrain,
@@ -158,7 +164,7 @@ pub(super) fn collect_colliders(
     contact: Aabb,
     colliders: &mut Vec<Aabb>,
     step_cells: &mut usize,
-) -> Option<bool> {
+) -> Option<CollisionContext> {
     colliders.clear();
     let min = query.min.map(|n| n.floor() as i32 - 1);
     let max = query.max.map(|n| n.floor() as i32 + 1);
@@ -169,7 +175,7 @@ pub(super) fn collect_colliders(
     if count > CELLS_PER_PROPOSAL || count > CELLS_PER_STEP.saturating_sub(*step_cells) {
         return None;
     }
-    let mut uncertain = false;
+    let mut context = CollisionContext::default();
     for x in min[0]..=max[0] {
         for z in min[2]..=max[2] {
             let column_on_path = f64::from(x + 1) > query.min[0]
@@ -188,7 +194,12 @@ pub(super) fn collect_colliders(
                 let Some(cell) = terrain.cell(x, y, z) else { continue };
                 let origin = [f64::from(x), f64::from(y), f64::from(z)];
                 let block = Aabb { min: origin, max: origin.map(|n| n + 1.0) };
-                uncertain |= (cell.uncertain || cell.contextual) && intersects(contact, block);
+                if (cell.uncertain || cell.contextual || cell.motion.surface == Surface::BerryBush)
+                    && intersects(contact, block)
+                {
+                    context.unsupported |= cell.uncertain || cell.contextual;
+                    context.berry_bush |= cell.motion.surface == Surface::BerryBush;
+                }
                 if !cell.contextual {
                     if cell.shapes.len() > MAX_COLLIDERS.saturating_sub(colliders.len()) {
                         return None;
@@ -199,5 +210,57 @@ pub(super) fn collect_colliders(
             }
         }
     }
-    Some(uncertain)
+    Some(context)
+}
+
+/// Entity.applyEffectsFromBlocks checks the movement path, including entry and
+/// exit in one move. Only query this envelope when collision collection found a
+/// nearby bush; charge the extra reads to the same movement work budget.
+pub(super) fn berry_bush_contact(
+    terrain: &impl Terrain,
+    bounds: Aabb,
+    delta: [f64; 3],
+    cells: &mut usize,
+) -> Option<bool> {
+    let bounds = inflate(bounds, -f64::from(1e-5f32));
+    let query = expand_towards(bounds, delta);
+    let min = query.min.map(|n| n.floor() as i32);
+    let max = query.max.map(|n| n.floor() as i32);
+    for x in min[0]..=max[0] {
+        for y in min[1]..=max[1] {
+            for z in min[2]..=max[2] {
+                if *cells >= CELLS_PER_STEP {
+                    return None;
+                }
+                *cells += 1;
+                if !terrain.cell(x, y, z).is_some_and(|c| c.motion.surface == Surface::BerryBush) {
+                    continue;
+                }
+                // Slab intersection avoids touching bushes at unused corners
+                // of the envelope during diagonal travel.
+                let origin = [x, y, z].map(f64::from);
+                let mut enter = 0.0f64;
+                let mut exit = 1.0f64;
+                for axis in 0..3 {
+                    let low = origin[axis] - bounds.max[axis];
+                    let high = origin[axis] + 1.0 - bounds.min[axis];
+                    if delta[axis] == 0.0 {
+                        if low >= 0.0 || high <= 0.0 {
+                            exit = -1.0;
+                            break;
+                        }
+                    } else {
+                        let a = low / delta[axis];
+                        let b = high / delta[axis];
+                        enter = enter.max(a.min(b));
+                        exit = exit.min(a.max(b));
+                    }
+                }
+                if enter < exit {
+                    return Some(true);
+                }
+            }
+        }
+    }
+    Some(false)
 }

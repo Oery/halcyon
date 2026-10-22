@@ -83,6 +83,7 @@ pub struct MotionState {
     /// Blocks per vanilla movement tick, not blocks per owner invocation.
     pub velocity: [f64; 3],
     jump_delay: u8,
+    pub(super) berry_stuck: bool,
 }
 
 /// One shared lookup table matches Java Mth's quantized trigonometry. It is
@@ -152,8 +153,8 @@ impl MovementState {
             &mut self.colliders,
             &mut cells,
         ) {
-            Some(false) => {}
-            unsupported => return self.blocked(cells, unsupported == Some(true)),
+            Some(context) if !context.unsupported => {}
+            context => return self.blocked(cells, context.is_some_and(|c| c.unsupported)),
         }
         let Some(fluids) = fluid_contact(terrain, self.transform, self.pose, true, &mut cells)
         else {
@@ -248,12 +249,25 @@ impl MovementState {
         }
         // LivingEntity.travelInFluid samples falling before the move.
         let falling = velocity[1] <= 0.0;
+        // Entity.move consumes last tick's inside-bush multiplier and clears
+        // momentum before travel applies drag/gravity to the remaining velocity.
+        let movement = if std::mem::take(&mut self.motion.berry_stuck) {
+            let movement = [
+                velocity[0] * f64::from(0.8f32),
+                velocity[1] * 0.75,
+                velocity[2] * f64::from(0.8f32),
+            ];
+            velocity = [0.0; 3];
+            movement
+        } else {
+            velocity
+        };
         let old = self.transform;
         let proposal = MovementProposal {
             transform: Transform {
-                x: old.x + velocity[0],
-                y: old.y + velocity[1],
-                z: old.z + velocity[2],
+                x: old.x + movement[0],
+                y: old.y + movement[1],
+                z: old.z + movement[2],
                 yaw: input.yaw,
                 pitch: input.pitch,
                 on_ground: false,
