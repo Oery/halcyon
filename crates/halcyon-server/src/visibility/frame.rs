@@ -23,6 +23,7 @@ pub(super) fn rendered(player: &PlayerSnapshot) -> Rendered {
         pose: player.pose,
         swimming: player.swimming,
         sprinting: player.sprinting,
+        using: player.using,
         health: player.health,
         equipment: player.equipment.clone(),
         life_generation: player.life_generation,
@@ -187,6 +188,7 @@ pub(super) fn movement_frame(
         || player.pose != previous.pose
         || player.swimming != previous.swimming
         || player.sprinting != previous.sprinting
+        || player.using != previous.using
         || player.health != previous.health
     {
         append(&metadata(&player), &mut bytes)?;
@@ -217,6 +219,7 @@ fn metadata(player: &PlayerSnapshot) -> PlayerStateMetadata {
         pose: player.pose,
         swimming: player.swimming,
         sprinting: player.sprinting,
+        using: player.using,
         health: player.health,
     }
 }

@@ -10,12 +10,16 @@ fn player_metadata_uses_the_target_clients_serializer_ids() {
             pose: PlayerPose::Crouching,
             swimming: false,
             sprinting: true,
+            using: None,
             health: 20.0,
         };
         let mut bytes = Vec::new();
         packet.write_payload(&mut bytes).await.unwrap();
         assert_eq!(bytes.len(), packet.payload_len().unwrap());
-        assert_eq!(bytes, [1, 0, 0, 0x0a, 6, 20, 5, 9, 3, 0x41, 0xa0, 0, 0, 16, 0, 0x7f, 0xff]);
+        assert_eq!(
+            bytes,
+            [1, 0, 0, 0x0a, 6, 20, 5, 8, 0, 0, 9, 3, 0x41, 0xa0, 0, 0, 16, 0, 0x7f, 0xff]
+        );
         let packet = PlayerStateMetadata { sneaking: false, ..packet };
         bytes.clear();
         packet.write_payload(&mut bytes).await.unwrap();
@@ -31,6 +35,13 @@ fn player_metadata_uses_the_target_clients_serializer_ids() {
         packet.write_payload(&mut bytes).await.unwrap();
         assert_eq!(bytes[3], 0x08);
         assert_eq!(bytes[6], 3);
+        let packet = PlayerStateMetadata {
+            using: Some(crate::packets::client::InteractionHand::Off),
+            ..packet
+        };
+        bytes.clear();
+        packet.write_payload(&mut bytes).await.unwrap();
+        assert_eq!(bytes[9], 0x03);
         let packet = PlayerStateMetadata { health: 0.0, ..packet };
         bytes.clear();
         packet.write_payload(&mut bytes).await.unwrap();

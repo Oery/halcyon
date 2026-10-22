@@ -203,6 +203,11 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
                 session.inventory(InventoryAction::Resync);
             }
         }
+        Packets::Punch(_) => {
+            if let Some(session) = &client.session {
+                session.swing(mc_protocol::packets::client::InteractionHand::Main);
+            }
+        }
         Packets::ClientCommand(p) => {
             if p.action == 0
                 && let Some(session) = &client.session

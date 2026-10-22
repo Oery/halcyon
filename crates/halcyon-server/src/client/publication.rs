@@ -27,6 +27,32 @@ impl Client {
         Ok(Some((frame.len(), frames)))
     }
 
+    /// Cosmetic effects go before player frames, so a hurt event precedes the
+    /// death status published in the same step.
+    async fn send_effects(&mut self) -> Result<(usize, usize), Error> {
+        let Some(session) = &self.session else {
+            return Ok((0, 0));
+        };
+        let id = session.entity_id();
+        let mut frames = Vec::new();
+        self.lobby.with_registry(|registry| {
+            self.effects.collect(
+                &registry.effects,
+                id,
+                |entity| self.observer.is_rendered(entity),
+                self.chunks.terrain(),
+                &mut frames,
+            )
+        });
+        if frames.is_empty() {
+            return Ok((0, 0));
+        }
+        // One write for the slice; each frame is already encoded and shared.
+        let batch = frames.concat();
+        self.send_encoded(&batch).await?;
+        Ok((batch.len(), frames.len()))
+    }
+
     async fn send_world_frame(&mut self) -> Result<Option<(usize, usize)>, Error> {
         let frame =
             self.lobby.with_registry(|registry| self.world_observer.next_frame(&registry.arena))?;
@@ -107,8 +133,7 @@ impl Client {
         self.lobby.with_registry(|registry| {
             self.world_observer.reconcile(&registry.arena, self.chunks.terrain())
         });
-        let mut bytes = 0;
-        let mut frames = 0;
+        let (mut bytes, mut frames) = self.send_effects().await?;
         while frames < WRITE_SLICE_FRAMES && bytes < WRITE_SLICE_BYTES {
             // Share the connection budget fairly with world changes. World
             // frames contain at most sixteen patches or two entity packets.

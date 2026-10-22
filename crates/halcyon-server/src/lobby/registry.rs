@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Instant;
 
+use mc_protocol::packets::client::InteractionHand;
 use mc_protocol::types::ItemStack;
 use uuid::Uuid;
 
@@ -26,6 +27,7 @@ type ColumnMove = (i32, Option<(i32, i32)>, (i32, i32));
 #[derive(Default)]
 pub struct Registry {
     pub arena: crate::arena::Arena,
+    pub effects: crate::effects::EffectLog,
     pub(super) world_actions: std::collections::VecDeque<WorldAction>,
     pub(super) players: HashMap<i32, Player>,
     uuids: HashSet<Uuid>,
@@ -207,6 +209,7 @@ impl Registry {
                     pose: Default::default(),
                     swimming: false,
                     sprinting: false,
+                    using: None,
                     health: 20.0,
                     equipment: Rc::new(std::array::from_fn(|_| ItemStack::default())),
                     life_generation: 0,
@@ -271,7 +274,7 @@ impl Registry {
             let result = self.arena.edit(world, action.pos, action.state);
             let _ = action.reply.send(result);
         }
-        for player in self.players.values() {
+        for (&id, player) in &self.players {
             let mut update = PlayerUpdate::default();
             for _ in 0..USES_PER_STEP {
                 let Some(used) = player.input.uses.borrow_mut().pop() else {
@@ -280,6 +283,15 @@ impl Registry {
                 update.block_ack = update.block_ack.max(Some(used.sequence));
                 if let Some(cells) = use_block(&mut self.arena, world, &player.state, used) {
                     update.used_blocks.extend(cells);
+                    // The user's client swings when it predicts the use.
+                    let hand = if used.main_hand {
+                        InteractionHand::Main
+                    } else {
+                        InteractionHand::Off
+                    };
+                    if player.active {
+                        self.effects.swing(id, hand, Some(id));
+                    }
                 } else {
                     // Restore a predicted opening, placement or item use.
                     let [x, y, z] = used.pos.map(f64::from);
@@ -298,7 +310,7 @@ impl Registry {
         }
         self.arena.step(world, &mut self.last_entity_id);
         let world = self.arena.view(world);
-        for player in self.players.values_mut() {
+        for (&id, player) in &mut self.players {
             let input = &player.input;
             let had_teleport = player.state.life.pending_teleport().is_some();
             if let Some(id) = input.teleport_confirmation.take() {
@@ -311,6 +323,22 @@ impl Registry {
                 now,
                 input.respawn_requested.replace(false),
             );
+            if player.active {
+                if let Some(damage) = update.damage {
+                    self.effects.hurt(id, damage);
+                }
+                let swings = input.swings.replace(0);
+                if player.state.life.alive() {
+                    for hand in [InteractionHand::Main, InteractionHand::Off] {
+                        if swings & (1 << hand as u8) != 0 {
+                            // Bots have no client; a human already saw its own swing.
+                            self.effects.swing(id, hand, Some(id));
+                        }
+                    }
+                }
+            } else {
+                input.swings.set(0);
+            }
             let accepted = player.state.movement.transform();
             let old = input.accepted.replace(accepted);
             input.generation.set(player.state.life.generation);
@@ -354,6 +382,7 @@ impl Registry {
             let pose = player.state.movement.pose();
             let swimming = player.state.movement.swimming();
             let sprinting = player.state.movement.sprinting();
+            let using = player.state.using();
             let health = player.state.life.health();
             let visible = player.state.life.visible(now);
             let generation = player.state.life.generation;
@@ -361,6 +390,7 @@ impl Registry {
                 || player.snapshot.pose != pose
                 || player.snapshot.swimming != swimming
                 || player.snapshot.sprinting != sprinting
+                || player.snapshot.using != using
                 || player.snapshot.health != health
                 || player.snapshot.visible != visible
                 || player.snapshot.life_generation != generation
@@ -375,6 +405,7 @@ impl Registry {
                 player.snapshot.pose = pose;
                 player.snapshot.swimming = swimming;
                 player.snapshot.sprinting = sprinting;
+                player.snapshot.using = using;
                 player.snapshot.health = health;
                 player.snapshot.visible = visible;
                 player.snapshot.life_generation = generation;

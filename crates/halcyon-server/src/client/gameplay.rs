@@ -73,8 +73,8 @@ impl Client {
     ) -> Result<(), Error> {
         use crate::lifecycle::{DamageKind, TELEPORT_TIMEOUT};
         use mc_protocol::packets::client::{
-            CombatKill, DamageEvent, GameEvent, PlayerAbilities, Respawn, SetContainerContent,
-            SetContainerSlot, SetCursorItem, SetHealth, SetHeldItemResponse, SyncPlayerPosition,
+            CombatKill, GameEvent, PlayerAbilities, Respawn, SetContainerContent, SetContainerSlot,
+            SetCursorItem, SetHealth, SetHeldItemResponse, SyncPlayerPosition,
         };
         use mc_protocol::types::Nbt;
         if update.respawn {
@@ -114,16 +114,7 @@ impl Client {
             self.send(&SetHealth { health, food: 20, saturation: 5.0 }).await?;
         }
         if let Some(damage) = update.damage {
-            let source =
-                damage.source.filter(|id| *id > 0).and_then(|id| id.checked_add(1)).unwrap_or(0);
-            self.send(&DamageEvent {
-                entity_id: self.entity_id()?,
-                source_type_id: damage.kind.protocol_id(),
-                source_cause_id: source,
-                source_direct_id: source,
-                source_position: None,
-            })
-            .await?;
+            self.send(&damage.event(self.entity_id()?)).await?;
         }
         if let Some(damage) = update.death {
             let message = match damage.kind {

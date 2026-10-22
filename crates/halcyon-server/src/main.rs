@@ -11,6 +11,7 @@ mod bot;
 mod cache;
 mod chunks;
 mod client;
+mod effects;
 mod encryption;
 mod error;
 mod interaction;

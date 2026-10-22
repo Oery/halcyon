@@ -62,6 +62,7 @@ pub enum Packets<'p> {
     SetPlayerMovementFlags(SetPlayerMovementFlags),
     ClientTickEnd(ClientTickEnd),
     PlayerLoaded(PlayerLoaded),
+    Punch(Punch),
     UseItemOn(UseItemOn),
     UseItem(UseItem),
     PlayClientInformation(ClientInformation<'p>),
@@ -144,6 +145,7 @@ impl<'p> Packets<'p> {
                 Ok(Packets::PlayClientInformation(ClientInformation::decode_payload(buf)?))
             }
             (0x2C, State::Play) => Ok(Packets::PlayerLoaded(PlayerLoaded)),
+            (0x2E, State::Play) => Ok(Packets::Punch(Punch)),
             _ => Err(DecodeError::UnknownPacket(id)),
         }
     }

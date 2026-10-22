@@ -192,3 +192,25 @@ fn driven_motion_and_queued_inputs_end_at_teleport_and_life_boundaries() {
     assert!(player.movement_input.is_none());
     assert_eq!(player.movement.motion.velocity, [0.0; 3]);
 }
+
+#[test]
+fn item_use_ends_with_the_selection_or_the_life() {
+    let world = ground_world(&[]);
+    let mut player = PlayerState::new(Transform { x: 8.5, y: 64.0, z: 8.5, ..Default::default() });
+    player.life.rules.protected = false;
+    let mut actions = ActionQueue::default();
+    let mut step = |player: &mut PlayerState, action| {
+        actions.push(player.life.generation, action);
+        player.advance(&world, &mut ProposalQueue::default(), &mut actions, Instant::now(), false);
+    };
+    step(&mut player, PlayerAction::UseItem(Some(InteractionHand::Main)));
+    assert_eq!(player.using(), Some(InteractionHand::Main));
+    step(&mut player, PlayerAction::Inventory(InventoryAction::from_selection(3)));
+    assert_eq!(player.using(), None);
+    step(&mut player, PlayerAction::UseItem(Some(InteractionHand::Off)));
+    step(&mut player, PlayerAction::Inventory(InventoryAction::from_selection(4)));
+    assert_eq!(player.using(), Some(InteractionHand::Off));
+    let lethal = Damage { kind: DamageKind::Game, amount: 40.0, source: None };
+    step(&mut player, PlayerAction::Damage(lethal));
+    assert_eq!(player.using(), None);
+}
