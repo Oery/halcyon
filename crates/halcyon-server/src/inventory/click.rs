@@ -1,50 +1,56 @@
 //! Validated menu click operations; the inventory owner handles rollback and synchronization.
 
-use super::{ClickTarget, Drag, HotbarSlot, Inventory, InventorySlot, STORAGE};
+use super::{
+    ClickTarget, Drag, HotbarSlot, Inventory, InventoryClick, InventorySlot, MouseButton, STORAGE,
+    SwapHand,
+};
 
 impl Inventory {
-    pub(super) fn click(&mut self, target: ClickTarget, button: u8, mode: i32) -> bool {
-        if mode != 5 {
+    pub(super) fn click(&mut self, click: InventoryClick) -> bool {
+        if !matches!(
+            click,
+            InventoryClick::DragStart { .. }
+                | InventoryClick::DragAdd { .. }
+                | InventoryClick::DragFinish { .. }
+        ) {
             self.cancel_drag();
         }
-        if mode == 5 {
-            return self.drag_click(target, button);
-        }
-        if target == ClickTarget::Outside {
-            return mode == 0 && button <= 1 && self.cursor.is_empty();
-        }
-        let ClickTarget::Slot(slot) = target else {
-            return false;
-        };
-        if slot.is_crafting() {
-            return false;
-        }
-        match mode {
-            0 if button <= 1 => self.pickup(slot, button == 1),
-            1 if button <= 1 => {
+        match click {
+            InventoryClick::Pickup { target: ClickTarget::Outside, .. } => self.cursor.is_empty(),
+            InventoryClick::Pickup { target: ClickTarget::Slot(slot), button } => {
+                !slot.is_crafting() && self.pickup(slot, button)
+            }
+            InventoryClick::QuickMove { slot } => {
+                if slot.is_crafting() {
+                    return false;
+                }
                 self.quick_move(slot);
                 true
             }
-            2 => {
-                let hand = if button == 40 {
-                    InventorySlot::OFFHAND
-                } else {
-                    let Ok(hotbar) = HotbarSlot::try_from(i16::from(button)) else {
-                        return false;
-                    };
-                    hotbar.inventory_slot()
+            InventoryClick::Swap { slot, hand } => {
+                if slot.is_crafting() {
+                    return false;
+                }
+                let hand = match hand {
+                    SwapHand::Hotbar(slot) => slot.inventory_slot(),
+                    SwapHand::Offhand => InventorySlot::OFFHAND,
                 };
                 self.swap(slot, hand)
             }
-            6 if button <= 1 => {
-                self.collect(button == 1);
+            InventoryClick::DragStart { button } => self.start_drag(button),
+            InventoryClick::DragAdd { slot, button } => self.add_drag_slot(slot, button),
+            InventoryClick::DragFinish { button } => self.finish_drag(button),
+            InventoryClick::Collect { slot, button } => {
+                if slot.is_crafting() {
+                    return false;
+                }
+                self.collect(button);
                 true
             }
-            _ => false,
         }
     }
 
-    fn pickup(&mut self, slot: InventorySlot, right: bool) -> bool {
+    fn pickup(&mut self, slot: InventorySlot, button: MouseButton) -> bool {
         // Moving an empty bundle is ordinary storage. Its special interaction
         // with another owned stack needs nested contents, which are not enabled.
         if !self.cursor.is_empty()
@@ -55,15 +61,22 @@ impl Inventory {
         }
         if self.cursor.is_empty() {
             let count = self.slots[slot.index()].count();
-            self.cursor =
-                self.slots[slot.index()].take(if right { count.div_ceil(2) } else { count });
+            self.cursor = self.slots[slot.index()].take(if button == MouseButton::Right {
+                count.div_ceil(2)
+            } else {
+                count
+            });
             return true;
         }
         if !Self::may_place(slot, &self.cursor) {
             return false;
         }
         if self.slots[slot.index()].is_empty() || self.cursor.same_item(&self.slots[slot.index()]) {
-            let amount = if right { 1 } else { self.cursor.count() };
+            let amount = if button == MouseButton::Right {
+                1
+            } else {
+                self.cursor.count()
+            };
             self.cursor.transfer_to(&mut self.slots[slot.index()], amount, Self::slot_limit(slot));
             true
         } else if self.cursor.count() <= Self::slot_limit(slot) {
@@ -118,79 +131,70 @@ impl Inventory {
         displaced.is_empty() // apply rolls the whole action back if relocation cannot fit.
     }
 
-    fn drag_click(&mut self, target: ClickTarget, button: u8) -> bool {
-        let (right, stage) = match button {
-            0..=2 => (false, button),
-            4..=6 => (true, button - 4),
-            _ => return false,
-        };
-        match stage {
-            0 if target == ClickTarget::Outside && !self.cursor.is_empty() => {
-                if self.drag.is_some() {
-                    self.drag = None;
-                    return false;
-                }
-                self.drag = Some(Drag { right, slots: 0 });
-                true
-            }
-            1 => {
-                let Some(mut drag) = self.drag else {
-                    return false;
-                };
-                let ClickTarget::Slot(slot) = target else {
-                    return false;
-                };
-                if drag.right != right || !Self::may_place(slot, &self.cursor) {
-                    return false;
-                }
-                let target = &self.slots[slot.index()];
-                if (target.is_empty() || target.same_item(&self.cursor))
-                    && target.count() < self.cursor.max_stack().min(Self::slot_limit(slot))
-                    && (drag.slots & slot.mask() != 0
-                        || drag.slots.count_ones() < u32::from(self.cursor.count()))
-                {
-                    drag.slots |= slot.mask();
-                }
-                self.drag = Some(drag);
-                true
-            }
-            2 if target == ClickTarget::Outside => {
-                let Some(drag) = self.drag.take() else {
-                    return false;
-                };
-                if drag.right != right {
-                    return false;
-                }
-                if drag.slots == 0 {
-                    return true;
-                }
-                let amount = if right {
-                    1
-                } else {
-                    self.cursor.count() / drag.slots.count_ones() as u8
-                };
-                for slot in InventorySlot::all().filter(|slot| !slot.is_crafting()) {
-                    if drag.slots & slot.mask() != 0 {
-                        self.cursor.transfer_to(
-                            &mut self.slots[slot.index()],
-                            amount,
-                            Self::slot_limit(slot),
-                        );
-                    }
-                }
-                true
-            }
-            _ => false,
+    fn start_drag(&mut self, button: MouseButton) -> bool {
+        if self.cursor.is_empty() || self.drag.is_some() {
+            return false;
         }
+        self.drag = Some(Drag { button, slots: 0 });
+        true
     }
 
-    fn collect(&mut self, reverse: bool) {
+    fn add_drag_slot(&mut self, slot: InventorySlot, button: MouseButton) -> bool {
+        let Some(mut drag) = self.drag else {
+            return false;
+        };
+        if drag.button != button || !Self::may_place(slot, &self.cursor) {
+            return false;
+        }
+        let target = &self.slots[slot.index()];
+        if (target.is_empty() || target.same_item(&self.cursor))
+            && target.count() < self.cursor.max_stack().min(Self::slot_limit(slot))
+            && (drag.slots & slot.mask() != 0
+                || drag.slots.count_ones() < u32::from(self.cursor.count()))
+        {
+            drag.slots |= slot.mask();
+        }
+        self.drag = Some(drag);
+        true
+    }
+
+    fn finish_drag(&mut self, button: MouseButton) -> bool {
+        let Some(drag) = self.drag.take() else {
+            return false;
+        };
+        if drag.button != button {
+            return false;
+        }
+        if drag.slots == 0 {
+            return true;
+        }
+        let amount = match button {
+            MouseButton::Right => 1,
+            MouseButton::Left => self.cursor.count() / drag.slots.count_ones() as u8,
+        };
+        for slot in InventorySlot::all().filter(|slot| !slot.is_crafting()) {
+            if drag.slots & slot.mask() != 0 {
+                self.cursor.transfer_to(
+                    &mut self.slots[slot.index()],
+                    amount,
+                    Self::slot_limit(slot),
+                );
+            }
+        }
+        true
+    }
+
+    fn collect(&mut self, button: MouseButton) {
         if self.cursor.is_empty() {
             return;
         }
         for partial_only in [true, false] {
             let mut slots = InventorySlot::all().filter(|slot| !slot.is_crafting());
-            while let Some(slot) = if reverse { slots.next_back() } else { slots.next() } {
+            while let Some(slot) = if button == MouseButton::Right {
+                slots.next_back()
+            } else {
+                slots.next()
+            } {
                 if !self.cursor.same_item(&self.slots[slot.index()])
                     || (partial_only
                         && self.slots[slot.index()].count() == self.slots[slot.index()].max_stack())

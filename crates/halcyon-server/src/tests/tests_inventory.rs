@@ -41,9 +41,10 @@ fn rearrangements_conserve_items_and_corrections_never_grant_predictions() {
     let correction = inventory.apply(InventoryAction::Click {
         window_id: 0,
         state_id: -1,
-        target: ClickTarget::Slot(slot(13)),
-        button: 0,
-        mode: 0,
+        click: InventoryClick::Pickup {
+            target: ClickTarget::Slot(slot(13)),
+            button: MouseButton::Left,
+        },
         predicted_slots: 1 << 44,
     });
     assert!(correction.full_sync);
@@ -52,22 +53,8 @@ fn rearrangements_conserve_items_and_corrections_never_grant_predictions() {
     assert_eq!(total(&inventory), 71);
     for action in [
         InventoryAction::RejectDrop,
-        InventoryAction::Click {
-            window_id: 0,
-            state_id: inventory.state_id,
-            target: ClickTarget::Slot(slot(36)),
-            button: 0,
-            mode: 4,
-            predicted_slots: 0,
-        },
-        InventoryAction::Click {
-            window_id: 0,
-            state_id: inventory.state_id,
-            target: ClickTarget::Slot(slot(36)),
-            button: 2,
-            mode: 3,
-            predicted_slots: 0,
-        },
+        InventoryAction::from_click(0, inventory.state_id, 36, 0, 4, 0),
+        InventoryAction::from_click(0, inventory.state_id, 36, 2, 3, 0),
     ] {
         assert!(inventory.apply(action).full_sync);
         assert_eq!(total(&inventory), 71);
@@ -169,9 +156,10 @@ fn replacement_is_atomic_clears_cursor_and_blocks_old_loadout_clicks() {
     let change = inventory.apply(InventoryAction::Click {
         window_id: 0,
         state_id: old_state,
-        target: ClickTarget::Slot(slot(36)),
-        button: 0,
-        mode: 0,
+        click: InventoryClick::Pickup {
+            target: ClickTarget::Slot(slot(36)),
+            button: MouseButton::Left,
+        },
         predicted_slots: 0,
     });
     assert!(change.full_sync);
@@ -182,20 +170,32 @@ fn replacement_is_atomic_clears_cursor_and_blocks_old_loadout_clicks() {
 }
 
 #[test]
-fn invalid_wire_slots_correct_predictions_without_changing_items_or_selection() {
+fn invalid_wire_clicks_correct_predictions_without_changing_items_or_selection() {
     let mut inventory = Inventory::new();
     inventory.set_slot(slot(9), item("minecraft:stone", 11)).unwrap();
     click(&mut inventory, 9, 0, 0);
     let before = inventory.snapshot();
-    for raw in [i16::MIN, -1000, -1, 46, i16::MAX] {
+    for (raw, button, mode) in [
+        (i16::MIN, 1, 5),
+        (-1000, 1, 5),
+        (-1, 1, 5),
+        (46, 1, 5),
+        (i16::MAX, 1, 5),
+        (9, 2, 0),
+        (9, 9, 2),
+        (9, 0, 3),
+        (9, 0, 4),
+        (-999, 0, 1),
+        (-999, 1, 5),
+    ] {
         click(&mut inventory, -999, 0, 5);
         assert!(inventory.drag.is_some());
         let change = inventory.apply(InventoryAction::from_click(
             0,
             inventory.state_id,
             raw,
-            1,
-            5,
+            button,
+            mode,
             (1 << 44) | (1 << 63),
         ));
         assert!(change.full_sync);
@@ -223,4 +223,32 @@ fn invalid_wire_slots_correct_predictions_without_changing_items_or_selection() 
     );
     inventory.apply(InventoryAction::from_selection(8));
     assert_eq!(inventory.selected.inventory_slot(), slot(44));
+}
+
+#[test]
+fn drag_operations_require_matching_gestures_and_right_drag_places_one_per_slot() {
+    let mut inventory = Inventory::new();
+    inventory.set_slot(slot(9), item("minecraft:stone", 11)).unwrap();
+    click(&mut inventory, 9, 0, 0);
+    assert!(click(&mut inventory, 10, 5, 5).full_sync); // Add without a start.
+    assert!(click(&mut inventory, -999, 6, 5).full_sync); // Finish without a start.
+    click(&mut inventory, -999, 4, 5);
+    assert!(click(&mut inventory, 10, 1, 5).full_sync); // Left add during right drag.
+    assert!(inventory.drag.is_none());
+    click(&mut inventory, -999, 4, 5);
+    assert!(click(&mut inventory, -999, 4, 5).full_sync); // A second start cancels.
+    assert!(inventory.drag.is_none());
+    click(&mut inventory, -999, 4, 5);
+    click(&mut inventory, 9, 5, 5);
+    click(&mut inventory, 10, 5, 5);
+    assert!(!click(&mut inventory, -999, 6, 5).full_sync);
+    assert_eq!((inventory.slots[9].count(), inventory.slots[10].count()), (1, 1));
+    assert_eq!(inventory.cursor.count(), 9);
+    assert!(inventory.drag.is_none());
+    assert_eq!(total(&inventory), 11);
+    click(&mut inventory, -999, 0, 5);
+    click(&mut inventory, 11, 1, 0); // Ordinary pickup ends the gesture.
+    assert!(inventory.drag.is_none());
+    assert_eq!(inventory.slots[11].count(), 1);
+    assert_eq!(total(&inventory), 11);
 }

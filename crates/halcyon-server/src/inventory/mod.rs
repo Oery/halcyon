@@ -6,7 +6,7 @@ mod action;
 mod click;
 mod slot;
 
-pub use action::InventoryAction;
+pub use action::{InventoryAction, InventoryClick, MouseButton, SwapHand};
 use slot::STORAGE;
 pub use slot::{ClickTarget, HotbarSlot, InventorySlot};
 
@@ -47,7 +47,7 @@ pub enum InventoryError {
 
 #[derive(Clone, Copy)]
 struct Drag {
-    right: bool,
+    button: MouseButton,
     slots: u64,
 }
 
@@ -236,14 +236,14 @@ impl Inventory {
         let mut full_sync = false;
         let mut predicted = 0;
         let accepted = match action {
-            InventoryAction::Click { state_id, target, button, mode, predicted_slots, .. } => {
+            InventoryAction::Click { state_id, click, predicted_slots, .. } => {
                 predicted = predicted_slots & ALL_SLOTS;
                 full_sync = state_id != self.state_id;
                 if self.require_current_state && full_sync {
                     false
                 } else {
                     self.require_current_state = false;
-                    self.click(target, button, mode)
+                    self.click(click)
                 }
             }
             InventoryAction::Close { .. } => {
