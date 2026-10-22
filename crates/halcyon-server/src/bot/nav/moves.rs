@@ -514,11 +514,32 @@ impl NavGraph {
         // the speed long jumps need.
         let runway = self.runway(view, from, here, dir, back);
         let runup_ok = |runup: f32| runup <= runway;
-        // The farthest-reaching attempt first: if it lands well short, no
-        // gentler variant can succeed.
+        let kind = if via.is_some() {
+            EdgeKind::Bounce
+        } else {
+            EdgeKind::Jump
+        };
+        let edge_for = |plan| Edge {
+            to,
+            to_feet: there.feet_y,
+            kind,
+            plan,
+            ticks: 0,
+            robustness: 0.0,
+            via,
+            damage: 0.0,
+        };
+        // Probe with the farthest-reaching plan: if even it lands well short,
+        // no plan can succeed. It is a feasibility check, never a preference.
         let longest: &[f32] = if long { &[LONG_RUNUP, MID_RUNUP, 0.3] } else { &[0.3] };
         let farthest = longest.iter().copied().find(|&r| runup_ok(r)).unwrap_or(0.0);
-        let mut plans = vec![Plan { runup: farthest, takeoff: rim + 0.2, sprint: true }];
+        let probe = Plan { runup: farthest, takeoff: rim + 0.2, sprint: true };
+        let probed = self.simulate(view, from, here, edge_for(probe), Execution::IDEAL, false);
+        if probed.ticks.is_none() && probed.closest > 1.0 && probed.furthest + 1.0 < distance {
+            return None;
+        }
+        // Simplest plans first, as a player would: short run-ups before long
+        // ones, which only win when nothing simpler is as reliable.
         let sprints: [bool; 2] = if long { [true, false] } else { [false, true] };
         let runups: &[f32] = if long {
             &[0.3, 0.0, MID_RUNUP, LONG_RUNUP]
@@ -530,11 +551,12 @@ impl NavGraph {
         } else {
             [rim - 0.35, rim, rim + 0.2]
         };
-        for sprint in sprints {
-            for &runup in runups {
-                if !runup_ok(runup) {
-                    continue;
-                }
+        let mut plans = Vec::new();
+        for &runup in runups {
+            if !runup_ok(runup) {
+                continue;
+            }
+            for sprint in sprints {
                 for takeoff in takeoffs {
                     let plan = Plan { runup, takeoff: takeoff.max(-0.3), sprint };
                     if !plans.contains(&plan) {
@@ -543,44 +565,18 @@ impl NavGraph {
                 }
             }
         }
+        // A near miss at full speed: the last ground tick fell short of the
+        // rim. Shift the run-up by fractions of a sprint step so the takeoff
+        // lands later, as players do on max-distance jumps.
+        if probed.ticks.is_none() && probe.runup > 1.0 && probed.furthest + 1.0 >= distance {
+            plans.extend(PHASE_SHIFTS.map(|shift| Plan { runup: probe.runup - shift, ..probe }));
+        }
         let mut best: Option<Edge> = None;
         let mut successes = 0;
-        let mut index = 0;
-        while index < plans.len() {
-            let plan = plans[index];
-            index += 1;
-            let edge = Edge {
-                to,
-                to_feet: there.feet_y,
-                kind: if via.is_some() {
-                    EdgeKind::Bounce
-                } else {
-                    EdgeKind::Jump
-                },
-                plan,
-                ticks: 0,
-                robustness: 0.0,
-                via,
-                damage: 0.0,
-            };
+        for plan in plans {
+            let edge = edge_for(plan);
             let outcome = self.simulate(view, from, here, edge, Execution::IDEAL, false);
-            let Some(ticks) = outcome.ticks else {
-                // The farthest-reaching plan fell well short: no gentler
-                // plan can do better. Overshooting proves nothing.
-                if index == 1 && outcome.closest > 1.0 && outcome.furthest + 1.0 < distance {
-                    return None;
-                }
-                // A near miss at full speed: the last ground tick fell short of
-                // the rim. Shift the run-up by fractions of a sprint step so
-                // the takeoff lands later, as players do on max-distance jumps.
-                if index == 1 && plan.runup > 1.0 && outcome.furthest + 1.0 >= distance {
-                    for shift in PHASE_SHIFTS {
-                        let shifted = Plan { runup: plan.runup - shift, ..plan };
-                        plans.insert(index, shifted);
-                    }
-                }
-                continue;
-            };
+            let Some(ticks) = outcome.ticks else { continue };
             let edge = Edge {
                 ticks: ticks.max(1),
                 robustness: self.robustness(view, from, here, edge),
@@ -588,9 +584,12 @@ impl NavGraph {
                 ..edge
             };
             successes += 1;
-            if best.is_none_or(|b| {
-                (edge.robustness, -i32::from(edge.ticks)) > (b.robustness, -i32::from(b.ticks))
-            }) {
+            // More reliable wins; at equal reliability, the shorter run-up.
+            let better = best.is_none_or(|b| {
+                edge.robustness > b.robustness
+                    || (edge.robustness == b.robustness && edge.plan.runup < b.plan.runup)
+            });
+            if better {
                 best = Some(edge);
             }
             if edge.robustness >= 0.75 || successes >= 3 {
@@ -602,7 +601,7 @@ impl NavGraph {
 
     /// How far back from the centre of `from`, against `dir`, the player can
     /// stand: over floor at the same height with nothing in the way.
-    fn runway(
+    pub(super) fn runway(
         &mut self,
         view: &impl BlockView,
         from: Cell,

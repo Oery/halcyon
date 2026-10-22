@@ -59,18 +59,27 @@ fn gap_jumps_match_vanilla_reach_from_a_single_block() {
 }
 
 #[test]
-fn a_run_up_carries_bots_over_four_block_gaps() {
-    // A three-block runway, then four blocks of air down to a block lower.
-    // Level four-block gaps need momentum carried from a previous jump.
+fn ordinary_jumps_keep_simple_plans_even_with_room_to_run() {
+    // Room to back up must not turn a plain three-block gap into a sprint
+    // from far back: simpler plans win at equal reliability.
     let mut view = MapView::default();
-    view.pillar(-2, 10, 0).pillar(-1, 10, 0).pillar(0, 10, 0).pillar(5, 9, 0);
-    let found = edge(&mut nav(), &view, [0, 11, 0], [5, 10, 0]).expect("a running jump");
-    assert!(found.plan.runup > 1.0, "backs up first: {:?}", found.plan);
-    // From a lone pillar there is no room to back up.
+    view.pillar(-2, 10, 0).pillar(-1, 10, 0).pillar(0, 10, 0).pillar(4, 10, 0);
+    let found = edge(&mut nav(), &view, [0, 11, 0], [4, 11, 0]).expect("a jump");
+    assert!(found.plan.runup <= 0.3, "{:?}", found.plan);
+}
+
+#[test]
+fn runways_measure_level_floor_behind_the_takeoff() {
     let mut view = MapView::default();
-    view.pillar(0, 10, 0).pillar(5, 9, 0);
-    let standing = edge(&mut nav(), &view, [0, 11, 0], [5, 10, 0]).expect("a standing jump");
-    assert!(standing.plan.runup <= 0.3);
+    view.pillar(-2, 10, 0).pillar(-1, 10, 0).pillar(0, 10, 0);
+    let mut nav = nav();
+    let here = nav.stand(&view, [0, 11, 0]).unwrap();
+    assert!(nav.graph.runway(&view, [0, 11, 0], here, [1.0, 0.0], 0.5) >= 2.5);
+    let mut lone = MapView::default();
+    lone.pillar(0, 10, 0);
+    let mut nav = self::nav();
+    let here = nav.stand(&lone, [0, 11, 0]).unwrap();
+    assert!(nav.graph.runway(&lone, [0, 11, 0], here, [1.0, 0.0], 0.5) <= 0.75);
 }
 
 #[test]
