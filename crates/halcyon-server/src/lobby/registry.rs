@@ -8,9 +8,7 @@ use mc_protocol::types::ItemStack;
 use uuid::Uuid;
 
 use super::session::Input;
-use super::{
-    AdmissionError, MAX_PLAYERS, PlayerSnapshot, Profile, StepMetrics, Transform, WorldAction,
-};
+use super::{AdmissionError, PlayerSnapshot, Profile, StepMetrics, Transform, WorldAction};
 use crate::interaction::{USES_PER_STEP, use_block};
 use crate::inventory::InventoryAction;
 use crate::player::{PlayerAction, PlayerState, PlayerUpdate};
