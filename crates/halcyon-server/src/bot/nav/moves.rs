@@ -32,6 +32,10 @@ const JUMP_APEX: f64 = 1.25;
 /// Optimistic fraction of a fall's height a slime bounce gives back.
 const BOUNCE_RETURN: f64 = 0.9;
 const BOUNCE_REACH: i32 = 4;
+/// How far below the takeoff a slime pad is looked for: courses drop
+/// players several blocks onto a pad to launch them high.
+const BOUNCE_DROP: i32 = 10;
+const BOUNCE_SEARCH: i32 = 8;
 const MAX_BOUNCE_CANDIDATES: usize = 24;
 
 const NEIGHBOURS: [[i32; 2]; 8] =
@@ -282,13 +286,14 @@ impl NavGraph {
         existing: &[Candidate],
     ) -> Vec<Candidate> {
         let mut found: Vec<Candidate> = Vec::new();
-        for dx in -MAX_REACH..=MAX_REACH {
-            for dz in -MAX_REACH..=MAX_REACH {
+        for dx in -BOUNCE_SEARCH..=BOUNCE_SEARCH {
+            for dz in -BOUNCE_SEARCH..=BOUNCE_SEARCH {
                 let distance = f64::from(dx).hypot(f64::from(dz));
-                if distance > f64::from(MAX_REACH) + 0.3 {
-                    continue;
-                }
-                for dy in -6..=1 {
+                for dy in -BOUNCE_DROP..=1 {
+                    // A longer drop onto the pad means longer airtime to cover ground.
+                    if distance > reach(f64::from(dy)) + f64::from(-dy).max(0.0) * 0.3 {
+                        continue;
+                    }
                     let slime = [from[0] + dx, from[1] + dy, from[2] + dz];
                     let below = view.block_at(slime[0], slime[1] - 1, slime[2]);
                     if !below.is_some_and(|id| {
