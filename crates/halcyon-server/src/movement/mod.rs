@@ -106,6 +106,7 @@ pub struct Advance {
     pub ground: MotionInfo,
 }
 
+#[derive(Clone)]
 pub struct MovementState {
     transform: Transform,
     sneaking: bool,
@@ -239,6 +240,17 @@ impl MovementState {
             }
         }
         false
+    }
+
+    /// Like `reset`, but trusts the caller's ground contact. Offline planners
+    /// place a settled player on a known support without simulating a landing.
+    pub fn place(&mut self, transform: Transform) {
+        self.reset(transform);
+        self.transform.on_ground = transform.on_ground;
+        if transform.on_ground {
+            // A resting player carries one tick of gravity into every step.
+            self.motion.velocity[1] = -physics::RESTING_FALL;
+        }
     }
 
     /// Teleport/respawn establishes a new fall baseline without allocating.

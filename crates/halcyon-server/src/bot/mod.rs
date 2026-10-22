@@ -1,6 +1,11 @@
 //! Server-driven participants. A bot owns a lobby `Session` like a human
 //! connection and acts only through the shared action path.
+//!
+//! Layers, bottom-up: `Body` (session bookkeeping a client would do), `motor`
+//! (humanlike hands), `nav` (shared terrain graph and route search) and
+//! `brain` (what to do next). See `docs/bots.md`.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -14,31 +19,122 @@ use crate::lobby::{Lobby, Profile, Session, Transform};
 use crate::movement::MovementInput;
 use crate::server::Server;
 
+pub mod brain;
+pub mod motor;
+pub mod nav;
+pub mod profile;
+pub mod rng;
+#[cfg(test)]
+pub mod sim;
+#[cfg(test)]
+#[path = "../tests/support_bot_map.rs"]
+pub mod test_map;
+
+use brain::{Brain, Mode};
+use nav::{Budget, NavService};
+use profile::BotProfile;
+use rng::Rng;
+
 const TICK: Duration = Duration::from_millis(50);
 /// Ticks a dead bot waits before pressing respawn.
 const RESPAWN_DELAY: u32 = 30;
+/// Route validation time shared by all bots per server tick.
+const NAV_BUDGET: Duration = Duration::from_millis(2);
+/// How far from spawn the climb goal is searched for.
+const GOAL_RADIUS: i32 = 128;
 
-/// Spawn `count` wandering bots on the current executor.
+/// Live per-bot summaries for diagnostics.
+#[derive(Default)]
+struct Report {
+    bots: Vec<(Mode, f64, u32)>,
+}
+
+/// Spawn `count` bots on the current executor. They share one navigation
+/// service, so routes validated for one bot are reused by all.
 pub fn spawn(server: Arc<Server>, lobby: Lobby, count: usize, seed: u64) {
+    if count == 0 {
+        return;
+    }
+    let mut service = NavService::new(Budget::PerWindow { limit: NAV_BUDGET, window: TICK });
+    service.goal = std::env::var("HALCYON_BOT_GOAL").ok().and_then(|goal| parse_cell(&goal));
+    if service.goal.is_none() {
+        let (x, y, z, _, _) = server.lobby.spawn;
+        let around = [x.floor() as i32, y.floor() as i32, z.floor() as i32];
+        let start = Instant::now();
+        service.goal = lobby.with_registry(|registry| {
+            service.detect_goal(&registry.arena.view(&server.lobby), around, GOAL_RADIUS)
+        });
+        println!("bots: goal {:?} detected in {}ms", service.goal, start.elapsed().as_millis());
+    }
+    let nav = Rc::new(RefCell::new(service));
+    let report = Rc::new(RefCell::new(Report { bots: vec![(Mode::Idle, 0.0, 0); count] }));
+    let (low, high) = profile::parse_levels(std::env::var("HALCYON_BOT_LEVEL").ok().as_deref());
     for index in 0..count {
         let server = server.clone();
         let lobby = lobby.clone();
+        let nav = nav.clone();
+        let report = report.clone();
         let seed = seed ^ (index as u64 + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        let level = Rng::new(seed ^ 0x1e7e1).ticks(u32::from(low), u32::from(high)) as u8;
         glommio::spawn_local(async move {
-            if let Err(error) = run(server, lobby, index, seed).await {
+            let bot = Bot { index, seed, profile: BotProfile::new(level), nav, report };
+            if let Err(error) = run(server, lobby, bot).await {
                 eprintln!("bot {index}: {error}");
             }
         })
         .detach();
     }
+    if server.diagnostics {
+        glommio::spawn_local(report_loop(nav, report)).detach();
+    }
 }
 
-async fn run(
-    server: Arc<Server>,
-    lobby: Lobby,
+fn parse_cell(text: &str) -> Option<nav::Cell> {
+    let mut parts = text.split(',').map(|part| part.trim().parse::<i32>().ok());
+    Some([parts.next()??, parts.next()??, parts.next()??])
+}
+
+async fn report_loop(nav: Rc<RefCell<NavService>>, report: Rc<RefCell<Report>>) {
+    loop {
+        Timer::new(Duration::from_secs(5)).await;
+        let report = report.borrow();
+        let stats = nav.borrow().stats();
+        let count = |mode| report.bots.iter().filter(|(m, _, _)| *m == mode).count();
+        let mut heights: Vec<f64> = report.bots.iter().map(|(_, y, _)| *y).collect();
+        heights.sort_by(f64::total_cmp);
+        let falls: u32 = report.bots.iter().map(|(_, _, falls)| falls).sum();
+        eprintln!(
+            "bots: idle={} planning={} moving={} recovering={} finished={} stuck={} falls={} y_median={:.1} y_max={:.1} nav_nodes={} nav_edges={} nav_cells={} sims={} sim_ticks={} build_ms={} expansions={}",
+            count(Mode::Idle),
+            count(Mode::Planning),
+            count(Mode::Moving),
+            count(Mode::Recovering),
+            count(Mode::Finished),
+            count(Mode::Stuck),
+            falls,
+            heights.get(heights.len() / 2).copied().unwrap_or(0.0),
+            heights.last().copied().unwrap_or(0.0),
+            stats.nodes,
+            stats.edges,
+            nav.borrow().graph.cached_cells(),
+            stats.simulations,
+            stats.simulated_ticks,
+            stats.build_time.as_millis(),
+            stats.expansions,
+        );
+    }
+}
+
+struct Bot {
     index: usize,
     seed: u64,
-) -> Result<(), crate::error::Error> {
+    profile: BotProfile,
+    nav: Rc<RefCell<NavService>>,
+    report: Rc<RefCell<Report>>,
+}
+
+async fn run(server: Arc<Server>, lobby: Lobby, bot: Bot) -> Result<(), crate::error::Error> {
+    let Bot { index, seed, profile: skill, nav, report } = bot;
     let mut rng = Rng::new(seed);
     let username = format!("Bot{}", index + 1);
     let uuid = Uuid::from_u64_pair(rng.next(), rng.next());
@@ -75,7 +171,7 @@ async fn run(
     // Becoming visible follows the human path: teleport, then confirmation.
     session.teleport(spawn);
 
-    let mut brain = Wander::new(spawn.yaw);
+    let mut brain = Brain::new(skill, rng.next(), spawn);
     let mut body = Body::default();
     let mut next = Instant::now();
     loop {
@@ -85,8 +181,14 @@ async fn run(
         if !session.ready() {
             continue;
         }
-        let input = brain.tick(&mut rng, session.accepted_transform());
+        let position = session.accepted_transform();
+        let input = lobby.with_registry(|registry| {
+            let mut nav = nav.borrow_mut();
+            nav.sync(&registry.arena);
+            brain.tick(position, &mut nav, &registry.arena.view(&server.lobby))
+        });
         body.drive(&session, input);
+        report.borrow_mut().bots[index] = (brain.mode(), position.y, brain.stats.falls);
     }
 }
 
@@ -133,106 +235,6 @@ fn same_input(a: MovementInput, b: MovementInput) -> bool {
         == (b.forward, b.backward, b.left, b.right, b.jumping, b.sneaking, b.sprinting)
         && a.yaw == b.yaw
         && a.pitch == b.pitch
-}
-
-/// Placeholder behavior until navigation exists: alternate between idling
-/// with a wandering gaze and walking toward a random heading.
-struct Wander {
-    walking: bool,
-    ticks_left: u32,
-    yaw: f32,
-    pitch: f32,
-    target_yaw: f32,
-    target_pitch: f32,
-    last: Option<Transform>,
-    blocked: u32,
-}
-
-impl Wander {
-    fn new(yaw: f32) -> Self {
-        Self {
-            walking: false,
-            ticks_left: 20,
-            yaw,
-            pitch: 0.0,
-            target_yaw: yaw,
-            target_pitch: 0.0,
-            last: None,
-            blocked: 0,
-        }
-    }
-
-    fn tick(&mut self, rng: &mut Rng, position: Transform) -> MovementInput {
-        let moved = self
-            .last
-            .replace(position)
-            .is_some_and(|last| (last.x - position.x).hypot(last.z - position.z) > 0.02);
-        self.blocked = if self.walking && !moved { self.blocked + 1 } else { 0 };
-
-        if self.ticks_left == 0 || self.blocked > 10 {
-            self.walking = !self.walking || self.blocked > 10;
-            self.blocked = 0;
-            if self.walking {
-                self.ticks_left = rng.range(30.0, 120.0) as u32;
-                self.target_yaw = self.yaw + rng.range(-120.0, 120.0) as f32;
-                self.target_pitch = rng.range(-5.0, 15.0) as f32;
-            } else {
-                self.ticks_left = rng.range(20.0, 80.0) as u32;
-            }
-        }
-        self.ticks_left -= 1;
-        if !self.walking && rng.chance(0.04) {
-            self.target_yaw = self.yaw + rng.range(-70.0, 70.0) as f32;
-            self.target_pitch = rng.range(-20.0, 25.0) as f32;
-        }
-
-        // Eased turn with a rate cap and a little tremor, never a snap.
-        let turn = (self.target_yaw - self.yaw) * 0.25;
-        self.yaw += turn.clamp(-18.0, 18.0) + rng.range(-0.3, 0.3) as f32;
-        self.pitch += (self.target_pitch - self.pitch) * 0.2 + rng.range(-0.2, 0.2) as f32;
-        self.pitch = self.pitch.clamp(-90.0, 90.0);
-        let wrap = (self.yaw / 360.0).round() * 360.0;
-        self.yaw -= wrap;
-        self.target_yaw -= wrap;
-
-        MovementInput {
-            forward: self.walking,
-            // Try hopping over an obstacle before giving up on the heading.
-            jumping: self.walking && self.blocked > 3,
-            yaw: self.yaw,
-            pitch: self.pitch,
-            ..Default::default()
-        }
-    }
-}
-
-/// SplitMix64: tiny, seedable and reproducible across runs.
-struct Rng(u64);
-
-impl Rng {
-    fn new(seed: u64) -> Self {
-        Self(seed)
-    }
-
-    fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        z ^ (z >> 31)
-    }
-
-    fn unit(&mut self) -> f64 {
-        (self.next() >> 11) as f64 / (1u64 << 53) as f64
-    }
-
-    fn range(&mut self, min: f64, max: f64) -> f64 {
-        min + (max - min) * self.unit()
-    }
-
-    fn chance(&mut self, p: f64) -> bool {
-        self.unit() < p
-    }
 }
 
 #[cfg(test)]

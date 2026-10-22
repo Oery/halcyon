@@ -10,6 +10,8 @@ mod tests;
 
 const GRAVITY: f64 = 0.08;
 const AIR_DRAG: f64 = 0.98f32 as f64;
+/// Downward speed a player standing still carries between ticks.
+pub(super) const RESTING_FALL: f64 = GRAVITY * AIR_DRAG;
 static SIN: OnceLock<Box<[f32]>> = OnceLock::new();
 
 #[cfg(test)]
