@@ -43,7 +43,7 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Jumping and falling | Done — ground jumps, gravity, air control, jump timing and supported landing effects. |
 | Swimming and crawling | Done — water travel, sprint swimming, currents, shoreline exits and swim/crawl pose transitions; air and drowning remain unavailable. |
 | Climbing | Not started |
-| Movement surfaces and media | Partial — dry surfaces, honey sliding, landing modifiers and water, including aquatic plants and supported waterlogged geometry; lava, bubble columns, climbing and webs disabled. |
+| Movement surfaces and media | Partial — dry surfaces, honey sliding, landing modifiers, water and lava travel and ladder climbing (including open trapdoors above matching ladders), with aquatic plants, supported waterlogged geometry and offset bamboo stalks; lava burning, bubble columns, vines, scaffolding and webs unavailable. |
 | Flight permissions | Not started |
 | Movement abilities and attributes | Not started |
 | Teleportation | Done — validated destinations and position corrections. |
@@ -242,7 +242,7 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Entity identity and lifecycle | Partial — human players only. |
 | Entity tracking | Partial — players and falling sand/gravel, gated by delivered terrain. |
 | Entity synchronization | Partial — players and falling sand/gravel. |
-| Entity physics | Partial — player ground/water motion, swimming/crawling and sand/gravel falls; other movement media and entity types unavailable. |
+| Entity physics | Partial — player ground/water/lava motion, swimming/crawling and sand/gravel falls; other movement media and entity types unavailable. |
 | Entity interaction | Not started |
 | Living-entity attributes | Not started |
 | Natural spawning | Excluded |

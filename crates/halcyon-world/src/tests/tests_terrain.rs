@@ -81,7 +81,7 @@ fn ground_profiles_match_target_surface_properties_and_keep_media_disabled() {
     for key in [
         "minecraft:cobweb",
         "minecraft:powder_snow",
-        "minecraft:ladder[facing=north,waterlogged=false]",
+        "minecraft:vine[east=false,north=false,south=false,up=false,west=true]",
     ] {
         assert_eq!(motion(key).surface, Surface::Unsupported, "{key}");
     }
@@ -147,4 +147,63 @@ fn sections_retain_y_z_x_order_without_uniform_allocations() {
     assert_eq!(section.block_at(3, 7, 5), 0);
     assert_eq!(section.backing_bytes(), 8192);
     assert!(matches!(Section::from_states(Box::new([1; 4096])), Section::Uniform(1)));
+}
+
+// Expected minimum corners: official 26.3 Mth.getSeed with the XZ offset
+// function applied to BambooStalkBlock's 3-pixel collision column.
+#[allow(clippy::excessive_precision)]
+#[test]
+fn bamboo_offsets_match_vanilla_hash_and_lava_has_travel_motion() {
+    let bamboo: Vec<_> = crate::blockstates::BLOCK_STATES
+        .iter()
+        .filter(|(key, _)| key.starts_with("minecraft:bamboo["))
+        .map(|&(_, id)| id as BlockStateId)
+        .collect();
+    assert_eq!(bamboo.len(), 12);
+    for &id in &bamboo {
+        assert!(xz_offset(id) && !contextual_geometry(id));
+        assert_eq!(motion_info(id), MotionInfo::default());
+        assert_eq!(
+            state_info(id).collision_boxes(),
+            &[Aabb { min: [0.15625, 0.0, 0.15625], max: [0.34375, 1.0, 0.34375] }]
+        );
+    }
+    for (x, z, min_x, min_z) in [
+        (0, 0, 0.15625, 0.15625),
+        (1, 0, 0.5229166746139526, 0.3895833343267441),
+        (-7, 13, 0.35625000298023224, 0.28958334028720856),
+        (2147483647, -2147483648, 0.15625, 0.2562500014901161),
+        (41, -34, 0.65625, 0.28958334028720856),
+    ] {
+        let offset = collision_offset(bamboo[0], x, z);
+        assert!((0.15625 + offset[0] - min_x).abs() < 1e-12, "{x} {z}");
+        assert!((0.15625 + offset[2] - min_z).abs() < 1e-12, "{x} {z}");
+        assert_eq!(offset[1], 0.0);
+    }
+    assert_eq!(collision_offset(1, 41, -34), [0.0; 3]);
+    assert!(contextual_geometry(block_state_id("minecraft:powder_snow").unwrap() as BlockStateId));
+    for level in [0, 7] {
+        let lava = block_state_id(&format!("minecraft:lava[level={level}]")).unwrap() as u16;
+        assert_eq!(motion_info(lava), MotionInfo::default());
+    }
+}
+
+#[test]
+fn ladders_and_open_trapdoors_carry_climbing_facing() {
+    let id = |key: &str| block_state_id(key).unwrap() as BlockStateId;
+    for (facing, index) in [("north", 0), ("east", 1), ("south", 2), ("west", 3)] {
+        for wet in [false, true] {
+            let ladder = id(&format!("minecraft:ladder[facing={facing},waterlogged={wet}]"));
+            assert_eq!(climb(ladder), Climb::Ladder(index));
+            assert_eq!(motion_info(ladder).surface, Surface::Ordinary);
+        }
+        let trapdoor = |open| {
+            id(&format!(
+                "minecraft:iron_trapdoor[facing={facing},half=top,open={open},powered=false,waterlogged=false]"
+            ))
+        };
+        assert_eq!(climb(trapdoor(true)), Climb::OpenTrapdoor(index));
+        assert_eq!(climb(trapdoor(false)), Climb::None);
+    }
+    assert_eq!(climb(1), Climb::None);
 }

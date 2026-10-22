@@ -1,7 +1,8 @@
 //! Bounded collision queries, pose clearance and supported surface contacts.
 
 use halcyon_world::{
-    Aabb, BlockView, MAX_BLOCK_Y, MIN_BLOCK_Y, MotionInfo, Surface, motion_info, state_info,
+    Aabb, BlockView, Climb, MAX_BLOCK_Y, MIN_BLOCK_Y, MotionInfo, Surface, climb, collision_offset,
+    contextual_geometry, motion_info, state_info,
 };
 
 use super::collision::{intersects, player_box, translate};
@@ -32,7 +33,8 @@ pub(super) fn ground_contact(terrain: &impl Terrain, position: Transform) -> Opt
                     continue;
                 }
                 let origin = [f64::from(x), f64::from(y), f64::from(z)];
-                if !cell.shapes.iter().any(|shape| intersects(feet, translate(*shape, origin))) {
+                let placed = cell.placement(origin);
+                if !cell.shapes.iter().any(|shape| intersects(feet, translate(*shape, placed))) {
                     continue;
                 }
                 let distance = (position.x - origin[0] - 0.5).powi(2)
@@ -49,6 +51,19 @@ pub(super) fn ground_contact(terrain: &impl Terrain, position: Transform) -> Opt
         }
     }
     best.map(|(_, contact)| contact)
+}
+
+/// LivingEntity.onClimbable for the feet cell: a ladder, or an open trapdoor
+/// directly above a ladder with the same facing.
+pub(super) fn climbing(terrain: &impl Terrain, position: Transform) -> bool {
+    let [x, y, z] = [position.x, position.y, position.z].map(|n| n.floor() as i32);
+    match terrain.cell(x, y, z).map(|cell| cell.climb) {
+        Some(Climb::Ladder(_)) => true,
+        Some(Climb::OpenTrapdoor(facing)) => {
+            terrain.cell(x, y - 1, z).is_some_and(|cell| cell.climb == Climb::Ladder(facing))
+        }
+        _ => false,
+    }
 }
 
 pub(super) fn landing_damage(distance: f64, surface: MotionInfo, sneaking: bool) -> f32 {
@@ -96,9 +111,18 @@ pub(super) fn honey_slide(
 pub(super) struct TerrainCell {
     pub(super) fluid: halcyon_world::FluidInfo,
     pub(super) shapes: &'static [Aabb],
+    /// Position-dependent translation of `shapes` within the block cell.
+    pub(super) offset: [f64; 3],
     pub(super) uncertain: bool,
     pub(super) contextual: bool,
     pub(super) motion: MotionInfo,
+    pub(super) climb: Climb,
+}
+
+impl TerrainCell {
+    pub(super) fn placement(&self, origin: [f64; 3]) -> [f64; 3] {
+        std::array::from_fn(|axis| origin[axis] + self.offset[axis])
+    }
 }
 
 pub(super) trait Terrain {
@@ -118,9 +142,11 @@ impl<T: BlockView> Terrain for T {
         Some(TerrainCell {
             fluid: halcyon_world::fluid_info(id),
             shapes: info.collision_boxes(),
+            offset: collision_offset(id, x, z),
             uncertain: motion.surface == Surface::Unsupported,
-            contextual: info.contextual_geometry(),
+            contextual: contextual_geometry(id),
             motion,
+            climb: climb(id),
         })
     }
 }
@@ -167,7 +193,8 @@ pub(super) fn collect_colliders(
                     if cell.shapes.len() > MAX_COLLIDERS.saturating_sub(colliders.len()) {
                         return None;
                     }
-                    colliders.extend(cell.shapes.iter().map(|shape| translate(*shape, origin)));
+                    let placed = cell.placement(origin);
+                    colliders.extend(cell.shapes.iter().map(|shape| translate(*shape, placed)));
                 }
             }
         }

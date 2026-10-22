@@ -43,6 +43,16 @@ impl BlockView for Pool {
     }
 }
 
+fn water_contact(
+    terrain: &impl Terrain,
+    position: Transform,
+    pose: PlayerPose,
+    currents: bool,
+    cells: &mut usize,
+) -> Option<FluidContact> {
+    fluid_contact(terrain, position, pose, currents, cells).map(|fluids| fluids.water)
+}
+
 fn at(x: f64, y: f64) -> Transform {
     Transform { x, y, z: 0.5, ..Default::default() }
 }
@@ -235,7 +245,7 @@ fn flowing_water_pushes_and_falling_water_pulls_beside_sturdy_walls() {
         water_contact(&pool, at(0.5, 4.0), PlayerPose::Standing, true, &mut cells).unwrap();
     assert_eq!(contact.current, [1.0, 0.0, 0.0]);
     let mut velocity = [0.0; 3];
-    contact.push(&mut velocity);
+    contact.push(&mut velocity, WATER_CURRENT);
     assert_eq!(velocity, [0.014, 0.0, 0.0]);
     pool.water = id("minecraft:water[level=8]");
     for y in 1..=9 {
@@ -271,4 +281,33 @@ fn shoreline_clearance_allows_exit_without_a_step_or_flight_exception() {
     assert!(state.transform().x > 1.3);
     assert_eq!(state.transform().y, 2.0);
     assert_eq!(state.pose(), PlayerPose::Standing);
+}
+
+#[test]
+fn lava_accepts_predictions_halves_fall_distance_and_travels_slowly() {
+    let mut pool = Pool::new(2);
+    pool.water = id("minecraft:lava[level=0]");
+    let mut state = MovementState::new(at(0.5, 8.0));
+    let mut queue = ProposalQueue::default();
+    for y in [2.5, 1.0] {
+        queue.push(MovementProposal { transform: at(0.5, y), sneaking: false, sprinting: false });
+    }
+    let result = state.advance(&pool, &mut queue);
+    assert!(!result.correction && !result.uncertain_motion, "{result:?}");
+    // 5.5 blocks above lava, halved on contact, then 1.5 more: ceil(4.25 - 3).
+    assert_eq!(result.landed_fall_damage, Some(2.0));
+
+    // Deep lava: velocity halves and gravity is quartered, without water's drag.
+    let mut pool = Pool::new(9);
+    pool.water = id("minecraft:lava[level=0]");
+    let mut state = MovementState::new(at(0.5, 4.0));
+    let mut expected = [4.0f64, 0.0f64];
+    for _ in 0..8 {
+        let result = state.step(&pool, MovementInput::default());
+        assert!(!result.correction && !result.swimming);
+        expected[0] += if expected[1].abs() < 0.003 { 0.0 } else { expected[1] };
+        expected[1] = expected[1] * 0.5 - 0.08 / 4.0;
+        assert!((state.transform().y - expected[0]).abs() < 1e-12);
+        assert!((state.motion.velocity[1] - expected[1]).abs() < 1e-12);
+    }
 }

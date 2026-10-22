@@ -1,6 +1,7 @@
 //! Immutable terrain queries and the shared, versioned collision catalog.
 
 use std::mem::size_of;
+use std::sync::OnceLock;
 
 #[path = "collision_data.rs"]
 mod data;
@@ -124,20 +125,24 @@ impl Default for MotionInfo {
     }
 }
 
-/// Water keeps the dry block's surface properties and static geometry. Other
-/// uncertain contexts (lava, climbables, webs, dynamic shapes) cannot acquire
+/// Water keeps the dry block's surface properties and static geometry. Lava
+/// blocks have no geometry; their travel rules belong to the movement owner.
+/// Other uncertain contexts (climbables, webs, dynamic shapes) cannot acquire
 /// support merely because their representative shape is empty.
 pub fn motion_info(id: BlockStateId) -> MotionInfo {
     let state = state_info(id);
+    if xz_offset(id) || matches!(climb(id), Climb::Ladder(_)) {
+        return MotionInfo::default();
+    }
     if state.contextual_geometry() {
         return MotionInfo { surface: Surface::Unsupported, ..MotionInfo::default() };
     }
     if state.flags.has_fluid() {
         let fluid = fluid_info(id);
-        return if fluid.kind == FluidKind::Water && fluid.supported {
-            motion_info(fluid.dry_state)
-        } else {
-            MotionInfo { surface: Surface::Unsupported, ..MotionInfo::default() }
+        return match fluid.kind {
+            FluidKind::Water if fluid.supported => motion_info(fluid.dry_state),
+            FluidKind::Lava if fluid.dry_state == 0 => MotionInfo::default(),
+            _ => MotionInfo { surface: Surface::Unsupported, ..MotionInfo::default() },
         };
     }
     motion_data::special_motion(id).unwrap_or_else(|| MotionInfo {
@@ -148,6 +153,75 @@ pub fn motion_info(id: BlockStateId) -> MotionInfo {
         },
         ..MotionInfo::default()
     })
+}
+
+/// Climbing context in horizontal facing order N, E, S, W. Of the climbable
+/// tag only ladders are supported; vines and scaffolding remain disabled.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Climb {
+    #[default]
+    None,
+    Ladder(u8),
+    /// Climbable only directly above a ladder with the same facing.
+    OpenTrapdoor(u8),
+}
+
+static CLIMB: OnceLock<Box<[u8]>> = OnceLock::new();
+
+/// One byte per state, derived once from the registry keys and shared.
+pub fn climb(id: BlockStateId) -> Climb {
+    let table = CLIMB.get_or_init(|| {
+        let mut table = vec![0u8; data::STATES.len()].into_boxed_slice();
+        for &(key, id) in crate::blockstates::BLOCK_STATES {
+            let Some((name, props)) = key.split_once('[') else {
+                continue;
+            };
+            let ladder = name == "minecraft:ladder";
+            if !ladder && !(name.ends_with("_trapdoor") && props.contains("open=true")) {
+                continue;
+            }
+            let Some(facing) = ["north", "east", "south", "west"]
+                .iter()
+                .position(|f| props.contains(&format!("facing={f}")))
+            else {
+                continue;
+            };
+            table[id as usize] = 1 + facing as u8 + if ladder { 0 } else { 4 };
+        }
+        table
+    });
+    match table.get(id as usize).copied().unwrap_or(0) {
+        0 => Climb::None,
+        n @ 1..=4 => Climb::Ladder(n - 1),
+        n => Climb::OpenTrapdoor(n - 5),
+    }
+}
+
+/// Bamboo stalks: one static column moved per block column by vanilla's XZ
+/// offset hash. Other offset blocks keep shape rules beyond a translation.
+fn xz_offset(id: BlockStateId) -> bool {
+    matches!(id, 18636..=18647)
+}
+
+/// Contextual geometry after position-dependent offsets are resolved.
+pub fn contextual_geometry(id: BlockStateId) -> bool {
+    state_info(id).contextual_geometry() && !xz_offset(id)
+}
+
+/// Translation from the catalog shape to the shape at block column (x, z).
+/// The catalog captured offset shapes at the origin, where vanilla's hash
+/// yields (-0.25, 0, -0.25); every other state is position independent.
+pub fn collision_offset(id: BlockStateId, x: i32, z: i32) -> [f64; 3] {
+    if !xz_offset(id) {
+        return [0.0; 3];
+    }
+    // Mth.getSeed(x, 0, z) with Java int/long overflow; the 0.25 clamp of
+    // BlockBehaviour.getMaxHorizontalOffset cannot bind for 4-bit inputs.
+    let seed = i64::from(x.wrapping_mul(3_129_871)) ^ i64::from(z).wrapping_mul(116_129_781);
+    let seed = seed.wrapping_mul(seed).wrapping_mul(42_317_861).wrapping_add(seed.wrapping_mul(11));
+    let seed = seed >> 16;
+    let axis = |bits: i64| (f64::from((bits & 15) as f32 / 15.0) - 0.5) * 0.5 + 0.25;
+    [axis(seed), 0.0, axis(seed >> 8)]
 }
 
 pub const MIN_BLOCK_Y: i32 = -64;

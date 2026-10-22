@@ -33,8 +33,10 @@ impl Terrain for Map {
         self.blocks.get(&(x, y, z)).map(|&(shapes, uncertain)| TerrainCell {
             fluid: Default::default(),
             shapes,
+            offset: [0.0; 3],
             uncertain,
             contextual: false,
+            climb: Default::default(),
             motion: self.surfaces.get(&(x, y, z)).copied().unwrap_or_default(),
         })
     }
@@ -283,4 +285,113 @@ fn unsupported_media_cannot_enable_low_tunnels() {
     assert!(result.correction);
     assert!(result.uncertain_motion);
     assert_eq!(state.transform(), position(-0.5, 1.0, 0.5));
+}
+
+#[test]
+fn bamboo_collides_at_its_vanilla_column_offset() {
+    struct Grove(u16);
+    impl BlockView for Grove {
+        fn block_at(&self, x: i32, y: i32, z: i32) -> Option<u16> {
+            Some(match (x, y, z) {
+                (_, 0, _) => 1,
+                (1, 1 | 2, 0) => self.0,
+                _ => 0,
+            })
+        }
+        fn contains_column(&self, _: i32, _: i32) -> bool {
+            true
+        }
+    }
+    let bamboo =
+        halcyon_world::blockstates::block_state_id("minecraft:bamboo[age=0,leaves=none,stage=0]")
+            .unwrap();
+    let grove = Grove(bamboo as u16);
+    // Official 26.3 offset puts this column's minimum X at 1.5229166746139526.
+    let mut state = MovementState::new(position(0.5, 1.0, 0.5));
+    let mut queue = ProposalQueue::default();
+    propose(&mut queue, position(1.2, 1.0, 0.5));
+    let result = state.advance(&grove, &mut queue);
+    assert!(!result.correction && !result.uncertain_motion, "{result:?}");
+    propose(&mut queue, position(1.4, 1.0, 0.5));
+    let result = state.advance(&grove, &mut queue);
+    assert!(result.correction && !result.uncertain_motion);
+    assert!((result.transform.x - (1.5229166746139526 - HALF_WIDTH)).abs() < 1e-9);
+}
+
+/// Floor at y=0, a north-facing ladder column at x=0, z=1 against a wall.
+struct LadderWall {
+    ladder: u16,
+    top: Option<u16>,
+}
+
+impl BlockView for LadderWall {
+    fn block_at(&self, x: i32, y: i32, z: i32) -> Option<u16> {
+        Some(match (x, y, z) {
+            (_, 0, _) | (_, _, 2) => 1,
+            (0, 1..=5, 1) => self.ladder,
+            (0, 6, 1) => self.top.unwrap_or(self.ladder),
+            _ => 0,
+        })
+    }
+    fn contains_column(&self, _: i32, _: i32) -> bool {
+        true
+    }
+}
+
+fn ladder_wall(top: Option<&str>) -> LadderWall {
+    let id = |key: &str| halcyon_world::blockstates::block_state_id(key).unwrap() as u16;
+    LadderWall { ladder: id("minecraft:ladder[facing=north,waterlogged=false]"), top: top.map(id) }
+}
+
+#[test]
+fn ladder_descent_is_accepted_and_resets_fall_distance() {
+    let air = LadderWall { ladder: 0, top: None };
+    for (wall, damaged) in [(ladder_wall(None), false), (air, true)] {
+        let mut state = MovementState::new(position(0.5, 6.0, 1.5));
+        let mut queue = ProposalQueue::default();
+        let mut result = None;
+        for step in 1..=50 {
+            let y = (6.0 - 0.1 * f64::from(step)).max(1.0);
+            propose(&mut queue, Transform { on_ground: y == 1.0, ..position(0.5, y, 1.5) });
+            let advance = state.advance(&wall, &mut queue);
+            assert!(!advance.correction && !advance.uncertain_motion, "{advance:?}");
+            result = advance.landed_fall_damage.or(result);
+        }
+        assert_eq!(result.is_some_and(|d| d > 0.0), damaged);
+    }
+}
+
+#[test]
+fn ladders_climb_hold_and_continue_through_matching_trapdoors() {
+    let input = MovementInput { forward: true, ..Default::default() };
+    for top in [
+        None,
+        Some(
+            "minecraft:oak_trapdoor[facing=north,half=bottom,open=true,powered=false,waterlogged=false]",
+        ),
+    ] {
+        let wall = ladder_wall(top);
+        let mut state = MovementState::new(position(0.5, 1.0, 1.5));
+        for _ in 0..60 {
+            assert!(!state.step(&wall, input).correction);
+        }
+        // Each climbing tick moves (0.2 - 0.08) * 0.98 upward.
+        assert!(state.transform().y > 6.5, "{top:?}: {}", state.transform().y);
+    }
+    let wall = ladder_wall(None);
+    let mut state = MovementState::new(position(0.5, 1.0, 1.5));
+    for _ in 0..10 {
+        state.step(&wall, input);
+    }
+    // Upward climbing momentum decays first; then sneaking cancels the descent.
+    let sneak = MovementInput { sneaking: true, ..Default::default() };
+    for _ in 0..3 {
+        state.step(&wall, sneak);
+    }
+    let held = state.transform().y;
+    for _ in 0..10 {
+        let result = state.step(&wall, sneak);
+        assert!(!result.correction);
+    }
+    assert_eq!(state.transform().y, held);
 }

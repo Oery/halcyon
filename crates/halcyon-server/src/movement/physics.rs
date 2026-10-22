@@ -1,4 +1,4 @@
-//! Java 26.3 ground and water travel in discrete 50-ms movement units.
+//! Java 26.3 ground, water and lava travel in discrete 50-ms movement units.
 //! Defaults only: food is fixed, item use/effects/attribute modifiers are disabled.
 use std::sync::OnceLock;
 
@@ -155,10 +155,11 @@ impl MovementState {
             Some(false) => {}
             unsupported => return self.blocked(cells, unsupported == Some(true)),
         }
-        let Some(water) = water_contact(terrain, self.transform, self.pose, true, &mut cells)
+        let Some(fluids) = fluid_contact(terrain, self.transform, self.pose, true, &mut cells)
         else {
             return self.blocked(cells, false);
         };
+        let Fluids { water, lava, high } = fluids;
         let wants_sprint = input.sprinting && input.forward && !input.backward;
         let swimming =
             wants_sprint && water.touching() && (self.swimming || (water.eyes && water.feet));
@@ -177,7 +178,8 @@ impl MovementState {
                 || water.eyes
                 || (pose == PlayerPose::Swimming && self.sprinting && !input.sneaking));
         let mut velocity = self.motion.velocity;
-        water.push(&mut velocity);
+        water.push(&mut velocity, WATER_CURRENT);
+        lava.push(&mut velocity, LAVA_CURRENT);
         if horizontal_distance(velocity) < 9e-6 {
             velocity[0] = 0.0;
             velocity[2] = 0.0;
@@ -193,7 +195,13 @@ impl MovementState {
         if water.touching() && input.sneaking {
             velocity[1] -= f64::from(0.04f32);
         }
-        if water.touching() && input.jumping && (!self.transform.on_ground || water.height > 0.4) {
+        // LivingEntity.aiStep measures water depth with lava's height when both touch.
+        let depth = if lava.touching() { lava.height } else { water.height };
+        if input.jumping
+            && ((water.touching() && (!self.transform.on_ground || depth > FLUID_JUMP_THRESHOLD))
+                || (lava.touching()
+                    && (!self.transform.on_ground || lava.height > FLUID_JUMP_THRESHOLD)))
+        {
             velocity[1] += f64::from(0.04f32);
         } else if input.jumping && self.transform.on_ground && self.motion.jump_delay == 0 {
             let jump = 0.42f32 * if feet.jump == 1.0 { ground.jump } else { feet.jump };
@@ -205,7 +213,7 @@ impl MovementState {
             self.motion.jump_delay = 10;
         }
         let friction = if self.transform.on_ground { ground.friction } else { 1.0 };
-        let speed = if water.touching() {
+        let speed = if fluids.touching() {
             0.02
         } else if self.transform.on_ground {
             let speed = if sprinting { 0.13f32 } else { 0.1f32 };
@@ -224,10 +232,22 @@ impl MovementState {
         velocity[2] += z * cos + x * sin;
         if swimming {
             let look_y = -sin_cos(input.pitch)[0];
-            if look_y <= 0.0 || input.jumping || water.high {
+            if look_y <= 0.0 || input.jumping || high {
                 velocity[1] += (look_y - velocity[1]) * if look_y < -0.2 { 0.085 } else { 0.06 };
             }
         }
+        // LivingEntity.handleOnClimbable runs only on the dry travel path.
+        if !fluids.touching() && climbing(terrain, self.transform) {
+            let limit = f64::from(0.15f32);
+            velocity[0] = velocity[0].clamp(-limit, limit);
+            velocity[2] = velocity[2].clamp(-limit, limit);
+            velocity[1] = velocity[1].max(-limit);
+            if velocity[1] < 0.0 && input.sneaking {
+                velocity[1] = 0.0;
+            }
+        }
+        // LivingEntity.travelInFluid samples falling before the move.
+        let falling = velocity[1] <= 0.0;
         let old = self.transform;
         let proposal = MovementProposal {
             transform: Transform {
@@ -268,53 +288,34 @@ impl MovementState {
                 velocity[1] = 0.0;
             }
         }
-        if water.touching() {
-            let falling = velocity[1] <= 0.0;
-            let drag = f64::from(if sprinting { 0.9f32 } else { 0.8f32 });
-            velocity[0] *= drag;
-            velocity[2] *= drag;
-            velocity[1] *= f64::from(0.8f32);
-            if !sprinting {
-                velocity[1] = if falling
-                    && (velocity[1] - 0.005).abs() >= 0.003
-                    && (velocity[1] - GRAVITY / 16.0).abs() < 0.003
-                {
-                    -0.003
-                } else {
-                    velocity[1] - GRAVITY / 16.0
-                };
+        if fluids.touching() {
+            if water.touching() {
+                let drag = f64::from(if sprinting { 0.9f32 } else { 0.8f32 });
+                velocity[0] *= drag;
+                velocity[2] *= drag;
+                velocity[1] *= f64::from(0.8f32);
+                velocity[1] = fluid_falling_adjusted(velocity[1], falling, sprinting);
+            } else if lava.height <= FLUID_JUMP_THRESHOLD {
+                velocity[0] *= 0.5;
+                velocity[2] *= 0.5;
+                velocity[1] *= f64::from(0.8f32);
+                velocity[1] = fluid_falling_adjusted(velocity[1], falling, sprinting);
+            } else {
+                velocity = velocity.map(|n| n * 0.5);
+            }
+            if !water.touching() {
+                velocity[1] -= GRAVITY / 4.0;
             }
             if result.collisions[0] || result.collisions[2] {
-                let delta = [
-                    velocity[0],
-                    velocity[1] + f64::from(0.6f32) - result.transform.y + old.y,
-                    velocity[2],
-                ];
-                let bounds = translate(
-                    player_box_with_height(result.transform, pose_height(result.pose)),
-                    delta,
-                );
-                if !self.colliders.iter().any(|shape| intersects(bounds, *shape)) {
-                    let destination = Transform {
-                        x: result.transform.x + delta[0],
-                        y: result.transform.y + delta[1],
-                        z: result.transform.z + delta[2],
-                        ..result.transform
-                    };
-                    if let Some(destination_water) = water_contact(
-                        terrain,
-                        destination,
-                        result.pose,
-                        false,
-                        &mut result.collision_cells,
-                    ) && !destination_water.touching()
-                    {
-                        velocity[1] = f64::from(0.3f32);
-                    }
-                }
+                self.jump_out_of_fluid(terrain, &mut result, old, &mut velocity);
             }
             self.motion.velocity = velocity;
             return result;
+        }
+        if (result.collisions[0] || result.collisions[2] || input.jumping)
+            && climbing(terrain, result.transform)
+        {
+            velocity[1] = 0.2;
         }
         let ground_after = influencing_surface(terrain, result.transform, 0.500001);
         let feet_after = feet_surface(terrain, result.transform);
@@ -348,6 +349,58 @@ impl MovementState {
         }
         self.motion.velocity = velocity;
         result
+    }
+}
+
+/// Eye heights of every supported pose are at least 0.4.
+const FLUID_JUMP_THRESHOLD: f64 = 0.4;
+
+/// LivingEntity.getFluidFallingAdjustedMovement with default gravity.
+fn fluid_falling_adjusted(velocity_y: f64, falling: bool, sprinting: bool) -> f64 {
+    if sprinting {
+        velocity_y
+    } else if falling
+        && (velocity_y - 0.005).abs() >= 0.003
+        && (velocity_y - GRAVITY / 16.0).abs() < 0.003
+    {
+        -0.003
+    } else {
+        velocity_y - GRAVITY / 16.0
+    }
+}
+
+impl MovementState {
+    /// LivingEntity.jumpOutOfFluid: a horizontally blocked swimmer climbs out
+    /// when the raised destination is free of collision and of any fluid.
+    fn jump_out_of_fluid(
+        &self,
+        terrain: &impl Terrain,
+        result: &mut Advance,
+        old: Transform,
+        velocity: &mut [f64; 3],
+    ) {
+        let delta = [
+            velocity[0],
+            velocity[1] + f64::from(0.6f32) - result.transform.y + old.y,
+            velocity[2],
+        ];
+        let bounds =
+            translate(player_box_with_height(result.transform, pose_height(result.pose)), delta);
+        if self.colliders.iter().any(|shape| intersects(bounds, *shape)) {
+            return;
+        }
+        let destination = Transform {
+            x: result.transform.x + delta[0],
+            y: result.transform.y + delta[1],
+            z: result.transform.z + delta[2],
+            ..result.transform
+        };
+        if let Some(fluids) =
+            fluid_contact(terrain, destination, result.pose, false, &mut result.collision_cells)
+            && !fluids.touching()
+        {
+            velocity[1] = f64::from(0.3f32);
+        }
     }
 }
 

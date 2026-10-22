@@ -1,5 +1,6 @@
-//! Local fluid interaction in the target client's discrete movement units.
-//! Every cell, including flow neighbors, is charged to the shared work budget.
+//! Local water and lava interaction in the target client's discrete movement
+//! units. One pass measures both fluids; every cell, including flow neighbors,
+//! is charged to the shared work budget.
 use super::*;
 use halcyon_world::{FluidInfo, FluidKind};
 
@@ -9,22 +10,40 @@ mod tests;
 
 const SIDES: [[i32; 3]; 4] = [[0, 0, -1], [1, 0, 0], [0, 0, 1], [-1, 0, 0]];
 
+/// Vanilla's overworld lava current scale; Halcyon lobbies do not use fast lava.
+pub(super) const LAVA_CURRENT: f64 = 0.0023333333333333335;
+pub(super) const WATER_CURRENT: f64 = 0.014;
+
 #[derive(Clone, Copy, Debug, Default)]
-pub(super) struct WaterContact {
+pub(super) struct Fluids {
+    pub water: FluidContact,
+    pub lava: FluidContact,
+    /// A fluid occupies the cell at waist height (any fluid, as in vanilla).
+    pub high: bool,
+}
+
+impl Fluids {
+    pub fn touching(self) -> bool {
+        self.water.touching() || self.lava.touching()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct FluidContact {
     pub height: f64,
     pub eyes: bool,
     pub feet: bool,
-    pub high: bool,
     pub current: [f64; 3],
+    count: u32,
 }
 
-impl WaterContact {
+impl FluidContact {
     pub fn touching(self) -> bool {
         self.height > 0.0
     }
 
-    pub fn push(self, velocity: &mut [f64; 3]) {
-        let mut push = self.current.map(|n| n * 0.014);
+    pub fn push(self, velocity: &mut [f64; 3], scale: f64) {
+        let mut push = self.current.map(|n| n * scale);
         let length = length(push);
         if length > 0.0 && velocity[0].abs() < 0.003 && velocity[2].abs() < 0.003 && length < 0.0045
         {
@@ -49,20 +68,19 @@ fn cell(terrain: &impl Terrain, pos: [i32; 3], cells: &mut usize) -> Option<Opti
     Some(terrain.cell(pos[0], pos[1], pos[2]))
 }
 
-pub(super) fn water_contact(
+pub(super) fn fluid_contact(
     terrain: &impl Terrain,
     position: Transform,
     pose: PlayerPose,
     currents: bool,
     cells: &mut usize,
-) -> Option<WaterContact> {
+) -> Option<Fluids> {
     let bounds = inflate(player_box_with_height(position, pose_height(pose)), -0.001);
     let min = bounds.min.map(|n| n.floor() as i32);
     let max = bounds.max.map(|n| n.ceil() as i32 - 1);
     let eye = position.y + eye_height(pose);
     let center = [position.x.floor() as i32, position.y.floor() as i32, position.z.floor() as i32];
-    let mut contact = WaterContact::default();
-    let mut count = 0;
+    let mut fluids = Fluids::default();
     for x in min[0]..=max[0] {
         for y in min[1]..=max[1] {
             for z in min[2]..=max[2] {
@@ -71,11 +89,13 @@ pub(super) fn water_contact(
                     continue;
                 };
                 let fluid = block.fluid;
-                if fluid.kind != FluidKind::Water {
-                    continue;
-                }
+                let contact = match fluid.kind {
+                    FluidKind::Empty => continue,
+                    FluidKind::Water => &mut fluids.water,
+                    FluidKind::Lava => &mut fluids.lava,
+                };
                 let above = cell(terrain, [x, y + 1, z], cells)?;
-                let height = if above.as_ref().is_some_and(|b| b.fluid.kind == FluidKind::Water) {
+                let height = if above.as_ref().is_some_and(|b| b.fluid.kind == fluid.kind) {
                     1.0
                 } else {
                     f64::from(fluid.own_height())
@@ -106,22 +126,24 @@ pub(super) fn water_contact(
                     for (sum, value) in contact.current.iter_mut().zip(flow) {
                         *sum += value;
                     }
-                    count += 1;
+                    contact.count += 1;
                 }
             }
         }
     }
-    if count > 0 && length(contact.current).powi(2) >= f64::from(1e-5f32) {
-        contact.current = contact.current.map(|n| n / f64::from(count));
-    } else {
-        contact.current = [0.0; 3];
+    for contact in [&mut fluids.water, &mut fluids.lava] {
+        if contact.count > 0 && length(contact.current).powi(2) >= f64::from(1e-5f32) {
+            contact.current = contact.current.map(|n| n / f64::from(contact.count));
+        } else {
+            contact.current = [0.0; 3];
+        }
     }
-    if currents && contact.touching() {
-        contact.high =
+    if currents && fluids.touching() {
+        fluids.high =
             cell(terrain, [center[0], (position.y + 0.9).floor() as i32, center[2]], cells)?
                 .is_some_and(|block| block.fluid.kind != FluidKind::Empty);
     }
-    Some(contact)
+    Some(fluids)
 }
 
 fn flow(
@@ -139,13 +161,13 @@ fn flow(
             return None;
         }
         let other = neighbor.as_ref().map_or_else(FluidInfo::default, |c| c.fluid);
-        if matches!(other.kind, FluidKind::Empty | FluidKind::Water) {
+        if other.kind == FluidKind::Empty || other.kind == fluid.kind {
             let difference = if other.amount > 0 {
                 fluid.own_height() - other.own_height()
             } else if !other.blocks_flow {
                 let below = cell(terrain, [next[0], next[1] - 1, next[2]], cells)?;
                 match below.map(|c| c.fluid) {
-                    Some(below) if below.kind == FluidKind::Water => {
+                    Some(below) if below.kind == fluid.kind => {
                         fluid.own_height() - (below.own_height() - 0.8888889f32)
                     }
                     _ => 0.0,
@@ -161,7 +183,7 @@ fn flow(
             wall = [Some(other), above.map(|c| c.fluid)]
                 .into_iter()
                 .flatten()
-                .any(|other| other.kind != FluidKind::Water && other.flow_faces & (1 << face) != 0);
+                .any(|other| other.kind != fluid.kind && other.flow_faces & (1 << face) != 0);
         }
     }
     if fluid.falling && wall {

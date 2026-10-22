@@ -8,9 +8,9 @@ use thiserror::Error;
 pub use loader::{LoadedWorld, load_dir};
 pub use terrain::{
     Aabb, BlockKind, BlockProperties, BlockStateId, COLLISION_MAX_OFFSET, COLLISION_MIN_OFFSET,
-    FluidInfo, FluidKind, MAX_BLOCK_Y, MIN_BLOCK_Y, MotionInfo, SECTION_COUNT, Section, StateInfo,
-    Surface, TerrainFlags, block_properties, collision_catalog_bytes, fluid_info, motion_info,
-    state_info, try_state_info,
+    Climb, FluidInfo, FluidKind, MAX_BLOCK_Y, MIN_BLOCK_Y, MotionInfo, SECTION_COUNT, Section,
+    StateInfo, Surface, TerrainFlags, block_properties, climb, collision_catalog_bytes,
+    collision_offset, contextual_geometry, fluid_info, motion_info, state_info, try_state_info,
 };
 
 use std::sync::Arc;

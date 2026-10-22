@@ -1,4 +1,4 @@
-//! Shared, bounded ground/water collision and poses for predictions and inputs.
+//! Shared, bounded ground/fluid collision and poses for predictions and inputs.
 //!
 //! Client coordinates remain proposals checked against geometry and stance;
 //! owner-driven inputs use the same resolver with fixed-step travel physics.
@@ -17,7 +17,7 @@ mod terrain;
 mod water;
 
 pub use mc_protocol::packets::client::PlayerPose;
-use water::water_contact;
+use water::{Fluids, LAVA_CURRENT, WATER_CURRENT, fluid_contact};
 
 use collision::{
     back_off_edges, collide, expand_towards, horizontal_distance, inflate, intersects, player_box,
@@ -27,7 +27,7 @@ use collision::{
 pub use physics::shared_motion_bytes;
 pub use physics::{MotionState, MovementInput};
 use terrain::{
-    Terrain, TerrainCell, collect_colliders, ground_contact, honey_slide, landing_damage,
+    Terrain, TerrainCell, climbing, collect_colliders, ground_contact, honey_slide, landing_damage,
 };
 
 const PROPOSAL_CAPACITY: usize = 32;
@@ -139,7 +139,9 @@ pub fn resolve_spawn(world: &impl BlockView, requested: Transform) -> Option<Tra
                 if motion_info(id).surface == Surface::Unsupported {
                     continue;
                 }
+                let offset = halcyon_world::collision_offset(id, x, z);
                 for shape in state_info(id).collision_boxes() {
+                    let shape = translate(*shape, offset);
                     if shape.min[0] <= 0.5
                         && shape.max[0] >= 0.5
                         && shape.min[2] <= 0.5
@@ -350,7 +352,7 @@ impl MovementState {
                 result.correction = true;
                 break;
             }
-            let Some(water) = water_contact(
+            let Some(Fluids { water, lava, .. }) = fluid_contact(
                 terrain,
                 self.transform,
                 self.pose,
@@ -360,6 +362,13 @@ impl MovementState {
                 result.correction = true;
                 break;
             };
+            // Entity.baseTick halves, rather than resets, fall distance in lava;
+            // only travel outside fluids resets it on climbable blocks.
+            if lava.touching() {
+                self.fall_distance *= 0.5;
+            } else if !water.touching() && climbing(terrain, self.transform) {
+                self.fall_distance = 0.0;
+            }
             let swimming = proposal.sprinting
                 && water.touching()
                 && (self.swimming || (water.eyes && water.feet));
@@ -401,8 +410,8 @@ impl MovementState {
             }
             let ground = ground_contact(terrain, accepted);
             result.ground = ground.map_or_else(MotionInfo::default, |contact| contact.motion);
-            let Some(water_after) =
-                water_contact(terrain, accepted, pose, false, &mut result.collision_cells)
+            let Some(Fluids { water: water_after, .. }) =
+                fluid_contact(terrain, accepted, pose, false, &mut result.collision_cells)
             else {
                 result.correction = true;
                 break;

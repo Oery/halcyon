@@ -17,8 +17,10 @@ impl Terrain for Plane<'_> {
         Some(TerrainCell {
             fluid: halcyon_world::fluid_info(id),
             shapes: state_info(id).collision_boxes(),
+            offset: [0.0; 3],
             uncertain: false,
             contextual: false,
+            climb: Default::default(),
             motion: motion_info(id),
         })
     }
