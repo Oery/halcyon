@@ -21,6 +21,39 @@ const EXPANSIONS_PER_TICK: usize = 2_000;
 const FAILURE_COST: f32 = 60.0;
 /// Farther than this from a walk's starting cell, walk onto it first.
 const APPROACH_OFFSET: f64 = super::nav::follow::CENTRED + 0.15;
+/// Heading error tolerated before using a door, in degrees.
+const DOOR_AIM: f32 = 25.0;
+/// Ticks to wait for a used door to open before using it again.
+const DOOR_RETRY: u16 = 12;
+/// Doors are used from at most this far, within the game's reach.
+const DOOR_REACH: f64 = 3.0;
+
+/// The first closed door on the line from `position` to `target` within
+/// reach, at foot or head height.
+fn door_ahead(
+    real: &impl BlockView,
+    position: Transform,
+    target: [f64; 2],
+    feet: f64,
+) -> Option<Cell> {
+    let to = [target[0] - position.x, target[1] - position.z];
+    let length = to[0].hypot(to[1]).min(DOOR_REACH);
+    if length < 1e-6 {
+        return None;
+    }
+    let dir = [to[0] / to[0].hypot(to[1]), to[1] / to[0].hypot(to[1])];
+    let steps = (length * 4.0).ceil() as i32;
+    let base = position.y.min(feet).floor() as i32;
+    (0..=steps).find_map(|k| {
+        let t = length * f64::from(k) / f64::from(steps);
+        let x = (position.x + dir[0] * t).floor() as i32;
+        let z = (position.z + dir[1] * t).floor() as i32;
+        (0..=1)
+            .map(|dy| [x, base + dy, z])
+            .find(|&[x, y, z]| real.block_at(x, y, z).is_some_and(super::nav::closed_door))
+    })
+}
+
 /// Failed plans in a row before a stranded bot returns to its checkpoint.
 const STRANDED_RESET: u8 = 3;
 /// Ticks a bot keeps swimming toward a floor before giving up.
@@ -107,6 +140,10 @@ pub struct Brain {
     reset_requested: bool,
     /// Consecutive plans that found no way on.
     stranded: u8,
+    /// A door to use this tick.
+    pending_use: Option<Cell>,
+    /// Ticks before trying a door again.
+    door_wait: u16,
     ticks: u64,
     pub stats: BrainStats,
 }
@@ -130,6 +167,8 @@ impl Brain {
             checkpoint: 0,
             reset_requested: false,
             stranded: 0,
+            pending_use: None,
+            door_wait: 0,
             ticks: 0,
             stats: BrainStats::default(),
         }
@@ -211,7 +250,9 @@ impl Brain {
             }
         }
         let obs = Obs { position, velocity };
-        let intent = self.decide(&obs, nav, view);
+        // Plan as if doors were open; the real view shows which still need opening.
+        let planning = super::nav::OpenDoors(view);
+        let intent = self.decide(&obs, nav, &planning, view);
         self.motor.tick(intent, self.profile, &mut self.rng)
     }
 
@@ -219,7 +260,13 @@ impl Brain {
         self.gaze.tick(&mut self.rng, position.yaw)
     }
 
-    fn decide(&mut self, obs: &Obs, nav: &mut NavService, view: &impl BlockView) -> Intent {
+    fn decide(
+        &mut self,
+        obs: &Obs,
+        nav: &mut NavService,
+        view: &impl BlockView,
+        real: &impl BlockView,
+    ) -> Intent {
         let position = obs.position;
         match self.state {
             State::Idle(ticks) | State::Stuck(ticks) => {
@@ -252,7 +299,7 @@ impl Brain {
                 self.idle(position)
             }
             State::Plan => self.plan(position, nav, view),
-            State::Follow => self.follow(obs, nav, view),
+            State::Follow => self.follow(obs, nav, view, real),
         }
     }
 
@@ -384,6 +431,27 @@ impl Brain {
         Intent { yaw, pitch: 10.0, forward: true, jump: true, ..Intent::default() }
     }
 
+    /// Face a closed door in the way and use it, as a player would; retry
+    /// after a pause if it stays closed (someone may have shut it again).
+    fn open_door(&mut self, position: Transform, door: Cell) -> Intent {
+        let to = [f64::from(door[0]) + 0.5 - position.x, f64::from(door[2]) + 0.5 - position.z];
+        let yaw = super::nav::follow::yaw_of(to);
+        let rise = f64::from(door[1]) + 0.5 - (position.y + 1.62);
+        let pitch = (-rise).atan2(to[0].hypot(to[1]).max(0.3)).to_degrees() as f32;
+        self.door_wait = self.door_wait.saturating_sub(1);
+        let aimed = super::motor::wrap_degrees(position.yaw - yaw).abs() < DOOR_AIM;
+        if aimed && self.door_wait == 0 {
+            self.pending_use = Some(door);
+            self.door_wait = DOOR_RETRY;
+        }
+        Intent { yaw, pitch, ..Intent::default() }
+    }
+
+    /// A door the bot asked to use this tick. Taken once.
+    pub fn take_use(&mut self) -> Option<Cell> {
+        self.pending_use.take()
+    }
+
     fn finish(&mut self) {
         self.state = State::Finished;
         if self.stats.finished_at.is_none() {
@@ -391,7 +459,13 @@ impl Brain {
         }
     }
 
-    fn follow(&mut self, obs: &Obs, nav: &mut NavService, view: &impl BlockView) -> Intent {
+    fn follow(
+        &mut self,
+        obs: &Obs,
+        nav: &mut NavService,
+        view: &impl BlockView,
+        real: &impl BlockView,
+    ) -> Intent {
         let position = obs.position;
         // At most one finished edge hands over to the next within a tick.
         for _ in 0..2 {
@@ -454,6 +528,10 @@ impl Brain {
                     ..Execution::IDEAL
                 };
                 self.run = Some(EdgeRun::new(step.from, &stand, step.edge, exec));
+            }
+            let run = self.run.as_mut().expect("edge run exists");
+            if let Some(door) = door_ahead(real, position, run.target(), run.edge.to_feet) {
+                return self.open_door(position, door);
             }
             let run = self.run.as_mut().expect("edge run exists");
             let (intent, status) = run.tick(obs);

@@ -227,6 +227,15 @@ async fn run(server: Arc<Server>, lobby: Lobby, bot: Bot) -> Result<(), crate::e
         });
         let Some(input) = input else { continue };
         body.drive(&session, input);
+        if let Some(pos) = brain.take_use() {
+            // The same hand use a client sends; the owner checks reach.
+            session.use_block(crate::interaction::BlockUse {
+                sequence: 0,
+                pos,
+                cursor: [0.5; 3],
+                main_hand: true,
+            });
+        }
         let reset = brain.take_reset(&nav.borrow());
         if let Some(reset) = reset {
             // Stand-in for the course returning fallen players to their

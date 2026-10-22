@@ -73,7 +73,20 @@ pub fn use_block(
     if distance >= MAX_REACH_SQ {
         return None;
     }
-    let view = arena.view(base);
+    let cells = toggled_cells(&arena.view(base), used.pos, transform.yaw)?;
+    arena.edit_all(base, &cells).ok()?;
+    Some(cells.into_iter().map(|(pos, _)| pos).collect())
+}
+
+/// The cells and states that using the opening at `pos` by hand would set, for
+/// a user facing `yaw`; `None` if nothing there opens by hand.
+pub fn toggled_cells(
+    view: &impl BlockView,
+    pos: BlockPos,
+    yaw: f32,
+) -> Option<Vec<(BlockPos, BlockStateId)>> {
+    let [x, y, z] = pos;
+    let used = BlockUse { sequence: 0, pos, cursor: [0.5; 3], main_hand: true };
     let cells: Vec<(BlockPos, BlockStateId)> = match opening(view.block_at(x, y, z)?)? {
         Opening::Door { toggled, paired, upper } => {
             let partner = [x, if upper { y - 1 } else { y + 1 }, z];
@@ -91,7 +104,7 @@ pub fn use_block(
         Opening::Trapdoor { toggled } => vec![(used.pos, toggled)],
         Opening::FenceGate { toggled, open, facing, reversed } => {
             // Direction.fromYRot in N, E, S, W order.
-            let index = (f64::from(transform.yaw) / 90.0 + 0.5).floor() as i32 & 3;
+            let index = (f64::from(yaw) / 90.0 + 0.5).floor() as i32 & 3;
             let direction = [2, 3, 0, 1][index as usize];
             let state = if !open && facing == (direction + 2) % 4 {
                 reversed
@@ -101,8 +114,7 @@ pub fn use_block(
             vec![(used.pos, state)]
         }
     };
-    arena.edit_all(base, &cells).ok()?;
-    Some(cells.into_iter().map(|(pos, _)| pos).collect())
+    Some(cells)
 }
 
 #[cfg(test)]

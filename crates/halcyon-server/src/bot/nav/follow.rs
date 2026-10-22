@@ -73,7 +73,7 @@ const PAD_LEAD: f64 = 0.3;
 /// How far a walk may stray from the line between its cells.
 const CORRIDOR: f64 = 1.3;
 /// Jump before this tick's motion would carry the centre this far past the rim.
-const RIM_SAFETY: f64 = 0.27;
+const RIM_SAFETY: f64 = 0.29;
 
 pub struct EdgeRun {
     pub from: Cell,
@@ -178,6 +178,11 @@ impl EdgeRun {
 
     pub fn dir_yaw(&self) -> f32 {
         self.dir_yaw
+    }
+
+    /// Where the edge is currently heading, in world x/z.
+    pub fn target(&self) -> [f64; 2] {
+        self.target
     }
 
     /// Unit vector to the left of the jump line, in world x/z.
@@ -356,7 +361,7 @@ impl EdgeRun {
                 let takeoff = f64::from(self.edge.plan.takeoff + self.exec.takeoff_offset);
                 let moving = dot([obs.velocity[0], obs.velocity[2]], self.dir);
                 // Never run off the support while waiting for the takeoff mark.
-                let leaving = along + moving * 1.2 > self.rim + RIM_SAFETY;
+                let leaving = along + moving * 1.05 > self.rim + RIM_SAFETY;
                 if along >= takeoff || leaving {
                     intent.jump = true;
                     self.jumped_at = Some(self.ticks);

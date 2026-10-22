@@ -37,16 +37,24 @@ const BOUNCE_REACH: i32 = 4;
 const BOUNCE_DROP: i32 = 10;
 const BOUNCE_SEARCH: i32 = 8;
 const MAX_BOUNCE_CANDIDATES: usize = 24;
+/// Run-ups longer than the own cell, for jumps that need full speed.
+const MID_RUNUP: f32 = 1.5;
+const LONG_RUNUP: f32 = 2.5;
+const RUNWAY_STEP: f32 = 0.25;
+/// Run-up shortenings tried after a near miss, a fraction of a sprint step each.
+const PHASE_SHIFTS: [f32; 4] = [0.21, 0.14, 0.07, 0.035];
 
 const NEIGHBOURS: [[i32; 2]; 8] =
     [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
 
 /// Generous horizontal reach of a sprint jump with a short run-up.
 fn reach(rise: f64) -> f64 {
+    // A sprint jump at full speed, after a run-up, clears four blocks.
+    const FLAT: f64 = 5.3;
     if rise > 0.0 {
-        4.9 - rise * 0.9
+        FLAT - rise * 1.1
     } else {
-        4.9 + (-rise).min(3.0) * 0.4
+        FLAT + (-rise).min(3.0) * 0.4
     }
 }
 
@@ -502,24 +510,29 @@ impl NavGraph {
         let back = here.rim([-dir[0], -dir[1]]) as f32;
         let rise = via.map_or(there.feet_y, |(_, feet)| feet) - here.feet_y;
         let long = distance >= 2.5 || (rise > STEP && distance > 1.6);
-        let runup_ok = |graph: &mut Self, runup: f32| {
-            // Stay on the support while backing up.
-            runup <= back + 0.2 && (runup == 0.0 || graph.clear_runup(view, from, here, dir, runup))
-        };
+        // Backing up along the jump line, over floor at the same height, buys
+        // the speed long jumps need.
+        let runway = self.runway(view, from, here, dir, back);
+        let runup_ok = |runup: f32| runup <= runway;
         // The farthest-reaching attempt first: if it lands well short, no
         // gentler variant can succeed.
-        let farthest = if runup_ok(self, 0.3) { 0.3 } else { 0.0 };
+        let longest: &[f32] = if long { &[LONG_RUNUP, MID_RUNUP, 0.3] } else { &[0.3] };
+        let farthest = longest.iter().copied().find(|&r| runup_ok(r)).unwrap_or(0.0);
         let mut plans = vec![Plan { runup: farthest, takeoff: rim + 0.2, sprint: true }];
         let sprints: [bool; 2] = if long { [true, false] } else { [false, true] };
-        let runups: [f32; 2] = if long { [0.3, 0.0] } else { [0.0, 0.3] };
+        let runups: &[f32] = if long {
+            &[0.3, 0.0, MID_RUNUP, LONG_RUNUP]
+        } else {
+            &[0.0, 0.3]
+        };
         let takeoffs: [f32; 3] = if long {
             [rim + 0.2, rim, rim - 0.35]
         } else {
             [rim - 0.35, rim, rim + 0.2]
         };
         for sprint in sprints {
-            for runup in runups {
-                if !runup_ok(self, runup) {
+            for &runup in runups {
+                if !runup_ok(runup) {
                     continue;
                 }
                 for takeoff in takeoffs {
@@ -532,7 +545,10 @@ impl NavGraph {
         }
         let mut best: Option<Edge> = None;
         let mut successes = 0;
-        for (index, plan) in plans.into_iter().enumerate() {
+        let mut index = 0;
+        while index < plans.len() {
+            let plan = plans[index];
+            index += 1;
             let edge = Edge {
                 to,
                 to_feet: there.feet_y,
@@ -551,8 +567,17 @@ impl NavGraph {
             let Some(ticks) = outcome.ticks else {
                 // The farthest-reaching plan fell well short: no gentler
                 // plan can do better. Overshooting proves nothing.
-                if index == 0 && outcome.closest > 1.0 && outcome.furthest + 1.0 < distance {
+                if index == 1 && outcome.closest > 1.0 && outcome.furthest + 1.0 < distance {
                     return None;
+                }
+                // A near miss at full speed: the last ground tick fell short of
+                // the rim. Shift the run-up by fractions of a sprint step so
+                // the takeoff lands later, as players do on max-distance jumps.
+                if index == 1 && plan.runup > 1.0 && outcome.furthest + 1.0 >= distance {
+                    for shift in PHASE_SHIFTS {
+                        let shifted = Plan { runup: plan.runup - shift, ..plan };
+                        plans.insert(index, shifted);
+                    }
                 }
                 continue;
             };
@@ -573,6 +598,37 @@ impl NavGraph {
             }
         }
         best
+    }
+
+    /// How far back from the centre of `from`, against `dir`, the player can
+    /// stand: over floor at the same height with nothing in the way.
+    fn runway(
+        &mut self,
+        view: &impl BlockView,
+        from: Cell,
+        here: Stand,
+        dir: [f64; 2],
+        back: f32,
+    ) -> f32 {
+        let [cx, cz] = centre(from);
+        let mut room = 0.0f32;
+        // Within the own cell the support's rim bounds it; beyond, floors.
+        for step in 1..=(LONG_RUNUP / RUNWAY_STEP) as i32 {
+            let distance = step as f32 * RUNWAY_STEP;
+            let x = cx - dir[0] * f64::from(distance);
+            let z = cz - dir[1] * f64::from(distance);
+            let cell = [x.floor() as i32, from[1], z.floor() as i32];
+            let floor = if cell == from {
+                distance <= back + 0.2
+            } else {
+                self.stand(view, cell).is_some_and(|s| (s.feet_y - here.feet_y).abs() < 0.01)
+            };
+            if !floor || !self.clear_runup(view, from, here, dir, distance) {
+                break;
+            }
+            room = distance;
+        }
+        room
     }
 
     fn clear_runup(

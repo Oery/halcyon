@@ -59,6 +59,21 @@ fn gap_jumps_match_vanilla_reach_from_a_single_block() {
 }
 
 #[test]
+fn a_run_up_carries_bots_over_four_block_gaps() {
+    // A three-block runway, then four blocks of air down to a block lower.
+    // Level four-block gaps need momentum carried from a previous jump.
+    let mut view = MapView::default();
+    view.pillar(-2, 10, 0).pillar(-1, 10, 0).pillar(0, 10, 0).pillar(5, 9, 0);
+    let found = edge(&mut nav(), &view, [0, 11, 0], [5, 10, 0]).expect("a running jump");
+    assert!(found.plan.runup > 1.0, "backs up first: {:?}", found.plan);
+    // From a lone pillar there is no room to back up.
+    let mut view = MapView::default();
+    view.pillar(0, 10, 0).pillar(5, 9, 0);
+    let standing = edge(&mut nav(), &view, [0, 11, 0], [5, 10, 0]).expect("a standing jump");
+    assert!(standing.plan.runup <= 0.3);
+}
+
+#[test]
 fn jumps_reach_one_block_up_but_not_two() {
     let mut view = MapView::default();
     view.pillar(0, 10, 0).pillar(1, 11, 0).pillar(0, 12, 1).pillar(0, 11, -3);

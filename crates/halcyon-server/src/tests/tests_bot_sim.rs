@@ -134,6 +134,46 @@ fn bots_pass_gold_plate_checkpoints_in_order() {
 }
 
 #[test]
+fn bots_open_closed_doors_on_their_route() {
+    let door = |half: &str| {
+        map::id(&format!(
+            "minecraft:oak_door[facing=east,half={half},hinge=left,open=false,powered=false]"
+        ))
+    };
+    let mut view = MapView::default();
+    view.floor([-3, 8], 10, [-3, 3]);
+    // A wall across the floor, passable only through the door.
+    for z in -3..=3 {
+        for y in 11..=13 {
+            view.set([3, y, z], map::stone());
+        }
+    }
+    view.set([3, 11, 0], door("lower")).set([3, 12, 0], door("upper"));
+    let spawn = Transform { x: 0.5, y: 11.0, z: 0.5, on_ground: true, ..Transform::default() };
+    let mut nav = NavService::new(Budget::Unlimited);
+    nav.goal = Some([6, 11, 0]);
+    let mut bot = SimBot::new(BotProfile::new(70), 4, spawn);
+    let mut uses = 0;
+    for _ in 0..3_000 {
+        bot.step(&mut nav, &view);
+        if let Some(pos) = bot.brain.take_use() {
+            // What the lobby owner does with the bot's hand use.
+            let cells =
+                crate::interaction::toggled_cells(&view, pos, bot.position().yaw).expect("a door");
+            for (cell, state) in cells {
+                view.set(cell, state);
+            }
+            uses += 1;
+        }
+        if bot.brain.mode() == Mode::Finished {
+            break;
+        }
+    }
+    assert_eq!(bot.brain.mode(), Mode::Finished, "stuck at {:?}", bot.position());
+    assert_eq!(uses, 1, "opened the door once");
+}
+
+#[test]
 fn runs_are_reproducible() {
     let (a, ta) = climb(50, 9, 10_000);
     let (b, tb) = climb(50, 9, 10_000);

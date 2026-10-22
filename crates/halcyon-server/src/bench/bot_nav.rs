@@ -297,8 +297,9 @@ fn trace_bot() {
     let level = env_or("HALCYON_TRACE_LEVEL", 100) as u8;
     let every = env_or("HALCYON_TRACE_EVERY", 10);
     let mut bot = SimBot::new(BotProfile::new(level), 1, at);
+    let mut arena = crate::arena::Arena::default();
     for tick in 0..env_or("HALCYON_BENCH_TICKS", 600) {
-        bot.step(&mut nav, &world);
+        step_with_doors(&mut bot, &mut nav, &mut arena, &world);
         if tick % every == 0 {
             let p = bot.position();
             eprintln!(
@@ -398,7 +399,7 @@ fn checkpoint_legs() {
         let mut search = Search::default();
         search.start(pair[0], pair[1]);
         let status = loop {
-            match search.step(&mut nav, &world, 100_000, &|_, _| 0.0) {
+            match search.step(&mut nav, &OpenDoors(&world), 100_000, &|_, _| 0.0) {
                 SearchStatus::Running => {}
                 done => break done,
             }
@@ -873,6 +874,24 @@ fn frontier_report(nav: &mut NavService, world: &halcyon_world::World, end: Cell
     }
 }
 
+/// One bot tick on an editable map: hand uses toggle doors as the lobby
+/// owner would.
+fn step_with_doors(
+    bot: &mut SimBot,
+    nav: &mut NavService,
+    arena: &mut crate::arena::Arena,
+    world: &halcyon_world::World,
+) {
+    bot.step(nav, &arena.view(world));
+    if let Some(pos) = bot.brain.take_use() {
+        let cells = crate::interaction::toggled_cells(&arena.view(world), pos, bot.position().yaw);
+        if let Some(cells) = cells {
+            let _ = arena.edit_all(world, &cells);
+            nav.sync(arena);
+        }
+    }
+}
+
 fn env_or(name: &str, default: u32) -> u32 {
     std::env::var(name).ok().and_then(|value| value.parse().ok()).unwrap_or(default)
 }
@@ -915,7 +934,7 @@ fn spire_climb_scenario() {
     let start = super::stand::cell_of(settle.transform());
     search.start(start, goal);
     let route = loop {
-        match search.step(&mut nav, &world, 100_000, &|_, _| 0.0) {
+        match search.step(&mut nav, &OpenDoors(&world), 100_000, &|_, _| 0.0) {
             SearchStatus::Running => {}
             done => break done,
         }
@@ -958,10 +977,11 @@ fn spire_climb_scenario() {
         .collect();
     let started = std::time::Instant::now();
     let mut slowest_tick = std::time::Duration::ZERO;
+    let mut arena = crate::arena::Arena::default();
     for tick in 1..=limit {
         let tick_started = std::time::Instant::now();
         for bot in &mut bots {
-            bot.step(&mut nav, &world);
+            step_with_doors(bot, &mut nav, &mut arena, &world);
         }
         slowest_tick = slowest_tick.max(tick_started.elapsed());
         if tick % 1_200 == 0 {

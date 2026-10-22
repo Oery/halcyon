@@ -77,6 +77,52 @@ pub struct Edge {
     pub damage: f32,
 }
 
+/// Closed hand-operated doors and fence gates, mapped to their open state.
+/// Trapdoors are left alone: opening one removes a floor as often as a wall.
+fn opened(id: halcyon_world::BlockStateId) -> Option<halcyon_world::BlockStateId> {
+    use halcyon_world::{Opening, opening};
+    static OPENED: std::sync::OnceLock<
+        HashMap<halcyon_world::BlockStateId, halcyon_world::BlockStateId>,
+    > = std::sync::OnceLock::new();
+    OPENED
+        .get_or_init(|| {
+            halcyon_world::blockstates::BLOCK_STATES
+                .iter()
+                .filter(|(key, _)| key.contains("open=false"))
+                .filter_map(|&(_, id)| {
+                    let id = id as halcyon_world::BlockStateId;
+                    match opening(id)? {
+                        Opening::Door { toggled, .. } | Opening::FenceGate { toggled, .. } => {
+                            Some((id, toggled))
+                        }
+                        Opening::Trapdoor { .. } => None,
+                    }
+                })
+                .collect()
+        })
+        .get(&id)
+        .copied()
+}
+
+/// Whether `id` is a closed door or fence gate a bot can open by hand.
+pub fn closed_door(id: halcyon_world::BlockStateId) -> bool {
+    opened(id).is_some()
+}
+
+/// The world as bots plan it: closed doors and fence gates already open,
+/// since a bot opens them when it gets there.
+pub struct OpenDoors<'a, V>(pub &'a V);
+
+impl<V: BlockView> BlockView for OpenDoors<'_, V> {
+    fn block_at(&self, x: i32, y: i32, z: i32) -> Option<halcyon_world::BlockStateId> {
+        self.0.block_at(x, y, z).map(|id| opened(id).unwrap_or(id))
+    }
+
+    fn contains_column(&self, x: i32, z: i32) -> bool {
+        self.0.contains_column(x, z)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NavStats {
     pub nodes: usize,

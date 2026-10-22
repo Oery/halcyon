@@ -123,7 +123,9 @@ pub fn stand(view: &impl BlockView, probe: &mut MovementState, cell: Cell) -> Op
     } else {
         None
     };
-    if found.is_none() && state_info(here).collision_boxes().is_empty() {
+    // Shapes here that miss the footprint (an open door's panel, a wall
+    // torch) leave the floor below to carry the player; clearance decides.
+    if found.is_none() {
         let below = view.block_at(x, y - 1, z)?;
         if hazardous(below) {
             return None;
