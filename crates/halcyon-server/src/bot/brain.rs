@@ -142,6 +142,9 @@ pub struct BrainStats {
     pub stalled: u32,
     /// Provisional moves taken while no route was known.
     pub explored: u32,
+    /// Searches finished, and the ticks they took in all.
+    pub searches: u32,
+    pub search_ticks: u32,
 }
 
 pub struct Brain {
@@ -165,6 +168,8 @@ pub struct Brain {
     lost: u16,
     /// The tick a failed edge was last replanned in.
     replanned_at: u64,
+    /// The tick the running search started in.
+    search_started: u64,
     run: Option<EdgeRun>,
     last: Option<Transform>,
     failures: HashMap<(Cell, Cell), u8>,
@@ -207,6 +212,7 @@ impl Brain {
             explore_left: 0,
             lost: 0,
             replanned_at: 0,
+            search_started: 0,
             run: None,
             last: None,
             failures: HashMap::new(),
@@ -302,6 +308,7 @@ impl Brain {
         if goal != from {
             self.search.start(from, goal);
             self.anchor = Some((from, goal));
+            self.search_started = self.ticks;
         }
     }
 
@@ -314,6 +321,8 @@ impl Brain {
         match self.search.step(nav, view, EXPANSIONS_PER_TICK, &cost) {
             SearchStatus::Running => {}
             status => {
+                self.stats.searches += 1;
+                self.stats.search_ticks += (self.ticks - self.search_started) as u32;
                 self.anchor = None;
                 self.found = Some((anchor, goal, status));
             }
@@ -655,21 +664,25 @@ impl Brain {
         let mut forced = 0;
         let mut best: Option<(f32, Edge)> = None;
         for candidate in &candidates {
-            // Cached edges are free; new ones while the budget lasts, and a
-            // few walks beyond it.
-            let edge = match nav.validate(view, here, candidate) {
-                Validation::Valid(edge) => edge,
-                Validation::Busy
-                    if forced < EXPLORE_FORCED
-                        && matches!(candidate.kind, EdgeKind::Walk | EdgeKind::Drop) =>
-                {
-                    forced += 1;
-                    let Some(edge) = nav.validate_step(view, here, candidate) else {
-                        continue;
-                    };
-                    edge
-                }
-                _ => continue,
+            // Cached edges are free. Jumps cost many simulations: they are
+            // left to the search. Walks and drops are cheap: validated while
+            // the budget lasts, and a few beyond it.
+            let step = matches!(candidate.kind, EdgeKind::Walk | EdgeKind::Drop);
+            let edge = match nav.graph.checked(here, candidate) {
+                Some(Some(edge)) => edge,
+                Some(None) => continue,
+                None if !step => continue,
+                None => match nav.validate(view, here, candidate) {
+                    Validation::Valid(edge) => edge,
+                    Validation::Busy if forced < EXPLORE_FORCED => {
+                        forced += 1;
+                        let Some(edge) = nav.validate_step(view, here, candidate) else {
+                            continue;
+                        };
+                        edge
+                    }
+                    _ => continue,
+                },
             };
             if edge.damage > 0.0 {
                 continue;

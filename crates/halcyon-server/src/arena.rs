@@ -8,6 +8,9 @@ use std::collections::{BinaryHeap, HashMap};
 use uuid::Uuid;
 
 pub type BlockPos = [i32; 3];
+/// Maps read on every block lookup by physics and planning: a fast hasher,
+/// still randomly seeded since players choose the positions edited.
+pub type FastMap<K, V> = HashMap<K, V, foldhash::fast::RandomState>;
 pub type Column = (i32, i32);
 pub const MAX_FALLING: usize = 1024;
 const MAX_CHANGED: usize = 16_384;
@@ -46,7 +49,7 @@ pub struct BlockChange {
 }
 #[derive(Default)]
 pub struct ChangedColumn {
-    pub states: HashMap<BlockPos, BlockChange>,
+    pub states: FastMap<BlockPos, BlockChange>,
     pub revision: u64,
 }
 
@@ -68,7 +71,7 @@ impl FallingBlock {
 
 #[derive(Default)]
 pub struct Arena {
-    pub columns: HashMap<Column, ChangedColumn>,
+    pub columns: FastMap<Column, ChangedColumn>,
     pub falling: Vec<FallingBlock>,
     by_id: HashMap<i32, usize>,
     pub landings: HashMap<i32, (BlockPos, BlockStateId)>,

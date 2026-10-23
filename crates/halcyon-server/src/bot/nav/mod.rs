@@ -90,31 +90,31 @@ pub struct Edge {
     pub onto_ladder: Option<u8>,
 }
 
-/// Closed hand-operated doors and fence gates, mapped to their open state.
-/// Trapdoors are left alone: opening one removes a floor as often as a wall.
+/// Block states as bots plan them: closed hand-operated doors and fence gates
+/// map to their open state, everything else to itself. Trapdoors are left
+/// alone: opening one removes a floor as often as a wall. A flat table, as
+/// planning reads blocks on every simulated tick.
+fn opened_table() -> &'static [halcyon_world::BlockStateId] {
+    use halcyon_world::{BlockStateId, Opening, opening};
+    static OPENED: std::sync::OnceLock<Box<[BlockStateId]>> = std::sync::OnceLock::new();
+    OPENED.get_or_init(|| {
+        let states = halcyon_world::blockstates::BLOCK_STATES;
+        let len = states.iter().map(|&(_, id)| id as usize + 1).max().unwrap_or(0);
+        let mut table: Box<[BlockStateId]> = (0..len).map(|id| id as BlockStateId).collect();
+        for &(_, id) in states.iter().filter(|(key, _)| key.contains("open=false")) {
+            let id = id as BlockStateId;
+            if let Some(Opening::Door { toggled, .. } | Opening::FenceGate { toggled, .. }) =
+                opening(id)
+            {
+                table[id as usize] = toggled;
+            }
+        }
+        table
+    })
+}
+
 fn opened(id: halcyon_world::BlockStateId) -> Option<halcyon_world::BlockStateId> {
-    use halcyon_world::{Opening, opening};
-    static OPENED: std::sync::OnceLock<
-        HashMap<halcyon_world::BlockStateId, halcyon_world::BlockStateId>,
-    > = std::sync::OnceLock::new();
-    OPENED
-        .get_or_init(|| {
-            halcyon_world::blockstates::BLOCK_STATES
-                .iter()
-                .filter(|(key, _)| key.contains("open=false"))
-                .filter_map(|&(_, id)| {
-                    let id = id as halcyon_world::BlockStateId;
-                    match opening(id)? {
-                        Opening::Door { toggled, .. } | Opening::FenceGate { toggled, .. } => {
-                            Some((id, toggled))
-                        }
-                        Opening::Trapdoor { .. } => None,
-                    }
-                })
-                .collect()
-        })
-        .get(&id)
-        .copied()
+    opened_table().get(id as usize).copied().filter(|&open| open != id)
 }
 
 /// Whether `id` is a closed door or fence gate a bot can open by hand.
@@ -128,7 +128,8 @@ pub struct OpenDoors<'a, V>(pub &'a V);
 
 impl<V: BlockView> BlockView for OpenDoors<'_, V> {
     fn block_at(&self, x: i32, y: i32, z: i32) -> Option<halcyon_world::BlockStateId> {
-        self.0.block_at(x, y, z).map(|id| opened(id).unwrap_or(id))
+        let table = opened_table();
+        self.0.block_at(x, y, z).map(|id| table.get(id as usize).copied().unwrap_or(id))
     }
 
     fn contains_column(&self, x: i32, z: i32) -> bool {

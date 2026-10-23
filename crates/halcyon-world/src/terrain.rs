@@ -262,7 +262,7 @@ pub fn climb(id: BlockStateId) -> Climb {
 }
 
 /// Bamboo stalks and speleothems use static shapes translated per column.
-fn xz_offset(id: BlockStateId) -> bool {
+pub fn xz_offset(id: BlockStateId) -> bool {
     matches!(id, 18636..=18647 | 33566..=33605)
 }
 

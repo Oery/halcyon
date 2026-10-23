@@ -13,6 +13,7 @@ pub use terrain::{
     Climb, FluidInfo, FluidKind, MAX_BLOCK_Y, MIN_BLOCK_Y, MotionInfo, SECTION_COUNT, Section,
     StateInfo, Surface, TerrainFlags, block_properties, climb, collision_catalog_bytes,
     collision_offset, contextual_geometry, fluid_info, motion_info, state_info, try_state_info,
+    xz_offset,
 };
 
 use std::sync::Arc;

@@ -1,8 +1,8 @@
 //! Bounded collision queries, pose clearance and supported surface contacts.
 
 use halcyon_world::{
-    Aabb, BlockView, Climb, MAX_BLOCK_Y, MIN_BLOCK_Y, MotionInfo, Surface, climb, collision_offset,
-    contextual_geometry, motion_info, state_info,
+    Aabb, BlockStateId, BlockView, Climb, MAX_BLOCK_Y, MIN_BLOCK_Y, MotionInfo, Surface, climb,
+    collision_offset, contextual_geometry, motion_info, state_info, xz_offset,
 };
 
 use super::collision::{intersects, player_box, translate};
@@ -122,6 +122,7 @@ pub(super) fn honey_slide(
     false
 }
 
+#[derive(Clone, Copy)]
 pub(super) struct TerrainCell {
     pub(super) fluid: halcyon_world::FluidInfo,
     pub(super) shapes: &'static [Aabb],
@@ -175,18 +176,52 @@ impl<T: BlockView> Terrain for T {
 
     fn cell(&self, x: i32, y: i32, z: i32) -> Option<TerrainCell> {
         let id = self.block_at(x, y, z)?;
-        let info = state_info(id);
-        let motion = motion_info(id);
+        let state = state_cell(id);
         Some(TerrainCell {
+            offset: if state.offset {
+                collision_offset(id, x, z)
+            } else {
+                [0.0; 3]
+            },
+            ..state.cell
+        })
+    }
+}
+
+/// The part of a terrain cell that depends on the block state alone, with
+/// whether its shapes are offset by position.
+#[derive(Clone, Copy)]
+struct StateCell {
+    cell: TerrainCell,
+    offset: bool,
+}
+
+fn derive_state_cell(id: BlockStateId) -> StateCell {
+    let motion = motion_info(id);
+    StateCell {
+        cell: TerrainCell {
             fluid: halcyon_world::fluid_info(id),
-            shapes: info.collision_boxes(),
-            offset: collision_offset(id, x, z),
+            shapes: state_info(id).collision_boxes(),
+            offset: [0.0; 3],
             uncertain: motion.surface == Surface::Unsupported,
             contextual: contextual_geometry(id),
             motion,
             climb: climb(id),
-        })
+        },
+        offset: xz_offset(id),
     }
+}
+
+/// Physics reads these for every block it touches: derived once per state
+/// rather than through the property lookups on every read.
+fn state_cell(id: BlockStateId) -> StateCell {
+    static CELLS: std::sync::OnceLock<Box<[StateCell]>> = std::sync::OnceLock::new();
+    let cells = CELLS.get_or_init(|| {
+        let states = halcyon_world::blockstates::BLOCK_STATES;
+        let len = states.iter().map(|&(_, id)| id as usize + 1).max().unwrap_or(0);
+        (0..len).map(|id| derive_state_cell(id as BlockStateId)).collect()
+    });
+    cells.get(id as usize).copied().unwrap_or_else(|| derive_state_cell(id))
 }
 
 #[derive(Default)]
