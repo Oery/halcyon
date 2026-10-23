@@ -350,24 +350,28 @@ impl Brain {
         {
             return Some(cell);
         }
-        let mut best: Option<(f64, Cell)> = None;
-        for dx in -1..=1 {
-            for dz in -1..=1 {
-                for dy in -1..=1 {
-                    let near = [cell[0] + dx, cell[1] + dy, cell[2] + dz];
-                    let Some(stand) = nav.stand(view, near) else { continue };
-                    if (stand.feet_y - position.y).abs() >= 0.3 {
-                        continue;
-                    }
-                    let d = (f64::from(near[0]) + 0.5 - position.x)
-                        .hypot(f64::from(near[2]) + 0.5 - position.z);
-                    if d < 1.2 && best.is_none_or(|(b, _)| d < b) {
-                        best = Some((d, near));
+        // Nearby cells at the same height, then within a step: resting on
+        // the low half of a stair matches no cell's centre height.
+        [0.3, 0.6].into_iter().find_map(|tolerance| {
+            let mut best: Option<(f64, Cell)> = None;
+            for dx in -1..=1 {
+                for dz in -1..=1 {
+                    for dy in -1..=1 {
+                        let near = [cell[0] + dx, cell[1] + dy, cell[2] + dz];
+                        let Some(stand) = nav.stand(view, near) else { continue };
+                        if (stand.feet_y - position.y).abs() >= tolerance {
+                            continue;
+                        }
+                        let d = (f64::from(near[0]) + 0.5 - position.x)
+                            .hypot(f64::from(near[2]) + 0.5 - position.z);
+                        if d < 1.2 && best.is_none_or(|(b, _)| d < b) {
+                            best = Some((d, near));
+                        }
                     }
                 }
             }
-        }
-        best.map(|(_, cell)| cell)
+            best.map(|(_, cell)| cell)
+        })
     }
 
     fn plan(&mut self, position: Transform, nav: &mut NavService, view: &impl BlockView) -> Intent {
@@ -382,6 +386,12 @@ impl Brain {
                 return self.idle(position);
             }
             let Some(start) = self.locate(position, nav, view) else {
+                // Nowhere the graph knows: as stranded as having no route.
+                self.stranded = self.stranded.saturating_add(1);
+                if self.stranded >= STRANDED_RESET {
+                    self.stranded = 0;
+                    self.reset_requested = true;
+                }
                 self.state = State::Stuck(self.rng.ticks(20, 60));
                 return self.idle(position);
             };

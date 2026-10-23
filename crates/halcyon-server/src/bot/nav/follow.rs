@@ -460,13 +460,16 @@ impl EdgeRun {
                     .filter(|_| position.x.floor() as i32 == x && position.z.floor() as i32 == z);
                 if let Some(facing) = grabbed {
                     // On the ladder: face its wall, climb (pushing into it)
-                    // only when caught below the top, otherwise sneak to hold
-                    // on, and steer the sideways drift onto its middle.
+                    // when caught below the target cell, slide down when above
+                    // it, sneak to hold on in it, and steer the sideways
+                    // drift onto its middle.
                     let wall = ladder_wall(facing);
                     intent.yaw = wrap_degrees(yaw_of(wall));
-                    let below = position.y < f64::from(self.edge.to[1]);
+                    let floor = f64::from(self.edge.to[1]);
+                    let below = position.y < floor;
+                    let above = position.y >= floor + 1.0;
                     intent.forward = below;
-                    intent.sneak = !below;
+                    intent.sneak = !below && !above;
                     intent.sprint = false;
                     let [cx, cz] = centre(self.edge.to);
                     let side = [wall[1], -wall[0]];

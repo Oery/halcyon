@@ -491,13 +491,8 @@ impl NavGraph {
                     let walked = existing
                         .iter()
                         .any(|c| c.to == to && (c.kind != EdgeKind::Walk || rise <= STEP));
-                    // Ladders are jumped at and grabbed, as on ladder courses:
-                    // aimed at their top, where they are left, and caught
-                    // anywhere below it.
-                    let ladder = matches!(there.kind, StandKind::Ladder(_))
-                        && !self
-                            .stand(view, [to[0], to[1] + 1, to[2]])
-                            .is_some_and(|above| above.kind.climbable());
+                    // Ladders are jumped at and grabbed, as on ladder courses.
+                    let ladder = matches!(there.kind, StandKind::Ladder(_));
                     if !(there.kind == StandKind::Ground || ladder) || walked {
                         continue;
                     }
