@@ -390,6 +390,8 @@ Update this tracker when feature support changes. Packet definitions, static cli
 
 ## 18. Match lifecycle, matchmaking, and game rules
 
+Game-facing capabilities and how to write a minigame: [minigames.md](minigames.md).
+
 | Feature | Progress |
 | --- | --- |
 | Game definitions and native hooks | Partial — games attach to an instance with join, death, respawn, departure and per-step hooks; built-in hub and free-for-all. |
