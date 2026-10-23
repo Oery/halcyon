@@ -667,3 +667,14 @@ fn deaths_respawns_and_departures_reach_the_game() {
     assert!(registry.cleanup());
     assert_eq!(registry.events, [GameEvent::Left(id)]);
 }
+
+#[test]
+fn members_stay_in_entity_order_through_admission_and_departure() {
+    let mut registry = Registry::default();
+    let sessions: Vec<_> = (1..=3).map(|uuid| reserve(&mut registry, uuid)).collect();
+    let ids: Vec<_> = sessions.iter().map(Session::entity_id).collect();
+    assert_eq!(registry.members, ids);
+    // Reserved players were never visible, so removal reports no roster change.
+    assert!(!registry.remove(ids[1]));
+    assert_eq!(registry.members, [ids[0], ids[2]]);
+}

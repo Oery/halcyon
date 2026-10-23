@@ -81,11 +81,11 @@ impl Game for Ffa {
 
     fn on_join(&mut self, ctx: &mut GameCtx<'_>, player: i32) {
         self.joined = true;
-        let spawn = Self::spawn(ctx, ctx.players().len().saturating_sub(1));
+        let waiting = ctx.player_count();
+        let spawn = Self::spawn(ctx, waiting.saturating_sub(1));
         ctx.teleport(player, spawn);
         let at = ctx.position(player).unwrap_or(spawn);
         ctx.set_rules(player, PlayerRules::lobby(at));
-        let waiting = ctx.players().len();
         ctx.broadcast(&format!(
             "{} joined ({waiting}/{CAPACITY}).",
             ctx.name(player).unwrap_or("?")
@@ -112,21 +112,23 @@ impl Game for Ffa {
     }
 
     fn tick(&mut self, ctx: &mut GameCtx<'_>) {
-        let players = ctx.players();
+        let count = ctx.player_count();
         self.state = match self.state {
-            State::Waiting | State::Countdown(_) if players.is_empty() && self.joined => {
+            State::Waiting | State::Countdown(_) if count == 0 && self.joined => {
                 ctx.close();
                 State::Closing
             }
-            State::Waiting if players.len() >= MIN_PLAYERS => {
+            State::Waiting if count >= MIN_PLAYERS => {
                 ctx.broadcast(&format!("Starting in {COUNTDOWN_SECONDS} seconds."));
                 State::Countdown(COUNTDOWN_SECONDS * SIMULATION_HZ)
             }
-            State::Countdown(_) if players.len() < MIN_PLAYERS => {
+            State::Countdown(_) if count < MIN_PLAYERS => {
                 ctx.broadcast("Not enough players; waiting.");
                 State::Waiting
             }
             State::Countdown(0) => {
+                // Collected once per round: the loop changes each player.
+                let players: Vec<i32> = ctx.players().collect();
                 for (slot, &player) in players.iter().enumerate() {
                     let spawn = Self::spawn(ctx, slot);
                     ctx.set_rules(player, PlayerRules::open(spawn));
@@ -149,6 +151,7 @@ impl Game for Ffa {
                 self.state
             }
             State::Ending(0) => {
+                let players: Vec<i32> = ctx.players().collect();
                 for player in players {
                     ctx.send_to(player, Destination::Hub);
                 }

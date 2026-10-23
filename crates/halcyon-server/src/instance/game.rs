@@ -32,21 +32,18 @@ impl GameCtx<'_> {
     }
 
     /// Admitted players in entity order, including those still loading.
-    pub fn players(&self) -> Vec<i32> {
-        let mut ids: Vec<_> = self
-            .registry
-            .players
-            .iter()
-            .filter(|(_, player)| !player.input.closed.get())
-            .map(|(&id, _)| id)
-            .collect();
-        ids.sort_unstable();
-        ids
+    /// Allocation-free; collect it first to act on players while iterating.
+    pub fn players(&self) -> impl Iterator<Item = i32> + '_ {
+        self.registry.members.iter().copied().filter(|id| self.connected(*id))
     }
 
-    /// `players().len()` without collecting them.
     pub fn player_count(&self) -> usize {
-        self.registry.players.values().filter(|player| !player.input.closed.get()).count()
+        self.players().count()
+    }
+
+    /// A departed player stays a member until the owner's next cleanup.
+    fn connected(&self, player: i32) -> bool {
+        self.registry.players.get(&player).is_some_and(|entry| !entry.input.closed.get())
     }
 
     pub fn name(&self, player: i32) -> Option<&str> {
@@ -114,11 +111,13 @@ impl GameCtx<'_> {
 
     pub fn broadcast(&mut self, text: &str) {
         let text: Rc<str> = Rc::from(text);
-        for player in self.players() {
-            self.update(
-                player,
-                PlayerUpdate { messages: vec![text.clone()], ..Default::default() },
-            );
+        // Index the members: `update` needs the context mutably.
+        for index in 0..self.registry.members.len() {
+            let player = self.registry.members[index];
+            if self.connected(player) {
+                let update = PlayerUpdate { messages: vec![text.clone()], ..Default::default() };
+                self.update(player, update);
+            }
         }
     }
 

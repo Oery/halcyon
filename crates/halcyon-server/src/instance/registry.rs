@@ -42,6 +42,9 @@ pub struct Registry {
     pub(super) world_actions: std::collections::VecDeque<WorldAction>,
     pub(super) players: HashMap<i32, Player>,
     uuids: HashSet<Uuid>,
+    /// Admitted entity IDs in ascending order, maintained on admission and
+    /// removal so games read a stable order without sorting each step.
+    pub(super) members: Vec<i32>,
     pub(super) columns: HashMap<(i32, i32), HashSet<i32>>,
     /// Shared by every instance; see `EntityIds`.
     pub(super) ids: super::EntityIds,
@@ -223,6 +226,7 @@ impl Registry {
         };
         for snapshot in players {
             registry.uuids.insert(snapshot.profile.uuid);
+            registry.admit(snapshot.entity_id);
             registry
                 .columns
                 .entry(snapshot.transform.chunk())
@@ -379,6 +383,7 @@ impl Registry {
             return Err(AdmissionError::DuplicateUuid);
         }
         self.uuids.insert(profile.uuid);
+        self.admit(entity_id);
         input.accepted.set(transform);
         self.players.insert(
             entity_id,
@@ -409,6 +414,12 @@ impl Registry {
         Ok(entity_id)
     }
 
+    fn admit(&mut self, entity_id: i32) {
+        if let Err(index) = self.members.binary_search(&entity_id) {
+            self.members.insert(index, entity_id);
+        }
+    }
+
     pub(super) fn remove(&mut self, entity_id: i32) -> bool {
         let Some(player) = self.players.remove(&entity_id) else {
             return false;
@@ -416,6 +427,9 @@ impl Registry {
         self.events.push(GameEvent::Left(entity_id));
         self.arena.cracks.remove(&entity_id);
         self.uuids.remove(&player.snapshot.profile.uuid);
+        if let Ok(index) = self.members.binary_search(&entity_id) {
+            self.members.remove(index);
+        }
         if player.active {
             self.remove_column(player.snapshot.transform.chunk(), entity_id);
             self.active_count -= 1;

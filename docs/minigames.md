@@ -74,7 +74,7 @@ To finish a round, send every player elsewhere and close:
 
 | Call | Effect |
 | --- | --- |
-| `players()`, `player_count()` | Admitted players in entity order, including those still loading. |
+| `players()`, `player_count()` | Admitted players in entity order, including those still loading. Allocation-free iterator; collect it to change players while looping. |
 | `name(player)`, `position(player)`, `alive(player)` | Read a player's profile name, authoritative position and life. |
 | `map_spawn()`, `instance()` | The map's spawn point and this instance's ID. |
 | `teleport(player, transform)` | Nearest clear spot. Before the player is visible it sets the spawn; afterwards it is a queued teleport. |
