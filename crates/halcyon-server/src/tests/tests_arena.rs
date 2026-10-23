@@ -1,4 +1,15 @@
 use super::*;
+
+#[test]
+fn rejected_multi_cell_edits_leave_revisions_schedules_and_terrain_untouched() {
+    let base = test_world();
+    let mut arena = Arena::default();
+    assert!(arena.edit_all(&base, &[([8, 70, 8], 127), ([16, 64, 8], 1)]).is_err());
+    assert_eq!(arena.revision, 0);
+    assert_eq!(arena.changed, 0);
+    assert!(arena.scheduled.is_empty() && arena.scheduled_at.is_empty());
+    assert_eq!(arena.view(&base).block_at(8, 70, 8), Some(0));
+}
 use crate::{
     lobby::Transform,
     movement::{MovementProposal, MovementState, ProposalQueue},

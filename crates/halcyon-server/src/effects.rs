@@ -65,6 +65,7 @@ pub struct Particle(i32);
 
 #[allow(dead_code)]
 impl Particle {
+    pub const NOTE: Self = Self(particle::NOTE);
     pub const CRIT: Self = Self(particle::CRIT);
     pub const ENCHANTED_HIT: Self = Self(particle::ENCHANTED_HIT);
     pub const DAMAGE_INDICATOR: Self = Self(particle::DAMAGE_INDICATOR);
@@ -88,6 +89,23 @@ pub struct EffectLog {
 }
 
 impl EffectLog {
+    pub fn block_break(
+        &mut self,
+        pos: crate::arena::BlockPos,
+        state: halcyon_world::BlockStateId,
+        except: Option<i32>,
+    ) {
+        self.push(
+            Audience::Column(crate::arena::column(pos)),
+            except,
+            &mc_protocol::packets::client::WorldEvent {
+                event: 2001,
+                location: crate::arena::pack(pos),
+                data: i32::from(state),
+                global: false,
+            },
+        );
+    }
     fn first(&self) -> u64 {
         self.head - self.entries.len() as u64
     }

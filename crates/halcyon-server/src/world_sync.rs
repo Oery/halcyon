@@ -1,4 +1,4 @@
-//! Bounded, delivered baselines for terrain patches and falling entities.
+//! Delivered terrain, block-entity, crack and falling-entity baselines.
 use crate::arena::{Arena, BlockPos, Column, FallingBlock, pack};
 use futures_lite::future::block_on;
 use mc_protocol::{
@@ -6,8 +6,8 @@ use mc_protocol::{
     packets::{
         Payload,
         client::{
-            AddTransientBlock, BlockUpdate, EntityPositionSync, RemoveEntities, SetEntityVelocity,
-            SpawnFallingBlock,
+            AddTransientBlock, BlockUpdate, EntityPositionSync, RemoveEntities,
+            SetBlockDestroyStage, SetEntityVelocity, SpawnFallingBlock, WorldEvent,
         },
     },
     types::LpVec3,
@@ -18,6 +18,8 @@ use std::{
 };
 
 enum Commit {
+    BlockEntity(Column, u64, BlockPos, bool),
+    Crack(i32, Option<crate::interaction::Crack>),
     Blocks(Column, u64),
     Entity(FallingBlock),
     Remove(i32),
@@ -29,6 +31,10 @@ struct Pending {
 }
 #[derive(Default)]
 pub struct WorldObserver {
+    block_entities: HashMap<Column, u64>,
+    cracks: HashMap<i32, crate::interaction::Crack>,
+    crack_updates: VecDeque<i32>,
+    playing: HashSet<BlockPos>,
     columns: HashMap<Column, u64>,
     rendered: HashMap<i32, FallingBlock>,
     resident: HashSet<Column>,
@@ -44,7 +50,11 @@ impl WorldObserver {
     #[cfg(test)]
     pub fn capacity_payload_bytes(&self) -> usize {
         use std::mem::size_of;
-        self.columns.capacity() * size_of::<(Column, u64)>()
+        self.block_entities.capacity() * size_of::<(Column, u64)>()
+            + self.cracks.capacity() * size_of::<(i32, crate::interaction::Crack)>()
+            + self.crack_updates.capacity() * size_of::<i32>()
+            + self.playing.capacity() * size_of::<BlockPos>()
+            + self.columns.capacity() * size_of::<(Column, u64)>()
             + self.rendered.capacity() * size_of::<(i32, FallingBlock)>()
             + self.resident.capacity() * size_of::<Column>()
             + (self.waiting.capacity() + self.removals.capacity()) * size_of::<i32>()
@@ -61,6 +71,8 @@ impl WorldObserver {
         self.tick = Some(arena.tick());
         self.resident.clone_from(resident);
         self.columns.retain(|col, _| resident.contains(col));
+        self.block_entities.retain(|col, _| resident.contains(col));
+        self.reconcile_cracks(arena);
         self.removals = self
             .rendered
             .iter()
@@ -73,6 +85,70 @@ impl WorldObserver {
         self.waiting = ids.into();
         self.work = true;
     }
+
+    /// Select changed miners once per owner tick, rather than searching both
+    /// maps again for every packet. Only sent frames advance the baseline.
+    fn reconcile_cracks(&mut self, arena: &Arena) {
+        self.crack_updates.clear();
+        self.crack_updates.extend(self.cracks.iter().filter_map(|(&id, old)| {
+            let current = arena
+                .cracks
+                .get(&id)
+                .filter(|c| self.resident.contains(&crate::arena::column(c.pos)));
+            (current != Some(old)).then_some(id)
+        }));
+        self.crack_updates.extend(arena.cracks.iter().filter_map(|(&id, crack)| {
+            (!self.cracks.contains_key(&id)
+                && self.resident.contains(&crate::arena::column(crack.pos)))
+            .then_some(id)
+        }));
+        // An in-flight crack can become obsolete before its write completes.
+        // Recheck it after commit even if it has no delivered baseline yet.
+        if let Some(Pending { commit: Commit::Crack(id, _), .. }) = &self.pending {
+            self.crack_updates.push_back(*id);
+        }
+    }
+
+    fn next_crack(&mut self, arena: &Arena) -> Result<Option<Pending>, EncodeError> {
+        while let Some(id) = self.crack_updates.pop_front() {
+            let old = self.cracks.get(&id).copied();
+            let current = arena
+                .cracks
+                .get(&id)
+                .filter(|c| self.resident.contains(&crate::arena::column(c.pos)))
+                .copied();
+            if old == current {
+                continue;
+            }
+            let (crack, delivered) = match (old, current) {
+                (Some(old), current) if current.is_none_or(|c| old.pos != c.pos) => {
+                    if current.is_some() {
+                        // Clear the old target before publishing this miner's new one.
+                        self.crack_updates.push_front(id);
+                    }
+                    (old, None)
+                }
+                (_, Some(current)) => (current, Some(current)),
+                _ => continue,
+            };
+            let mut bytes = Vec::new();
+            block_on(
+                SetBlockDestroyStage {
+                    entity_id: id,
+                    location: pack(crack.pos),
+                    stage: delivered.map_or(255, |c| c.stage),
+                }
+                .write_packet(&mut bytes),
+            )?;
+            return Ok(Some(Pending {
+                bytes: Rc::from(bytes),
+                frames: 1,
+                commit: Commit::Crack(id, delivered),
+            }));
+        }
+        Ok(None)
+    }
+
     pub fn pending_work(&self) -> bool {
         self.work
     }
@@ -81,7 +157,39 @@ impl WorldObserver {
     }
     pub fn base_sent(&mut self, column: Column) {
         self.columns.remove(&column);
+        self.block_entities.remove(&column);
         self.work = true;
+    }
+
+    pub fn patch_block_entities(
+        &mut self,
+        arena: &Arena,
+        column: Column,
+    ) -> Result<Option<Rc<[u8]>>, EncodeError> {
+        if let Some(pending) = &self.pending {
+            return Ok(Some(pending.bytes.clone()));
+        }
+        let Some(col) = arena.block_entities.columns.get(&column) else {
+            return Ok(None);
+        };
+        let since = self.block_entities.get(&column).copied().unwrap_or(0);
+        let Some((&pos, record)) =
+            col.records.iter().filter(|(_, r)| r.revision > since).min_by_key(|(_, r)| r.revision)
+        else {
+            return Ok(None);
+        };
+        self.pending = Some(Pending {
+            bytes: record.bytes.clone(),
+            frames: record.frames,
+            commit: Commit::BlockEntity(
+                column,
+                record.revision,
+                pos,
+                arena.block_entities.playing.contains_key(&pos),
+            ),
+        });
+        self.work = true;
+        Ok(self.pending.as_ref().map(|p| p.bytes.clone()))
     }
 
     pub fn patch_column(
@@ -138,6 +246,23 @@ impl WorldObserver {
             .map(|(&col, _)| col);
         if let Some(column) = column {
             return self.patch_column(arena, column);
+        }
+        let column = self
+            .resident
+            .iter()
+            .find(|col| {
+                arena.block_entities.columns.get(col).is_some_and(|data| {
+                    data.revision > self.block_entities.get(col).copied().unwrap_or(0)
+                })
+            })
+            .copied();
+        if let Some(column) = column {
+            return self.patch_block_entities(arena, column);
+        }
+        if let Some(crack) = self.next_crack(arena)? {
+            self.pending = Some(crack);
+            self.work = true;
+            return Ok(self.pending.as_ref().map(|p| p.bytes.clone()));
         }
         if let Some(id) = self.removals.pop_front() {
             let mut bytes = Vec::new();
@@ -231,6 +356,21 @@ impl WorldObserver {
             return;
         };
         match pending.commit {
+            Commit::BlockEntity(col, revision, pos, playing) => {
+                self.block_entities.insert(col, revision);
+                if playing {
+                    self.playing.insert(pos);
+                } else {
+                    self.playing.remove(&pos);
+                }
+            }
+            Commit::Crack(id, crack) => {
+                if let Some(crack) = crack {
+                    self.cracks.insert(id, crack);
+                } else {
+                    self.cracks.remove(&id);
+                }
+            }
             Commit::Blocks(col, revision) => {
                 self.columns.insert(col, revision);
             }
@@ -247,11 +387,49 @@ impl WorldObserver {
     }
     pub fn unloaded(&mut self, column: Column) {
         self.columns.remove(&column);
+        self.block_entities.remove(&column);
+        self.cracks.retain(|_, c| crate::arena::column(c.pos) != column);
+        self.crack_updates.clear();
+        self.playing.retain(|p| crate::arena::column(*p) != column);
         self.resident.remove(&column);
         self.rendered.retain(|_, e| e.column() != column);
         self.pending = None;
         self.tick = None;
         self.work = true;
+    }
+
+    pub fn unload_effects(&self, column: Column) -> Result<Vec<Vec<u8>>, EncodeError> {
+        fn append<'p>(
+            batches: &mut Vec<Vec<u8>>,
+            frames: &mut usize,
+            packet: &impl Payload<'p>,
+        ) -> Result<(), EncodeError> {
+            if frames.is_multiple_of(crate::visibility::WRITE_SLICE_FRAMES) {
+                batches.push(Vec::new());
+            }
+            block_on(packet.write_packet(batches.last_mut().expect("packet batch")))?;
+            *frames += 1;
+            Ok(())
+        }
+        let mut batches = Vec::new();
+        let mut frames = 0;
+        for pos in self.playing.iter().filter(|pos| crate::arena::column(**pos) == column) {
+            append(
+                &mut batches,
+                &mut frames,
+                &WorldEvent { event: 1011, location: pack(*pos), data: 0, global: false },
+            )?;
+        }
+        for (&id, crack) in
+            self.cracks.iter().filter(|(_, c)| crate::arena::column(c.pos) == column)
+        {
+            append(
+                &mut batches,
+                &mut frames,
+                &SetBlockDestroyStage { entity_id: id, location: pack(crack.pos), stage: 255 },
+            )?;
+        }
+        Ok(batches)
     }
 }
 

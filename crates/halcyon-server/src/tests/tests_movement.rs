@@ -116,6 +116,7 @@ fn imported_spawn_preserves_clear_positions_and_recovers_bounded_obstructions() 
     sections[8] = Section::Dense(blocks);
     let map = World::from_loaded(LoadedWorld {
         chunks: vec![LoadedChunk {
+            block_entities: vec![],
             x: 0,
             z: 0,
             data: vec![],

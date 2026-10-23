@@ -1,6 +1,6 @@
 # Halcyon feature progress
 
-Last reviewed: 2026-10-22. Target: Java Edition 26.3.
+Last reviewed: 2026-10-23. Target: Java Edition 26.3.
 
 All 335 features from the [feature assessment](halcyon-server-features.md), in the same order. This tracks available behavior; the assessment records scope and rationale.
 
@@ -33,7 +33,7 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Feature | Progress |
 | --- | --- |
 | Survival mode | Partial — player lifecycle and damage rules; no survival loop. |
-| Creative mode | Partial — mode switching, flight, invulnerability and instant block breaking with no drops; creative item acquisition remains unavailable. |
+| Creative mode | Partial — mode switching, flight, invulnerability, supported block placement, instant breaking with no drops and basic self-only `/give`; Creative inventory acquisition remains unavailable. |
 | Adventure mode | Partial — mode switching and client synchronization; lobby gameplay rules remain shared. |
 | Spectator mode | Done — always-on flight through terrain and fluids, invulnerability except void rules, no block, item or inventory interaction, visibility only to other spectators, viewing through a player's camera (attack to follow, sneak to leave) and spectator-menu teleports. Portals are not available. |
 | Hardcore rules | Excluded |
@@ -107,7 +107,7 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Books and written content | Conditional |
 | Fishing | Conditional |
 | Navigation item targets | Not started |
-| Creative item acquisition | Conditional |
+| Creative item acquisition | Partial — basic self-only `/give <item> [count]` for supported blocks, default mining tools and vanilla music discs; no Creative inventory acquisition or component syntax. |
 
 ## 5. Crafting, processing, and trading
 
@@ -135,20 +135,20 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Feature | Progress |
 | --- | --- |
 | Block states | Partial — imported states, authoritative queries and bounded game-owned terrain edits; no saving. |
-| Block placement | Not started |
-| Block breaking | Partial — instant Creative breaking with reach and terrain-capacity checks, paired-block removal, water preservation and no drops; Survival digging remains disabled. |
-| Break feedback | Not started |
+| Block placement | Partial — an explicit arena-building catalog includes cubes, wood pillars, slabs/stairs, fences/walls, manual openings, signs and jukeboxes, with orientation, source-water logging, slab merging, support and occupancy checks. Creative lobby placement is enabled; Survival placement requires a Rust game rule. Other placement is rejected. |
+| Block breaking | Partial — instant Creative breaking and game-enabled Survival mining of supported blocks using vanilla hardness, default tool speeds and ground/underwater penalties; paired-block removal, water preservation and no drops. Durability, enchantments and status modifiers remain unavailable. |
+| Break feedback | Done — observer crack stages, cancellation cleanup, break sounds and particles. |
 | Block drops | Conditional |
-| Interaction validation | Partial — door, trapdoor and fence-gate use checks reach, hand and sneaking with held items; Creative breaking checks mode, reach and player life; unsupported predictions are corrected. |
-| Predicted-action correction | Partial — block states and sequence acknowledgements restore rejected edits; collision corrections resend nearby terrain. |
-| Neighbor and shape updates | Partial — sand/gravel support changes; no general shape updates. |
-| Block entities | Not started |
-| Doors, trapdoors, and gates | Partial — hand-operated doors, trapdoors and fence gates; water in waterlogged trapdoors does not flow when opened; no sounds for other players. |
+| Interaction validation | Partial — supported placement, mining, openings and jukebox use check mode/rules, reach, player life and authoritative held items; placement also checks support and occupancy. Held-slot changes and predictions retain their received order; unsupported predictions are corrected. |
+| Predicted-action correction | Partial — authoritative terrain and inventory precede sequence acknowledgements, including overflow and stale-life rejection; collision corrections resend nearby terrain. Unsupported mechanics remain disabled. |
+| Neighbor and shape updates | Partial — supported stair shapes, fence/wall connections, gate wall state, door/sign support and sand/gravel support changes, including falling-block starts and settlement. Oversized update chains are rejected; no general block updates. |
+| Block entities | Partial — imported and game-authored signs and jukeboxes, reliable updates, replacement/removal and chunk reloads; other block-entity types remain unavailable. |
+| Doors, trapdoors, and gates | Partial — hand-operated openings, supported placement, paired doors, observer sounds and explicit Rust game control; waterlogged trapdoors retain static water without flow. Redstone operation remains excluded. |
 | Beds and respawn anchors | Conditional |
 | Straw beds | Conditional |
-| Signs | Not started |
+| Signs | Partial — static standing, wall and hanging signs display front/back text, supported formatting, color and glow; Rust game APIs can change text. Player editing, dye/glow/wax interactions and executable text actions are disabled. |
 | Shelves and storage interactions | Conditional |
-| Jukeboxes | Not started |
+| Jukeboxes | Done — manual vanilla-disc insertion, playback, note particles, natural completion, ejection and Rust game control; removed discs are discarded. Imported discs start stopped. Chunk reloads restart an active track from its beginning; automation remains excluded. |
 | Buckets and fluid containers | Conditional |
 | Tool transformations | Conditional |
 | Farming and harvesting | Conditional |
@@ -165,7 +165,7 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Scheduled block ticks | Partial — delayed sand/gravel falls and stack support changes. |
 | Scheduled fluid ticks | Conditional |
 | Random ticks | Conditional |
-| Block-entity ticking | Not started |
+| Block-entity ticking | Partial — active jukebox playback duration and note particles; no general block-entity ticking. |
 | Entity ticking | Partial — players and falling sand/gravel. |
 | Fluid simulation | Conditional |
 | Falling blocks | Partial — sand, red sand and gravel fall and settle on supported static terrain; unsuccessful landings discard with drops disabled. Contextual geometry and special entity motion media are unavailable. |
@@ -206,7 +206,7 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Structure generation | Excluded |
 | Features and decoration | Excluded |
 | World presets | Excluded |
-| Chunk streaming | Partial — imported terrain plus current edits, including reloads; no block entities or real lighting. |
+| Chunk streaming | Partial — imported terrain, current edits and supported sign/jukebox data, including reloads; no real lighting. |
 | Chunk batch feedback | Done |
 | View distance | Done |
 | Simulation distance | Not started |
@@ -298,9 +298,9 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Titles and action bar | Not started |
 | Player HUD state | Partial — health and hotbar; food stays fixed. |
 | Locator bar and waypoints | Not started |
-| Sounds | Partial — positioned and entity sounds for nearby players, with combat presets; observers hear player hurt sounds. |
-| Particles | Partial — option-free particles for nearby players, with crit, hit, damage-indicator and sweep presets. |
-| World and entity events | Partial — player damage, death, swings and critical-hit animations, shown to other players. |
+| Sounds | Partial — positioned and entity sounds for nearby players, with combat presets, opening/placement/break feedback and jukebox playback; observers hear player hurt sounds. |
+| Particles | Partial — option-free particles for nearby players, with crit, hit, damage-indicator, sweep and jukebox-note presets, plus block-break events. |
+| World and entity events | Partial — player damage, death, swings and critical-hit animations, block destruction stages, break events and jukebox playback. |
 | Maps and markers | Conditional |
 | Camera targets | Not started |
 | Dialogs | Not started |
@@ -324,11 +324,11 @@ Update this tracker when feature support changes. Packet definitions, static cli
 
 | Feature | Progress |
 | --- | --- |
-| Command parsing and execution | Partial — `/gamemode <mode> [player]` accepts four mode names and numeric IDs 0–3; mode survives respawn. `/tp <player>`, `/tp <target> <player>` and `/tp [target] <x> <y> <z>` support world coordinates and issuer-relative `~` offsets, with validated destinations and readable success/error feedback. |
-| Command suggestions | Partial — native `/gamemode` and `/tp` discovery, mode completion, online-player names and world coordinates. |
-| Command permissions | Not started — `/gamemode` and `/tp` are available to all connected players. |
+| Command parsing and execution | Partial — `/gamemode <mode> [player]` accepts names or numeric IDs; `/tp` accepts players and world coordinates with issuer-relative `~` offsets. Basic self-only Creative `/give <item> [count]` grants supported plain items and reports inventory remainders. Commands provide readable success/error feedback. |
+| Command suggestions | Partial — native `/gamemode`, `/tp` and `/give` discovery, mode completion, online-player names, world coordinates and supported item identifiers. |
+| Command permissions | Partial — `/give` requires Creative mode; `/gamemode` and `/tp` remain available to all connected players. No operator system. |
 | Selectors and execution contexts | Excluded |
-| World and entity manipulation | Partial — player teleport, health, inventory and game-owned block changes. |
+| World and entity manipulation | Partial — player teleport, health, inventory, terrain changes, static sign text, manual opening control and jukebox playback through Rust game APIs. |
 | Data inspection and modification | Not started |
 | Command storage | Excluded |
 | Scoreboard logic and triggers | Not started |
@@ -373,7 +373,7 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Allowlist | Not started |
 | Player and IP bans | Not started |
 | Kicking | Not started |
-| Spawn protection | Partial — placement and non-Creative digging disabled; Creative breaking allowed; no editable-region permissions. |
+| Spawn protection | Partial — Creative placement/breaking enabled; Survival editing requires explicit Rust game rules and stays disabled in the lobby. No editable-region permissions. |
 | Server code of conduct | Not started |
 | Console | Not started |
 | RCON | Conditional |

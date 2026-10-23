@@ -11,10 +11,13 @@ use crate::error::Error;
 use crate::lobby::{Lobby, Registry};
 
 mod gamemode;
+mod give;
 mod tp;
 
 #[derive(Debug, thiserror::Error)]
 enum CommandError {
+    #[error("{0}")]
+    Message(&'static str),
     #[error(transparent)]
     Parse(#[from] halcyon_commands::ParseError),
     #[error("Wait until you have spawned before using commands.")]
@@ -29,6 +32,8 @@ enum Command<'p> {
     GameMode(gamemode::GameModeCommand<'p>),
     #[command(name = "tp")]
     Teleport(tp::TpCommand<'p>),
+    #[command(name = "give")]
+    Give(give::GiveCommand<'p>),
 }
 
 impl Command<'_> {
@@ -36,6 +41,7 @@ impl Command<'_> {
         match self {
             Self::GameMode(command) => command.execute(lobby, sender).await,
             Self::Teleport(command) => command.execute(lobby, sender).await,
+            Self::Give(command) => command.execute(lobby, sender).await,
         }
     }
 }
@@ -116,6 +122,7 @@ impl CompletionContext for Registry {
     fn suggest(&self, provider: &str, prefix: &str) -> Vec<String> {
         match provider {
             "players" => self.command_player_names(prefix),
+            "items" => give::suggestions(prefix),
             _ => Vec::new(),
         }
     }

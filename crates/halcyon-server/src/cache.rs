@@ -141,7 +141,8 @@ impl PacketCache {
         configuration.push(encode(&FinishConfiguration).await?);
 
         let mut suffix = Vec::new();
-        VarInt(0).write(&mut suffix).await?; // no block entities
+        // Supported block entities follow terrain patches as revisioned snapshots.
+        VarInt(0).write(&mut suffix).await?;
         LightData::fullbright().write(&mut suffix).await?;
         let mut chunks = HashMap::with_capacity(world.chunk_count());
         for chunk in world.iter() {

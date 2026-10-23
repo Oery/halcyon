@@ -71,6 +71,8 @@ impl FallingBlock {
 
 #[derive(Default)]
 pub struct Arena {
+    pub block_entities: crate::interaction::entities::BlockEntities,
+    pub cracks: FastMap<i32, crate::interaction::Crack>,
     pub columns: FastMap<Column, ChangedColumn>,
     pub falling: Vec<FallingBlock>,
     by_id: HashMap<i32, usize>,
@@ -104,7 +106,9 @@ impl Arena {
     #[cfg(test)]
     pub fn capacity_payload_bytes(&self) -> usize {
         use std::mem::size_of;
-        self.columns.capacity() * size_of::<(Column, ChangedColumn)>()
+        self.block_entities.capacity_payload_bytes()
+            + self.cracks.capacity() * size_of::<(i32, crate::interaction::Crack)>()
+            + self.columns.capacity() * size_of::<(Column, ChangedColumn)>()
             + self
                 .columns
                 .values()
@@ -123,6 +127,7 @@ impl Arena {
         self.by_id.get(&id).map(|&index| &self.falling[index])
     }
     pub fn initialize(&mut self, base: &World) -> Result<(), EditError> {
+        self.block_entities.initialize(base)?;
         // One cold scan. No per-tick world scan or per-player terrain copies.
         for chunk in base.iter() {
             for (section_index, section) in chunk.sections.iter().enumerate() {
@@ -180,71 +185,97 @@ impl Arena {
         pos: BlockPos,
         state: BlockStateId,
     ) -> Result<(), EditError> {
-        if try_state_info(state).is_none()
-            || motion_info(state).surface == Surface::Unsupported
-            || base.block_at(pos[0], pos[1], pos[2]).is_none()
-        {
-            return Err(EditError::Unsupported);
-        }
-        if self.view(base).block_at(pos[0], pos[1], pos[2]) == Some(state) {
-            return Ok(());
-        }
-        // Reserve scheduled work before changing authority; failed edits are atomic.
-        let above = [pos[0], pos[1] + 1, pos[2]];
-        let needs_self = block_properties(state).falls();
-        let needs_above = self
-            .view(base)
-            .block_at(above[0], above[1], above[2])
-            .is_some_and(|s| block_properties(s).falls());
-        let proposed = Some((pos, state));
-        if (needs_self && !fall_path_supported(&self.view(base), pos, proposed))
-            || (needs_above && !fall_path_supported(&self.view(base), above, proposed))
-            || ((block_properties(state).entity_motion_effects()
-                || state_info(state).contextual_geometry())
-                && self
-                    .falling
-                    .iter()
-                    .any(|e| e.column() == column(pos) && e.position[1] > pos[1] as f64))
-        {
-            return Err(EditError::Unsupported);
-        }
-        let new_schedules = [(pos, needs_self), (above, needs_above)]
-            .into_iter()
-            .filter(|(p, needed)| *needed && !self.scheduled_at.contains_key(p))
-            .count();
-        if self.scheduled_at.len() + new_schedules > MAX_SCHEDULED || !self.room(pos, 1) {
-            return Err(EditError::Capacity);
-        }
-        self.write(pos, state);
-        if needs_self {
-            self.schedule(pos, self.tick + 2)?;
-        }
-        if needs_above {
-            self.schedule(above, self.tick + 2)?;
-        }
-        Ok(())
+        self.edit_all(base, &[(pos, state)]).map(|_| ())
     }
 
-    /// Edits cells together, such as both halves of a door. On failure,
-    /// cells already written are restored to their previous states.
+    /// Preflight the complete bounded shape/support closure before committing.
+    /// Failed edits change neither terrain, revisions nor scheduled work.
     pub fn edit_all(
         &mut self,
         base: &World,
         cells: &[(BlockPos, BlockStateId)],
-    ) -> Result<(), EditError> {
-        let previous: Vec<_> =
-            cells.iter().map(|(p, _)| self.view(base).block_at(p[0], p[1], p[2])).collect();
-        for (index, &(pos, state)) in cells.iter().enumerate() {
-            if let Err(error) = self.edit(base, pos, state) {
-                for (&(pos, _), old) in cells[..index].iter().zip(&previous).rev() {
-                    if let Some(old) = *old {
-                        self.write(pos, old);
+    ) -> Result<Vec<BlockPos>, EditError> {
+        if cells.len() > halcyon_world::blocks::MAX_EDIT_CELLS
+            || cells.iter().any(|(pos, state)| {
+                try_state_info(*state).is_none()
+                    || motion_info(*state).surface == Surface::Unsupported
+                    || base.block_at(pos[0], pos[1], pos[2]).is_none()
+            })
+        {
+            return Err(EditError::Unsupported);
+        }
+        let current = self.view(base);
+        let cells =
+            halcyon_world::blocks::updates(&current, cells).ok_or(EditError::Unsupported)?;
+        let cells: Vec<_> = cells
+            .into_iter()
+            .filter(|(p, s)| current.block_at(p[0], p[1], p[2]) != Some(*s))
+            .collect();
+        let planned = halcyon_world::blocks::PlannedView { base: &current, cells: &cells };
+        let mut schedules = Vec::new();
+        let mut new_columns: HashMap<Column, usize> = HashMap::new();
+        let mut new_entities: HashMap<Column, usize> = HashMap::new();
+        for &(pos, state) in &cells {
+            if base.block_at(pos[0], pos[1], pos[2]).is_none()
+                || motion_info(state).surface == Surface::Unsupported
+            {
+                return Err(EditError::Unsupported);
+            }
+            if !self.columns.get(&column(pos)).is_some_and(|c| c.states.contains_key(&pos)) {
+                *new_columns.entry(column(pos)).or_default() += 1;
+            }
+            let name = halcyon_world::blocks::metadata(state).name;
+            if (name.ends_with("_sign") || name == "minecraft:jukebox")
+                && self.block_entities.record(pos).is_none()
+            {
+                *new_entities.entry(column(pos)).or_default() += 1;
+            }
+            if (block_properties(state).entity_motion_effects()
+                || state_info(state).contextual_geometry())
+                && self
+                    .falling
+                    .iter()
+                    .any(|e| e.column() == column(pos) && e.position[1] > pos[1] as f64)
+            {
+                return Err(EditError::Unsupported);
+            }
+            for p in [pos, [pos[0], pos[1] + 1, pos[2]]] {
+                if planned.block_at(p[0], p[1], p[2]).is_some_and(|s| block_properties(s).falls()) {
+                    if !fall_path_supported(&planned, p, None) {
+                        return Err(EditError::Unsupported);
+                    }
+                    if !self.scheduled_at.contains_key(&p) && !schedules.contains(&p) {
+                        schedules.push(p);
                     }
                 }
-                return Err(error);
             }
         }
-        Ok(())
+        if !cells.is_empty()
+            && (self.changed + self.falling.len() + new_columns.values().sum::<usize>() + 1
+                > MAX_CHANGED
+                || new_columns.iter().any(|(col, new)| {
+                    self.columns.get(col).map_or(0, |c| c.states.len())
+                        + self.falling.iter().filter(|e| e.column() == *col).count()
+                        + new
+                        + 1
+                        > MAX_COLUMN_CHANGES
+                })
+                || self.scheduled_at.len() + schedules.len() > MAX_SCHEDULED
+                || new_entities.iter().any(|(col, count)| {
+                    self.block_entities.columns.get(col).map_or(0, |c| c.records.len()) + count
+                        > halcyon_world::blocks::entities::MAX_BLOCK_ENTITIES_PER_COLUMN
+                }))
+        {
+            return Err(EditError::Capacity);
+        }
+        let positions = cells.iter().map(|(pos, _)| *pos).collect();
+        for (pos, state) in cells {
+            self.write(pos, state);
+        }
+        for pos in schedules {
+            self.schedule(pos, self.tick + 2).expect("preflighted schedule capacity");
+        }
+        Ok(positions)
     }
 
     fn room(&self, pos: BlockPos, reserve: usize) -> bool {
@@ -260,6 +291,7 @@ impl Arena {
     }
 
     fn write(&mut self, pos: BlockPos, state: BlockStateId) {
+        self.block_entities.changed(pos, state);
         self.revision += 1;
         let col = self.columns.entry(column(pos)).or_default();
         if col.states.insert(pos, BlockChange { state, revision: self.revision }).is_none() {
@@ -270,6 +302,7 @@ impl Arena {
 
     pub fn step(&mut self, base: &World, last_id: &mut i32) {
         self.tick += 1;
+        self.block_entities.step(self.tick);
         self.landings.clear();
         for _ in 0..STARTS_PER_STEP {
             let Some(&Reverse((due, pos))) = self.scheduled.peek() else {
@@ -303,8 +336,11 @@ impl Arena {
                 let _ = self.schedule(pos, self.tick + 1);
                 break;
             }
+            if self.edit_all(base, &[(pos, 0)]).is_err() {
+                let _ = self.schedule(pos, self.tick + 1);
+                continue;
+            }
             *last_id = id;
-            self.write(pos, 0);
             let above = [pos[0], pos[1] + 1, pos[2]];
             if self
                 .view(base)
@@ -357,8 +393,8 @@ impl Arena {
                     let support = view
                         .block_at(pos[0], pos[1] - 1, pos[2])
                         .is_some_and(|s| !block_properties(s).free());
-                    if replaceable && support {
-                        self.write(pos, entity.state);
+                    if replaceable && support && self.edit_all(base, &[(pos, entity.state)]).is_ok()
+                    {
                         self.landings.insert(entity.id, (pos, entity.state));
                         // Notify a stack above the newly settled block as well.
                         let above = [pos[0], pos[1] + 1, pos[2]];
@@ -484,6 +520,7 @@ pub(crate) fn test_world() -> World {
     sections[7] = Section::Uniform(1);
     World::from_loaded(LoadedWorld {
         chunks: vec![LoadedChunk {
+            block_entities: vec![],
             x: 0,
             z: 0,
             data: vec![],

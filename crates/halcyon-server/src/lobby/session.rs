@@ -51,6 +51,8 @@ pub(super) struct Input {
     pub(super) proposals: RefCell<ProposalQueue>,
     pub(super) actions: RefCell<ActionQueue>,
     pub(super) block_actions: RefCell<BlockQueue>,
+    /// Overflow cancellation cannot compete with queued player actions.
+    pub(super) cancel_mining: Cell<bool>,
     pub(super) accepted: Cell<Transform>,
     pub(super) generation: Cell<u64>,
     pub(super) ready: Cell<bool>,
@@ -75,6 +77,7 @@ impl Input {
             proposals: RefCell::new(ProposalQueue::default()),
             actions: RefCell::new(ActionQueue::default()),
             block_actions: RefCell::new(BlockQueue::default()),
+            cancel_mining: Cell::new(false),
             accepted: Cell::new(Transform::default()),
             generation: Cell::new(0),
             ready: Cell::new(false),
@@ -152,17 +155,46 @@ impl Session {
 
     /// The owner acknowledges the sequence once the use is accepted or rejected.
     pub fn use_block(&self, used: BlockUse) -> bool {
-        self.input
-            .block_actions
-            .borrow_mut()
-            .push(self.input.generation.get(), BlockInteraction::Use(used))
+        self.input.block_actions.borrow_mut().push_ordered(
+            self.input.generation.get(),
+            self.input.actions.borrow().submitted(),
+            BlockInteraction::Use(used),
+        )
     }
 
     pub fn break_block(&self, broken: BlockBreak) -> bool {
-        self.input
-            .block_actions
-            .borrow_mut()
-            .push(self.input.generation.get(), BlockInteraction::Break(broken))
+        self.input.block_actions.borrow_mut().push_ordered(
+            self.input.generation.get(),
+            self.input.actions.borrow().submitted(),
+            BlockInteraction::Break(broken),
+        )
+    }
+
+    pub fn use_item_prediction(&self, sequence: i32, main_hand: bool) -> bool {
+        self.input.block_actions.borrow_mut().push_ordered(
+            self.input.generation.get(),
+            self.input.actions.borrow().submitted(),
+            BlockInteraction::ItemUse { sequence, main_hand },
+        )
+    }
+
+    /// Overflow cancels earlier unprocessed predictions before a higher acknowledgement.
+    pub fn cancel_block_actions(&self) -> Vec<crate::arena::BlockPos> {
+        self.input.cancel_mining.set(true);
+        let mut cells = Vec::new();
+        while let Some((_, action)) = self.input.block_actions.borrow_mut().pop() {
+            if matches!(action, BlockInteraction::ItemUse { .. }) {
+                continue;
+            }
+            let [x, y, z] = action.pos().map(f64::from);
+            cells.extend(crate::world_sync::resync_cells(Transform {
+                x: x + 0.5,
+                y,
+                z: z + 0.5,
+                ..Default::default()
+            }));
+        }
+        cells
     }
 
     pub fn inventory(&self, action: InventoryAction) {

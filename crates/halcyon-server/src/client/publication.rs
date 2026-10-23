@@ -71,7 +71,10 @@ impl Client {
         self.world_observer.base_sent(column);
         loop {
             let frame = self.lobby.with_registry(|registry| {
-                self.world_observer.patch_column(&registry.arena, column)
+                match self.world_observer.patch_column(&registry.arena, column)? {
+                    Some(frame) => Ok(Some(frame)),
+                    None => self.world_observer.patch_block_entities(&registry.arena, column),
+                }
             })?;
             let Some(frame) = frame else {
                 break;
@@ -89,7 +92,7 @@ impl Client {
     ) -> Result<(), Error> {
         use halcyon_world::BlockView;
         use mc_protocol::packets::client::BlockUpdate;
-        let cells: Vec<_> = cells.into_iter().take(64).collect();
+        let cells: Vec<_> = cells.into_iter().take(crate::player::MAX_USED_BLOCKS).collect();
         let mut frames = Vec::new();
         self.lobby.with_registry(|registry| {
             let world = registry.arena.view(&self.server.lobby);
@@ -172,6 +175,11 @@ impl Client {
 
     /// The single connection writer commits removals before their chunk unload.
     pub async fn remove_players_before_unload(&mut self, column: (i32, i32)) -> Result<(), Error> {
+        let effects = self.world_observer.unload_effects(column)?;
+        for batch in effects {
+            self.send_encoded(&batch).await?;
+            glommio::executor().yield_now().await;
+        }
         let ids = self.world_observer.unload_ids(column);
         for ids in ids.chunks(32) {
             self.send(&mc_protocol::packets::client::RemoveEntities { entity_ids: ids }).await?;

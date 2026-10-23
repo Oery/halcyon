@@ -9,11 +9,22 @@ use mc_protocol::types::GameMode;
 use crate::arena::{Arena, BlockPos};
 use crate::player::PlayerState;
 
+pub mod entities;
+mod execution;
+mod jukebox;
+mod mining;
+mod placement;
+pub use execution::execute;
+pub use jukebox::{jukebox_consumes, set_jukebox, use_jukebox};
+pub use mining::{Crack, Mining, advance_mining, cancel_invalid_mining, handle_break};
+pub use placement::{body, place_block, placement_item};
+
 const MAX_BLOCK_ACTIONS: usize = 8;
 pub const BLOCK_ACTIONS_PER_STEP: usize = 4;
 
 #[derive(Clone, Copy, Debug)]
 pub struct BlockUse {
+    pub face: usize,
     pub sequence: i32,
     pub pos: BlockPos,
     /// Hit location relative to the block's minimum corner.
@@ -23,12 +34,14 @@ pub struct BlockUse {
 
 #[derive(Clone, Copy, Debug)]
 pub struct BlockBreak {
+    pub action: i32,
     pub sequence: i32,
     pub pos: BlockPos,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub enum BlockInteraction {
+    ItemUse { sequence: i32, main_hand: bool },
     Use(BlockUse),
     Break(BlockBreak),
 }
@@ -36,6 +49,7 @@ pub enum BlockInteraction {
 impl BlockInteraction {
     pub fn sequence(self) -> i32 {
         match self {
+            Self::ItemUse { sequence, .. } => sequence,
             Self::Use(used) => used.sequence,
             Self::Break(broken) => broken.sequence,
         }
@@ -43,6 +57,7 @@ impl BlockInteraction {
 
     pub fn pos(self) -> BlockPos {
         match self {
+            Self::ItemUse { .. } => [0, 0, 0],
             Self::Use(used) => used.pos,
             Self::Break(broken) => broken.pos,
         }
@@ -50,7 +65,8 @@ impl BlockInteraction {
 
     pub fn hand(self) -> InteractionHand {
         match self {
-            Self::Use(BlockUse { main_hand: false, .. }) => InteractionHand::Off,
+            Self::Use(BlockUse { main_hand: false, .. })
+            | Self::ItemUse { main_hand: false, .. } => InteractionHand::Off,
             _ => InteractionHand::Main,
         }
     }
@@ -59,23 +75,30 @@ impl BlockInteraction {
 #[derive(Default)]
 pub struct BlockQueue {
     pending: VecDeque<(u64, BlockInteraction)>,
+    barriers: VecDeque<u64>,
 }
 
 impl BlockQueue {
-    pub fn push(&mut self, generation: u64, used: BlockInteraction) -> bool {
+    pub fn push_ordered(&mut self, generation: u64, barrier: u64, used: BlockInteraction) -> bool {
         if self.pending.len() == MAX_BLOCK_ACTIONS {
             return false;
         }
         self.pending.push_back((generation, used));
+        self.barriers.push_back(barrier);
         true
     }
 
     pub fn pop(&mut self) -> Option<(u64, BlockInteraction)> {
+        self.barriers.pop_front();
         self.pending.pop_front()
+    }
+
+    pub fn barrier(&self) -> Option<u64> {
+        self.barriers.front().copied()
     }
 }
 
-fn within_reach(player: &PlayerState, pos: BlockPos) -> bool {
+pub(super) fn within_reach(player: &PlayerState, pos: BlockPos) -> bool {
     let transform = player.movement.transform();
     let eye = match player.movement.pose() {
         PlayerPose::Standing => 1.62,
@@ -107,6 +130,9 @@ static BREAK_STATES: OnceLock<Box<[BreakState]>> = OnceLock::new();
 /// Shared immutable lookup, built once before gameplay, never by scanning on a break.
 pub fn initialize() {
     break_states();
+    placement_item(0);
+    halcyon_world::blocks::key(0);
+    entities::songs();
 }
 
 fn break_states() -> &'static [BreakState] {
@@ -189,6 +215,7 @@ pub fn break_block(
 ) -> Option<Vec<BlockPos>> {
     if player.game_mode.current != GameMode::Creative
         || !player.life.alive()
+        || !player.life.rules.block_edits.creative
         || player.life.pending_teleport().is_some()
         || !within_reach(player, broken.pos)
     {
@@ -203,8 +230,7 @@ pub fn break_block(
             Some((pos, break_states()[state as usize].replacement?))
         })
         .collect();
-    arena.edit_all(base, &cells?).ok()?;
-    Some(positions)
+    arena.edit_all(base, &cells?).ok()
 }
 
 /// Returns the changed cells. A rejection leaves authority unchanged and the
@@ -236,8 +262,7 @@ pub fn use_block(
         return None;
     }
     let cells = toggled_cells(&arena.view(base), used.pos, transform.yaw)?;
-    arena.edit_all(base, &cells).ok()?;
-    Some(cells.into_iter().map(|(pos, _)| pos).collect())
+    arena.edit_all(base, &cells).ok()
 }
 
 /// The cells and states that using the opening at `pos` by hand would set, for
@@ -248,7 +273,7 @@ pub fn toggled_cells(
     yaw: f32,
 ) -> Option<Vec<(BlockPos, BlockStateId)>> {
     let [x, y, z] = pos;
-    let used = BlockUse { sequence: 0, pos, cursor: [0.5; 3], main_hand: true };
+    let used = BlockUse { face: 1, sequence: 0, pos, cursor: [0.5; 3], main_hand: true };
     let cells: Vec<(BlockPos, BlockStateId)> = match opening(view.block_at(x, y, z)?)? {
         Opening::Door { toggled, paired, upper } => {
             let partner = [x, if upper { y - 1 } else { y + 1 }, z];
@@ -280,5 +305,5 @@ pub fn toggled_cells(
 }
 
 #[cfg(test)]
-#[path = "tests/tests_interaction.rs"]
+#[path = "../tests/tests_interaction.rs"]
 mod tests;

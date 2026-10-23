@@ -5,9 +5,9 @@ use crate::LoadError;
 /// Anvil chunk data uses tags the network codec never sees
 /// (`ByteArray`, `IntArray`, `LongArray`), and values must outlive the
 /// read buffer, so this is deliberately separate from
-/// `mc_protocol::types::Nbt` (borrowed, encode-only). Never touched on
-/// the hot path: the loader converts everything to pre-encoded wire
-/// bytes and drops this DOM before serving.
+/// `mc_protocol::types::Nbt` (borrowed, encode-only). Only bounded supported
+/// sign text retains sanitized values after import; its wire snapshot is encoded
+/// on change, never by movement or once per observer.
 #[derive(Debug, Clone)]
 pub enum DiskNbt {
     Byte(i8),

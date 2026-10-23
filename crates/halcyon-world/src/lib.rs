@@ -1,3 +1,4 @@
+pub mod blocks;
 pub mod blockstates;
 pub mod disk_nbt;
 pub mod loader;
@@ -49,6 +50,8 @@ pub enum LoadError {
 
     #[error("unknown block state {state} in chunk {chunk}")]
     UnknownBlockState { chunk: String, state: String },
+    #[error("unsupported block entity in chunk {chunk}: {reason}")]
+    UnsupportedBlockEntity { chunk: String, reason: String },
 }
 
 /// Immutable hot-path world: a flat grid over the loaded rect, O(1) lookup
@@ -71,6 +74,7 @@ pub struct World {
 /// One pre-encoded chunk column. `data` holds exactly the `ChunkData.data`
 /// section bytes; `heights` is the 37-long `MOTION_BLOCKING` array.
 pub struct Chunk {
+    pub block_entities: Arc<[blocks::entities::BlockEntity]>,
     pub x: i32,
     pub z: i32,
     pub data: Arc<[u8]>,
@@ -96,8 +100,20 @@ impl World {
             wire_bytes += c.wire_bytes;
             terrain_bytes += std::mem::size_of::<[Section; SECTION_COUNT]>()
                 + c.sections.iter().map(Section::backing_bytes).sum::<usize>();
+            terrain_bytes += c.block_entities.len()
+                * std::mem::size_of::<blocks::entities::BlockEntity>()
+                + c.block_entities
+                    .iter()
+                    .map(|e| match &e.data {
+                        blocks::entities::BlockEntityData::Sign(sign) => sign.payload_bytes(),
+                        blocks::entities::BlockEntityData::Jukebox { disc } => {
+                            disc.as_ref().map_or(0, String::capacity)
+                        }
+                    })
+                    .sum::<usize>();
             let idx = ((c.z - min_z) as u32 * width + (c.x - min_x) as u32) as usize;
             chunks[idx] = Some(Arc::new(Chunk {
+                block_entities: Arc::from(c.block_entities),
                 x: c.x,
                 z: c.z,
                 data: Arc::from(c.data.into_boxed_slice()),

@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Instant;
 
+use halcyon_world::BlockView;
 use mc_protocol::packets::client::InteractionHand;
 use mc_protocol::types::ItemStack;
 use uuid::Uuid;
@@ -11,9 +12,8 @@ use uuid::Uuid;
 use super::session::Input;
 use super::{AdmissionError, PlayerSnapshot, Profile, StepMetrics, Transform, WorldAction};
 use crate::interaction::{
-    BLOCK_ACTIONS_PER_STEP, BlockInteraction, break_block, break_cells, use_block,
+    BLOCK_ACTIONS_PER_STEP, BlockInteraction, advance_mining, break_cells, execute,
 };
-use crate::inventory::InventoryAction;
 use crate::player::{PlayerAction, PlayerState, PlayerUpdate};
 
 pub(super) struct Player {
@@ -52,6 +52,29 @@ pub struct Registry {
 }
 
 impl Registry {
+    pub fn inventory_snapshot(&self, id: i32) -> Option<crate::inventory::InventorySnapshot> {
+        Some(self.players.get(&id)?.state.inventory.snapshot())
+    }
+    pub(super) fn request_give(
+        &self,
+        sender: i32,
+        stack: ItemStack,
+    ) -> Result<
+        glommio::channels::oneshot::Receiver<Result<ItemStack, crate::player::PlayerActionError>>,
+        crate::player::PlayerActionError,
+    > {
+        let player = self.command_player(sender, None)?;
+        let (reply, response) = glommio::channels::oneshot::oneshot();
+        if !player
+            .input
+            .actions
+            .borrow_mut()
+            .push(player.input.generation.get(), PlayerAction::GiveCreative { stack, reply })
+        {
+            return Err(crate::player::PlayerActionError::QueueFull);
+        }
+        Ok(response)
+    }
     fn command_player(
         &self,
         sender: i32,
@@ -344,6 +367,7 @@ impl Registry {
         let Some(player) = self.players.remove(&entity_id) else {
             return false;
         };
+        self.arena.cracks.remove(&entity_id);
         self.uuids.remove(&player.snapshot.profile.uuid);
         if player.active {
             self.remove_column(player.snapshot.transform.chunk(), entity_id);
@@ -388,59 +412,47 @@ impl Registry {
             let Some(action) = self.world_actions.pop_front() else {
                 break;
             };
-            let result = self.arena.edit(world, action.pos, action.state);
+            let result = match action.edit {
+                super::WorldEdit::Block { pos, state } => self.arena.edit(world, pos, state),
+                super::WorldEdit::Sign { pos, text } => {
+                    self.arena.block_entities.set_sign(pos, *text)
+                }
+                super::WorldEdit::Jukebox { pos, disc, play } => {
+                    crate::interaction::set_jukebox(&mut self.arena, world, pos, disc, play)
+                        .map(|_| ())
+                }
+                super::WorldEdit::Opening { pos, yaw } => {
+                    crate::interaction::toggled_cells(&self.arena.view(world), pos, yaw)
+                        .ok_or(crate::arena::EditError::Unsupported)
+                        .and_then(|cells| self.arena.edit_all(world, &cells).map(|_| ()))
+                }
+            };
             let _ = action.reply.send(result);
         }
-        for (&id, player) in &self.players {
-            let mut update = PlayerUpdate::default();
-            for _ in 0..BLOCK_ACTIONS_PER_STEP {
-                let Some((generation, action)) = player.input.block_actions.borrow_mut().pop()
-                else {
-                    break;
-                };
-                update.block_ack = update.block_ack.max(Some(action.sequence()));
-                let cells = if generation != player.state.life.generation {
-                    None
-                } else {
-                    match action {
-                        BlockInteraction::Use(used) => {
-                            use_block(&mut self.arena, world, &player.state, used)
-                        }
-                        BlockInteraction::Break(broken) => {
-                            break_block(&mut self.arena, world, &player.state, broken)
-                        }
-                    }
-                };
-                if let Some(cells) = cells {
-                    update.used_blocks.extend(cells);
-                    // The user's client swings when it predicts the use.
-                    if player.active {
-                        self.effects.swing(id, action.hand(), Some(id));
-                    }
-                } else {
-                    if matches!(action, BlockInteraction::Break(_)) {
-                        update
-                            .used_blocks
-                            .extend(break_cells(&self.arena.view(world), action.pos()));
-                        continue;
-                    }
-                    // Restore a predicted opening, placement or item use.
-                    let [x, y, z] = action.pos().map(f64::from);
-                    update.block_resync =
-                        Some(Transform { x: x + 0.5, y, z: z + 0.5, ..Default::default() });
-                    player.input.actions.borrow_mut().push(
-                        player.state.life.generation,
-                        PlayerAction::Inventory(InventoryAction::Resync),
-                    );
-                }
-            }
-            if update.changed() {
-                player.input.update.borrow_mut().merge(update);
-                notices.push(player.input.clone());
-            }
+        for player in self.players.values() {
+            player.input.actions.borrow_mut().barrier =
+                player.input.block_actions.borrow().barrier();
         }
         self.arena.step(world, &mut self.last_entity_id);
-        let world = self.arena.view(world);
+        if self.arena.tick().is_multiple_of(20) {
+            for pos in self.arena.block_entities.playing.keys() {
+                self.effects.particles(
+                    crate::effects::Particles {
+                        particle: crate::effects::Particle::NOTE,
+                        pos: [
+                            f64::from(pos[0]) + 0.5,
+                            f64::from(pos[1]) + 1.2,
+                            f64::from(pos[2]) + 0.5,
+                        ],
+                        offset: [0.0; 3],
+                        speed: 0.0,
+                        count: 1,
+                    },
+                    None,
+                );
+            }
+        }
+        let view = self.arena.view(world);
         for (&id, player) in &mut self.players {
             let input = &player.input;
             let had_teleport = player.state.life.pending_teleport().is_some();
@@ -448,7 +460,7 @@ impl Registry {
                 player.state.life.confirm(id);
             }
             let (update, movement) = player.state.advance(
-                &world,
+                &view,
                 &mut input.proposals.borrow_mut(),
                 &mut input.actions.borrow_mut(),
                 now,
@@ -493,6 +505,92 @@ impl Registry {
                 metrics.corrections += u64::from(movement.correction);
             }
             if update.changed() || old.chunk() != accepted.chunk() {
+                input.update.borrow_mut().merge(update);
+                notices.push(input.clone());
+            }
+        }
+        let occupants: Vec<_> = self
+            .players
+            .values()
+            .filter(|p| p.active && p.state.life.alive() && !p.state.spectator())
+            .map(|p| crate::interaction::body(&p.state))
+            .collect();
+        for (&id, player) in &mut self.players {
+            let input = &player.input;
+            let mut update = PlayerUpdate::default();
+            if input.cancel_mining.replace(false) {
+                player.state.mining = None;
+                self.arena.cracks.remove(&id);
+            }
+            if input.update.borrow().used_blocks.len() > crate::player::MAX_USED_BLOCKS - 512 {
+                crate::interaction::cancel_invalid_mining(
+                    &mut self.arena,
+                    world,
+                    &mut player.state,
+                    id,
+                );
+                continue;
+            }
+            for _ in 0..BLOCK_ACTIONS_PER_STEP {
+                if input
+                    .block_actions
+                    .borrow()
+                    .barrier()
+                    .is_some_and(|barrier| barrier > input.actions.borrow().completed())
+                {
+                    break;
+                }
+                let Some((generation, action)) = input.block_actions.borrow_mut().pop() else {
+                    break;
+                };
+                update.block_ack = update.block_ack.max(Some(action.sequence()));
+                let applied = if generation != player.state.life.generation
+                    || !player.active
+                    || input.closed.get()
+                {
+                    None
+                } else {
+                    execute(
+                        &mut self.arena,
+                        world,
+                        &mut player.state,
+                        id,
+                        action,
+                        &occupants,
+                        &mut update,
+                    )
+                };
+                if let Some(applied) = applied {
+                    applied.emit(&mut self.effects, id, action.hand());
+                    update.used_blocks.extend(applied.cells);
+                } else {
+                    if matches!(action, BlockInteraction::Break(_)) {
+                        update
+                            .used_blocks
+                            .extend(break_cells(&self.arena.view(world), action.pos()));
+                    } else if !matches!(action, BlockInteraction::ItemUse { .. }) {
+                        let [x, y, z] = action.pos().map(f64::from);
+                        update.used_blocks.extend(crate::world_sync::resync_cells(Transform {
+                            x: x + 0.5,
+                            y,
+                            z: z + 0.5,
+                            ..Default::default()
+                        }));
+                    }
+                    update.inventory_full = true;
+                    update.inventory = Some(player.state.inventory.snapshot());
+                }
+            }
+            let mining_target = player.state.mining.as_ref().map(|m| m.pos);
+            let mined = mining_target
+                .and_then(|pos| self.arena.view(world).block_at(pos[0], pos[1], pos[2]));
+            if let Some(cells) = advance_mining(&mut self.arena, world, &mut player.state, id) {
+                if let (Some(pos), Some(state)) = (mining_target, mined) {
+                    self.effects.block_break(pos, state, Some(id));
+                }
+                update.used_blocks.extend(cells);
+            }
+            if update.changed() || !update.used_blocks.is_empty() {
                 input.update.borrow_mut().merge(update);
                 notices.push(input.clone());
             }

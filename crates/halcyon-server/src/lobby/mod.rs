@@ -145,9 +145,15 @@ struct Registration {
 }
 
 struct WorldAction {
-    pos: crate::arena::BlockPos,
-    state: halcyon_world::BlockStateId,
+    edit: WorldEdit,
     reply: oneshot::Sender<Result<(), crate::arena::EditError>>,
+}
+
+enum WorldEdit {
+    Block { pos: crate::arena::BlockPos, state: halcyon_world::BlockStateId },
+    Sign { pos: crate::arena::BlockPos, text: Box<halcyon_world::blocks::entities::Sign> },
+    Jukebox { pos: crate::arena::BlockPos, disc: ItemStack, play: bool },
+    Opening { pos: crate::arena::BlockPos, yaw: f32 },
 }
 
 #[derive(Clone)]
@@ -184,20 +190,56 @@ impl Lobby {
         Ok(Self { registry, registrations: Rc::new(sender), owner, metrics })
     }
 
-    /// Trusted arena edits only; player digging and placement remain disabled.
+    /// Trusted edits use the same bounded shape/support transaction as players.
     #[allow(dead_code)]
     pub async fn set_block(
         &self,
         pos: crate::arena::BlockPos,
         state: halcyon_world::BlockStateId,
     ) -> Result<(), crate::arena::EditError> {
+        self.edit_world(WorldEdit::Block { pos, state }).await
+    }
+
+    #[allow(dead_code)]
+    pub async fn set_sign(
+        &self,
+        pos: crate::arena::BlockPos,
+        text: halcyon_world::blocks::entities::Sign,
+    ) -> Result<(), crate::arena::EditError> {
+        let text = text.sanitized().ok_or(crate::arena::EditError::Unsupported)?;
+        self.edit_world(WorldEdit::Sign { pos, text: Box::new(text) }).await
+    }
+
+    #[allow(dead_code)]
+    pub async fn set_jukebox(
+        &self,
+        pos: crate::arena::BlockPos,
+        disc: ItemStack,
+        play: bool,
+    ) -> Result<(), crate::arena::EditError> {
+        self.edit_world(WorldEdit::Jukebox { pos, disc, play }).await
+    }
+
+    #[allow(dead_code)]
+    pub async fn toggle_opening(
+        &self,
+        pos: crate::arena::BlockPos,
+        yaw: f32,
+    ) -> Result<(), crate::arena::EditError> {
+        if !yaw.is_finite() {
+            return Err(crate::arena::EditError::Unsupported);
+        }
+        self.edit_world(WorldEdit::Opening { pos, yaw }).await
+    }
+
+    async fn edit_world(&self, edit: WorldEdit) -> Result<(), crate::arena::EditError> {
         let (reply, response) = oneshot::oneshot();
         {
             let mut registry = self.registry.borrow_mut();
             if registry.world_actions.len() == 64 {
                 return Err(crate::arena::EditError::Unavailable);
             }
-            registry.world_actions.push_back(WorldAction { pos, state, reply });
+            registry.world_actions.push_back(WorldAction { edit, reply });
         }
         response.await.map_err(|_| crate::arena::EditError::Unavailable)?
     }
@@ -214,6 +256,15 @@ impl Lobby {
 
     pub fn active_count(&self) -> usize {
         self.registry.borrow().active_count()
+    }
+
+    pub async fn give_creative(
+        &self,
+        sender: i32,
+        stack: ItemStack,
+    ) -> Result<ItemStack, crate::player::PlayerActionError> {
+        let response = self.registry.borrow().request_give(sender, stack)?;
+        response.await.map_err(|_| crate::player::PlayerActionError::Closed)?
     }
 
     /// Resolve and enqueue while borrowed; wait for the owner after releasing it.
