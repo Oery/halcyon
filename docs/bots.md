@@ -287,7 +287,8 @@ Code: `crates/halcyon-server/src/bot/`. Tests: `src/tests/tests_bot_*.rs`. Real-
 | `cargo test --release -p halcyon-server spire_climb_scenario -- --ignored --nocapture` | Headless bots on a real map. Reports route existence, simulation cost, per-bot progress and, when the route is partial, a frontier report. |
 | `survey_map`, `survey_layers`, `survey_box`, `survey_inventory`, `survey_raised_water`, `survey_lily_pads`, `geometric_route`, `trace_edge` | Map forensics: height maps, slices, block inventories, optimistic routes and tick-by-tick traces of one edge. |
 | `HALCYON_DIAGNOSTICS=1` | Prints a `bots:` line every 5 s: modes, failures by cause, heights and navigation cache and cost. |
-| `HALCYON_BOT_TRACE=1` | Logs every failed edge, with its robustness. |
+| `HALCYON_BOT_TRACE=<name>` or `all` | Traces one bot (e.g. `Bot45`) or every bot: mode, position, route and current edge each second, and the cached moves around it when a search fails. |
+| `HALCYON_BOT_CHECKPOINT=n` | Starts every bot on the n-th checkpoint (from 1), heading for the next, to work on later parts of a course without waiting for the climb. A fallen bot returns there. |
 | `geometric_route` with `HALCYON_ROUTE_FROM`/`HALCYON_ROUTE_TO` | One leg, e.g. between checkpoints: optimistic route, near misses and a reached/unreached height map. |
 | `edge_success_rate`, `trace_bot`, `survey_checkpoints`, `survey_approaches` | Live-controller success rate of one edge per level, a traced headless bot, the checkpoint list, floors around a goal. |
 

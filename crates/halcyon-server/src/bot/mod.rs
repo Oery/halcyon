@@ -84,6 +84,16 @@ pub fn spawn(server: Arc<Server>, lobby: Lobby, count: usize, seed: u64) {
             start.elapsed().as_millis()
         );
     }
+    // HALCYON_BOT_CHECKPOINT=n: start on the n-th checkpoint (from 1), for
+    // working on later parts of a course without waiting for the climb.
+    let start = std::env::var("HALCYON_BOT_CHECKPOINT")
+        .ok()
+        .and_then(|n| n.parse::<usize>().ok())
+        .map(|n| n.min(service.checkpoints.len()))
+        .and_then(|n| Some((n, *service.checkpoints.get(n.checked_sub(1)?)?)));
+    if let Some((n, cell)) = start {
+        println!("bots: starting on checkpoint {n} at {cell:?}");
+    }
     let nav = Rc::new(RefCell::new(service));
     let report = Rc::new(RefCell::new(Report { bots: vec![(Mode::Idle, 0.0, [0; 3], 0); count] }));
     let (low, high) = profile::parse_levels(std::env::var("HALCYON_BOT_LEVEL").ok().as_deref());
@@ -95,7 +105,7 @@ pub fn spawn(server: Arc<Server>, lobby: Lobby, count: usize, seed: u64) {
         let seed = seed ^ (index as u64 + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15);
         let level = Rng::new(seed ^ 0x1e7e1).ticks(u32::from(low), u32::from(high)) as u8;
         glommio::spawn_local(async move {
-            let bot = Bot { index, seed, profile: BotProfile::new(level), nav, report };
+            let bot = Bot { index, seed, profile: BotProfile::new(level), start, nav, report };
             if let Err(error) = run(server, lobby, bot).await {
                 eprintln!("bot {index}: {error}");
             }
@@ -158,12 +168,14 @@ struct Bot {
     index: usize,
     seed: u64,
     profile: BotProfile,
+    /// The checkpoint to start on, by number, and its cell.
+    start: Option<(usize, nav::Cell)>,
     nav: Rc<RefCell<NavService>>,
     report: Rc<RefCell<Report>>,
 }
 
 async fn run(server: Arc<Server>, lobby: Lobby, bot: Bot) -> Result<(), crate::error::Error> {
-    let Bot { index, seed, profile: skill, nav, report } = bot;
+    let Bot { index, seed, profile: skill, start, nav, report } = bot;
     let mut rng = Rng::new(seed);
     let username = format!("Bot{}", index + 1);
     let name = username.clone();
@@ -175,10 +187,17 @@ async fn run(server: Arc<Server>, lobby: Lobby, bot: Bot) -> Result<(), crate::e
     let profile = Rc::new(Profile { uuid, username, info: Rc::from(info) });
 
     let (x, y, z, _, _) = server.lobby.spawn;
+    // Spread around spawn, or within a starting checkpoint's plate.
+    let ([x, y, z], spread) = match start {
+        Some((_, [cx, cy, cz])) => {
+            ([f64::from(cx) + 0.5, f64::from(cy), f64::from(cz) + 0.5], 0.25)
+        }
+        None => ([x, y, z], 3.0),
+    };
     let requested = Transform {
-        x: x + rng.range(-3.0, 3.0),
+        x: x + rng.range(-spread, spread),
         y,
-        z: z + rng.range(-3.0, 3.0),
+        z: z + rng.range(-spread, spread),
         yaw: rng.range(-180.0, 180.0) as f32,
         pitch: 0.0,
         on_ground: false,
@@ -202,6 +221,9 @@ async fn run(server: Arc<Server>, lobby: Lobby, bot: Bot) -> Result<(), crate::e
     session.teleport(spawn);
 
     let mut brain = Brain::new(skill, rng.next(), spawn);
+    if let Some((n, _)) = start {
+        brain.start_at(n);
+    }
     if std::env::var("HALCYON_BOT_TRACE").is_ok_and(|traced| traced == name || traced == "all") {
         brain.traced = Some(name.clone());
     }

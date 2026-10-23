@@ -185,6 +185,11 @@ impl Brain {
         self.checkpoint
     }
 
+    /// Begin as if the first `passed` checkpoints were already behind.
+    pub fn start_at(&mut self, passed: usize) {
+        self.checkpoint = passed;
+    }
+
     /// Where a trapped bot asks to be returned: its last checkpoint, or
     /// `None` for the spawn. Taken once per request.
     pub fn take_reset(&mut self, nav: &NavService) -> Option<Option<Cell>> {
