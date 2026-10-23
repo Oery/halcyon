@@ -18,7 +18,7 @@ mod registry;
 mod session;
 
 pub use game::{GameCtx, MAX_MESSAGES};
-pub use manager::InstanceManager;
+pub use manager::{InstanceManager, Route};
 use owner::{Driver, run_owner};
 pub use registry::Registry;
 pub use session::Session;

@@ -447,8 +447,8 @@ Design expectations and layered architecture: [bots.md](bots.md).
 
 | Feature | Progress |
 | --- | --- |
-| Authoritative simulation ownership | Partial — one owner per instance, all on one executor. |
-| Multi-core execution | Not started |
+| Authoritative simulation ownership | Partial — one owner per instance; instances spread over executors. |
+| Multi-core execution | Partial — one executor per core, each with its own hub; games are placed on the least-loaded core and players move between cores with their connection. No load rebalancing of running games. |
 | Separate decision and simulation scheduling | Not started |
 | Bounded queues and admission | Done |
 | Reusable data and work buffers | Done |

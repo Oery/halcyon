@@ -26,6 +26,13 @@ impl<S> ClientStream<S> {
         Self { inner, crypto: None }
     }
 
+    /// Moves the cipher state onto another socket handle for the same
+    /// connection. Callers flush first; every send already ends flushed.
+    pub fn map_inner<T>(self, map: impl FnOnce(S) -> T) -> ClientStream<T> {
+        debug_assert!(self.crypto.as_ref().is_none_or(|crypto| crypto.pending.is_empty()));
+        ClientStream { inner: map(self.inner), crypto: self.crypto }
+    }
+
     pub fn enable_encryption(&mut self, enc: Crypter, dec: Crypter) -> io::Result<()> {
         if self.crypto.is_some() {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "encryption already enabled"));

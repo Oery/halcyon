@@ -25,6 +25,8 @@ use crate::{
 mod gameplay;
 mod publication;
 mod transfer;
+
+pub use transfer::Parked;
 mod writer;
 
 const INITIAL_BUFFER: usize = 1_024;
@@ -47,8 +49,13 @@ pub struct Client {
     pub camera: Option<i32>,
     pub instance: Instance,
     pub instances: InstanceManager,
+    pub shard: Rc<crate::shard::Shard>,
+    /// Set once the player has left its instance for one on another shard.
+    handoff: Option<transfer::Handoff>,
     /// The client's current level name; a new name makes it discard the old world.
     pub dimension: String,
+    /// Levels entered after login, which keeps each new level name unique.
+    levels: u32,
     pub session: Option<Session>,
     /// Keeps a second connection on this account out of every instance.
     account: Option<crate::server::Account>,
@@ -82,13 +89,24 @@ impl Client {
     pub fn new(
         stream: TcpStream,
         server: Arc<Server>,
+        shard: Rc<crate::shard::Shard>,
+        instances: InstanceManager,
+        instance: Instance,
+    ) -> Self {
+        Self::with_stream(ClientStream::new(stream), server, shard, instances, instance)
+    }
+
+    fn with_stream(
+        stream: ClientStream<TcpStream>,
+        server: Arc<Server>,
+        shard: Rc<crate::shard::Shard>,
         instances: InstanceManager,
         instance: Instance,
     ) -> Self {
         let now = Instant::now();
         Self {
             game_mode: Default::default(),
-            stream: ClientStream::new(stream),
+            stream,
             ctx: Context::default(),
             server,
             login: LoginProgress::default(),
@@ -100,7 +118,10 @@ impl Client {
             camera: None,
             instance,
             instances,
+            shard,
+            handoff: None,
             dimension: OVERWORLD.to_owned(),
+            levels: 0,
             session: None,
             account: None,
             profile_info: None,
@@ -150,6 +171,9 @@ impl Client {
                 }
                 let update = session.take_update();
                 self.apply_player_update(update).await?;
+                if self.handoff.is_some() {
+                    return Ok(());
+                }
             }
             if self.teleport_deadline.is_some_and(|deadline| now >= deadline) {
                 return Err(Error::Timeout);
@@ -166,9 +190,19 @@ impl Client {
         Ok(())
     }
 
-    pub async fn run(&mut self) {
-        let result = self.run_connection().await;
-        // Release the reservation even when callers retain the Client after run.
+    pub async fn run(self) {
+        self.run_from(Vec::new()).await;
+    }
+
+    /// Serves the connection on this shard, starting with bytes already read.
+    async fn run_from(mut self, unread: Vec<u8>) {
+        let result = self.run_connection(unread).await;
+        let result = match result {
+            Ok(Some(unread)) => return self.hand_off(unread),
+            Ok(None) => Ok(()),
+            Err(error) => Err(error),
+        };
+        // Release the reservation before the connection's other state.
         self.session.take();
         if matches!(result, Err(Error::PlayerBacklog)) {
             self.instance.record_slow_client();
@@ -182,12 +216,18 @@ impl Client {
         }
     }
 
-    async fn run_connection(&mut self) -> Result<(), Error> {
+    /// Ok(Some(unread)) hands the connection to another shard with the bytes
+    /// received but not yet handled.
+    async fn run_connection(&mut self, unread: Vec<u8>) -> Result<Option<Vec<u8>>, Error> {
         self.stream.inner.set_nodelay(true).map_err(std::io::Error::other)?;
-        let mut buf = vec![0; INITIAL_BUFFER];
-        let mut len = 0;
+        let mut len = unread.len();
+        let mut buf = unread;
+        buf.resize(len.max(INITIAL_BUFFER), 0);
         loop {
             self.maintain().await?;
+            if self.handoff.is_some() {
+                return Ok(Some(buf[..len].to_vec()));
+            }
             let mut consumed = 0;
             let mut packets = 0;
             while packets < 64 {
@@ -199,6 +239,9 @@ impl Client {
                 }
                 consumed += used;
                 packets += 1;
+                if self.handoff.is_some() {
+                    return Ok(Some(buf[consumed..len].to_vec()));
+                }
             }
             buf.copy_within(consumed..len, 0);
             len -= consumed;
@@ -244,7 +287,7 @@ impl Client {
             )
             .await;
             match read {
-                Some(Ok(0)) => return Ok(()),
+                Some(Ok(0)) => return Ok(None),
                 Some(Ok(n)) => len += n,
                 Some(Err(error)) => return Err(error.into()),
                 None => {}

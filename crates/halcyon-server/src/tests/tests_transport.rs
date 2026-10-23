@@ -107,3 +107,26 @@ fn encrypted_reads_keep_cipher_state_and_reuse_scratch() {
     assert_eq!(&buf[..5], b"world");
     assert_eq!(stream.crypto.as_ref().unwrap().read_scratch.capacity(), capacity);
 }
+
+#[test]
+fn cipher_state_follows_the_connection_to_a_new_socket_handle() {
+    let secret = [9; 16];
+    let (enc, dec) = ciphers(&secret).unwrap();
+    let mut stream = ClientStream::new(Writer::default());
+    stream.enable_encryption(enc, dec).unwrap();
+    let mut cx = Context::from_waker(Waker::noop());
+    assert!(matches!(Pin::new(&mut stream).poll_write(&mut cx, b"before"), Poll::Ready(Ok(6))));
+    assert!(matches!(Pin::new(&mut stream).poll_flush(&mut cx), Poll::Ready(Ok(()))));
+    let mut first = Vec::new();
+    // A shard handoff swaps the socket handle and keeps the cipher position.
+    let mut stream = stream.map_inner(|writer| {
+        first = writer.bytes;
+        Writer::default()
+    });
+    assert!(matches!(Pin::new(&mut stream).poll_write(&mut cx, b"after"), Poll::Ready(Ok(5))));
+    assert!(matches!(Pin::new(&mut stream).poll_flush(&mut cx), Poll::Ready(Ok(()))));
+    let (_, mut dec) = ciphers(&secret).unwrap();
+    let mut plain = [0; 32];
+    let n = dec.update(&[first, stream.inner.bytes].concat(), &mut plain).unwrap();
+    assert_eq!(&plain[..n], b"beforeafter");
+}

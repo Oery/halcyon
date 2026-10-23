@@ -1,5 +1,4 @@
-use futures_lite::stream::StreamExt;
-use glommio::net::TcpListener;
+use glommio::{LocalExecutorPoolBuilder, PoolPlacement};
 use std::sync::Arc;
 
 use crate::client::Client;
@@ -26,6 +25,7 @@ mod movement;
 mod packet;
 mod player;
 mod server;
+mod shard;
 mod simulation;
 mod states;
 mod transport;
@@ -37,46 +37,24 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 static ADDR: &str = "127.0.0.1:25565";
 static WORLDS: &str = "worlds";
 
-#[glommio::main(placement = Fixed(0))]
-async fn main() -> std::io::Result<()> {
-    let maps =
-        map::MapCatalog::load(std::path::Path::new(WORLDS)).await.map_err(std::io::Error::other)?;
-    let server = Arc::new(Server::new(maps).await.map_err(std::io::Error::other)?);
-    // Phase one runs every instance on this single executor, shard 0.
-    let instances = instance::InstanceManager::new(server.clone(), 0);
-    let hub = instances.hub().ok_or_else(|| {
-        std::io::Error::other(format!("the hub map is missing from {WORLDS}; set HALCYON_HUB_MAP"))
-    })?;
-
-    // Temporary until matches own bot populations: HALCYON_BOTS=<count>.
-    let bots = std::env::var("HALCYON_BOTS").ok().and_then(|n| n.parse().ok()).unwrap_or(0);
-    bot::spawn(server.clone(), hub, bots, 0x0068_616c_6379_6f6e);
-
-    let listener = TcpListener::bind(ADDR)?;
-    let mut incoming = listener.incoming();
-
-    println!("Listening on {}", listener.local_addr()?);
-
-    while let Some(conn) = incoming.next().await {
-        match conn {
-            Ok(conn) => {
-                let Some(hub) = instances.hub() else {
-                    eprintln!("hub unavailable; dropping connection");
-                    continue;
-                };
-                let handle = Arc::clone(&server);
-                let instances = instances.clone();
-                glommio::spawn_local(async move {
-                    Client::new(conn, handle, instances, hub).run().await;
-                })
-                .detach();
-            }
-            Err(e) => {
-                eprintln!("accept failed: {e}");
-                continue;
-            }
-        }
+fn main() -> std::io::Result<()> {
+    let shards = shard::count();
+    // Maps and wire caches load once; every shard shares them read-only.
+    let server = futures_lite::future::block_on(async {
+        let maps = map::MapCatalog::load(std::path::Path::new(WORLDS)).await?;
+        Server::new(maps, shards).await
+    })
+    .map_err(std::io::Error::other)?;
+    if game::hub_map(&server).is_none() {
+        return Err(std::io::Error::other(format!(
+            "the hub map is missing from {WORLDS}; set HALCYON_HUB_MAP"
+        )));
     }
-
+    let server = Arc::new(server);
+    let mesh = shard::Mesh::full(shards, shard::HANDOFF_CAPACITY);
+    LocalExecutorPoolBuilder::new(PoolPlacement::MaxSpread(shards, None))
+        .on_all_shards(move || async move { shard::run(server, mesh, ADDR).await })
+        .map_err(std::io::Error::other)?
+        .join_all();
     Ok(())
 }
