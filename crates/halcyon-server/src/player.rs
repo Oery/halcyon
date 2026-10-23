@@ -46,6 +46,8 @@ pub enum PlayerAction {
     Drive(Option<MovementInput>),
     /// Item use in progress; it ends when the hand's item changes or the life ends.
     UseItem(Option<InteractionHand>),
+    /// Spectator camera and spectator-menu teleports, resolved against other players.
+    Spectate(CameraRequest),
     EditInventory {
         edit: InventoryEdit,
         reply: glommio::channels::oneshot::Sender<Result<ItemStack, InventoryEditError>>,
@@ -61,13 +63,35 @@ pub struct GameModeState {
 
 impl GameModeState {
     pub fn ability_flags(self) -> u8 {
-        if self.current == GameMode::Creative {
+        match self.current {
             // Invulnerable, allow flight, instant break; flight itself is opt-in.
-            0x0d | if self.flying { 0x02 } else { 0 }
-        } else {
-            0
+            GameMode::Creative => 0x0d | if self.flying { 0x02 } else { 0 },
+            // Invulnerable, always flying, allow flight.
+            GameMode::Spectator => 0x07,
+            _ => 0,
         }
     }
+
+    /// Creative and Spectator players ignore everything except void rules.
+    pub fn invulnerable(self) -> bool {
+        matches!(self.current, GameMode::Creative | GameMode::Spectator)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CameraRequest {
+    /// View through another player until sneaking, a mode change or its loss.
+    Follow(i32),
+    Stop,
+    TeleportTo(i32),
+}
+
+/// Another player's current authority, read by the owner for camera resolution.
+#[derive(Clone, Copy, Debug)]
+pub struct CameraTarget {
+    pub transform: Transform,
+    /// A player viewing through another camera cannot itself be followed.
+    pub attached: bool,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -148,6 +172,8 @@ impl ActionQueue {
 #[derive(Default)]
 pub struct PlayerUpdate {
     pub game_mode: Option<GameModeState>,
+    /// The followed entity, or None to return the camera to the player.
+    pub camera: Option<Option<i32>>,
     pub block_resync: Option<Transform>,
     /// Cells changed by accepted block uses, resent before `block_ack`.
     pub used_blocks: Vec<crate::arena::BlockPos>,
@@ -174,6 +200,9 @@ impl PlayerUpdate {
     pub fn merge(&mut self, newer: Self) {
         if newer.game_mode.is_some() {
             self.game_mode = newer.game_mode;
+        }
+        if newer.camera.is_some() {
+            self.camera = newer.camera;
         }
         if newer.respawn {
             // A replacement life supersedes transient events from the old one.
@@ -210,6 +239,7 @@ impl PlayerUpdate {
 
     pub fn changed(&self) -> bool {
         self.game_mode.is_some()
+            || self.camera.is_some()
             || self.block_resync.is_some()
             || self.block_ack.is_some()
             || self.teleport.is_some()
@@ -231,6 +261,8 @@ pub struct PlayerState {
     using: Option<(InteractionHand, HotbarSlot)>,
     movement_input: Option<MovementInput>,
     resync_after: Option<Instant>,
+    camera: Option<i32>,
+    camera_request: Option<CameraRequest>,
 }
 
 impl PlayerState {
@@ -244,11 +276,96 @@ impl PlayerState {
             using: None,
             movement_input: None,
             resync_after: None,
+            camera: None,
+            camera_request: None,
         }
     }
 
     pub fn using(&self) -> Option<InteractionHand> {
         self.using.map(|(hand, _)| hand)
+    }
+
+    pub fn spectator(&self) -> bool {
+        self.game_mode.current == GameMode::Spectator
+    }
+
+    /// The followed player, while this spectator views through its camera.
+    pub fn camera(&self) -> Option<i32> {
+        self.camera
+    }
+
+    /// The player whose authority the next `resolve_camera` needs, if any.
+    pub fn camera_target(&self) -> Option<i32> {
+        match self.camera_request {
+            Some(CameraRequest::Follow(id) | CameraRequest::TeleportTo(id)) => Some(id),
+            Some(CameraRequest::Stop) => None,
+            None => self.camera,
+        }
+    }
+
+    pub fn camera_request(&self) -> Option<CameraRequest> {
+        self.camera_request
+    }
+
+    pub fn camera_pending(&self) -> bool {
+        self.camera.is_some() || self.camera_request.is_some()
+    }
+
+    /// Return the view to this player at its current authoritative position,
+    /// which the client otherwise does not know while viewing elsewhere.
+    fn detach_camera(&mut self, proposals: &mut ProposalQueue, update: &mut PlayerUpdate) {
+        if self.camera.take().is_some() {
+            update.camera = Some(None);
+            self.correct_movement(proposals, update);
+        }
+    }
+
+    /// Runs after every player advanced, so `target` is that player's current
+    /// authority. Following snaps silently; only attach and detach teleport.
+    pub fn resolve_camera(
+        &mut self,
+        target: Option<CameraTarget>,
+        proposals: &mut ProposalQueue,
+        update: &mut PlayerUpdate,
+    ) {
+        let request = self.camera_request.take();
+        if !self.spectator() || !self.life.alive() {
+            self.detach_camera(proposals, update);
+            return;
+        }
+        match request {
+            Some(CameraRequest::Stop) => self.detach_camera(proposals, update),
+            Some(CameraRequest::TeleportTo(_)) => {
+                if let Some(target) = target
+                    && let Some(teleport) = self.life.teleport(target.transform)
+                {
+                    self.camera = None;
+                    update.camera = Some(None);
+                    self.movement.reset(target.transform);
+                    proposals.clear();
+                    update.teleport = Some(teleport);
+                }
+            }
+            Some(CameraRequest::Follow(id)) => {
+                if let Some(target) = target.filter(|target| !target.attached)
+                    && self.camera != Some(id)
+                    && let Some(teleport) = self.life.teleport(target.transform)
+                {
+                    self.camera = Some(id);
+                    update.camera = Some(Some(id));
+                    self.movement.reset(target.transform);
+                    proposals.clear();
+                    update.teleport = Some(teleport);
+                }
+            }
+            None => match target.filter(|target| !target.attached) {
+                Some(target) if self.camera.is_some() => {
+                    self.movement.reset(target.transform);
+                    proposals.clear();
+                }
+                _ => self.detach_camera(proposals, update),
+            },
+        }
     }
 
     fn teleport(
@@ -262,6 +379,9 @@ impl PlayerState {
         if self.movement.supports_destination(world, transform)
             && let Some(teleport) = self.life.teleport(transform)
         {
+            if self.camera.take().is_some() {
+                update.camera = Some(None);
+            }
             self.movement.reset(transform);
             self.movement_input = None;
             proposals.clear();
@@ -307,7 +427,11 @@ impl PlayerState {
             self.inventory.begin_life();
             update.health = Some(self.life.health());
             update.respawn = true;
-            self.game_mode.flying = false;
+            self.game_mode.flying = self.spectator();
+            if self.camera.take().is_some() {
+                update.camera = Some(None);
+            }
+            self.camera_request = None;
             update.game_mode = Some(self.game_mode);
             update.inventory = Some(self.inventory.snapshot());
             update.inventory_full = true;
@@ -330,9 +454,7 @@ impl PlayerState {
     }
 
     fn apply_damage(&mut self, damage: Damage, now: Instant) -> DamageResult {
-        if self.game_mode.current == GameMode::Creative
-            && damage.kind != crate::lifecycle::DamageKind::Void
-        {
+        if self.game_mode.invulnerable() && damage.kind != crate::lifecycle::DamageKind::Void {
             DamageResult::Ignored
         } else {
             self.life.damage(damage, now)
@@ -412,10 +534,12 @@ impl PlayerState {
             }
             match queued.action {
                 PlayerAction::SetFlying(flying) => {
-                    self.game_mode.flying = flying
-                        && self.game_mode.current == GameMode::Creative
-                        && self.life.alive()
-                        && self.life.pending_teleport().is_none();
+                    // Spectators cannot stop flying.
+                    self.game_mode.flying = self.spectator()
+                        || (flying
+                            && self.game_mode.current == GameMode::Creative
+                            && self.life.alive()
+                            && self.life.pending_teleport().is_none());
                     update.game_mode = Some(self.game_mode);
                 }
                 PlayerAction::SetGameMode { mode, reply } => {
@@ -426,8 +550,18 @@ impl PlayerState {
                     if mode != self.game_mode.current {
                         self.game_mode.previous = Some(self.game_mode.current);
                         self.game_mode.current = mode;
-                        self.game_mode.flying = false;
+                        self.game_mode.flying = self.spectator();
                         update.game_mode = Some(self.game_mode);
+                        self.movement.set_spectator(self.spectator());
+                        if self.spectator() {
+                            // Spectators cannot use or hold an item use.
+                            self.using = None;
+                            self.movement_input = None;
+                            self.inventory.cancel_drag();
+                        } else {
+                            self.camera_request = None;
+                            self.detach_camera(proposals, &mut update);
+                        }
                     }
                     let _ = reply.send(Ok(()));
                 }
@@ -454,7 +588,8 @@ impl PlayerState {
                     }
                 }
                 PlayerAction::Rules(rules) => {
-                    if self.movement.supports_destination(world, rules.respawn) {
+                    // Checked as a player body, even while this player is a spectator.
+                    if crate::movement::resolve_spawn(world, rules.respawn) == Some(rules.respawn) {
                         self.life.rules = rules;
                     }
                 }
@@ -463,7 +598,16 @@ impl PlayerState {
                     self.respawn(world, reset, proposals, &mut update);
                 }
                 PlayerAction::Inventory(action) => {
-                    if self.life.alive() {
+                    // Spectators may change the hotbar selection, but never rearrange items.
+                    let permitted = !self.spectator()
+                        || matches!(
+                            action,
+                            InventoryAction::Select { .. }
+                                | InventoryAction::Close { .. }
+                                | InventoryAction::RejectDrop
+                                | InventoryAction::Resync
+                        );
+                    if self.life.alive() && permitted {
                         let changed = self.inventory.apply(action);
                         self.inventory_changed(changed, &mut update);
                     } else {
@@ -473,6 +617,7 @@ impl PlayerState {
                 }
                 PlayerAction::Drive(input) => {
                     if self.life.alive()
+                        && !self.spectator()
                         && self.life.pending_teleport().is_none()
                         && input
                             .is_none_or(|input| input.yaw.is_finite() && input.pitch.is_finite())
@@ -485,12 +630,17 @@ impl PlayerState {
                     }
                 }
                 PlayerAction::UseItem(hand) => {
-                    if self.life.alive() {
+                    if self.life.alive() && !self.spectator() {
                         self.using = hand.map(|hand| (hand, self.inventory.selected()));
                     }
                 }
                 PlayerAction::EditInventory { edit, reply } => {
                     let _ = reply.send(self.edit_inventory(edit, &mut update));
+                }
+                PlayerAction::Spectate(request) => {
+                    if self.spectator() && self.life.alive() {
+                        self.camera_request = Some(request);
+                    }
                 }
             }
         }
@@ -500,6 +650,7 @@ impl PlayerState {
             actions.pending.retain(|queued| !matches!(queued.action, PlayerAction::Drive(_)));
         }
         self.movement.set_flying(self.game_mode.flying);
+        self.movement.set_spectator(self.spectator());
         if !self.life.alive() || self.life.pending_teleport().is_some() {
             if self.movement.suffocating(world) {
                 let damage = Damage { kind: DamageKind::Suffocation, amount: 1.0, source: None };
@@ -532,7 +683,7 @@ impl PlayerState {
             let result = self.apply_damage(damage, now);
             self.damaged(damage, result, &mut update);
         }
-        if self.game_mode.current != GameMode::Creative
+        if !self.game_mode.invulnerable()
             && let Some(amount) = movement.and_then(|movement| movement.landed_fall_damage)
         {
             let result = self.life.landing_damage(amount, now);

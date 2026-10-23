@@ -29,6 +29,7 @@ pub(super) fn player(id: i32, x: f64, revision: u64) -> PlayerSnapshot {
         equipment: Rc::new(std::array::from_fn(|_| mc_protocol::types::ItemStack::default())),
         life_generation: 0,
         visible: true,
+        camera_attached: false,
         revision,
     }
 }
@@ -151,6 +152,43 @@ fn tab_membership_terrain_visibility_and_unload_order() {
     let delivered = drain(&mut observer);
     assert_eq!(delivered.iter().filter(|(id, _)| *id == PlayerInfoRemove::ID.0).count(), 1);
     assert_eq!(observer.roster_count(), 2);
+}
+
+#[test]
+fn spectators_are_shown_only_to_spectators_unless_viewing_another_camera() {
+    use mc_protocol::types::GameMode;
+    let terrain = HashSet::from([(0, 0)]);
+    let spawned = |observer_mode, spectator_attached| {
+        let mut local = player(0, 1.0, 1);
+        local.game_mode = observer_mode;
+        let mut spectator = player(1, 2.0, 1);
+        spectator.game_mode = GameMode::Spectator;
+        spectator.camera_attached = spectator_attached;
+        let registry = Registry::from_snapshots(vec![local, spectator, player(2, 3.0, 1)], 1);
+        let mut observer = Observer::default();
+        observer.reconcile(&registry, 0, &terrain).unwrap();
+        drain(&mut observer);
+        // Hidden spectators remain in the tab list.
+        assert_eq!(observer.roster_count(), 3);
+        observer.is_rendered(1)
+    };
+    assert!(!spawned(GameMode::Survival, false));
+    assert!(spawned(GameMode::Spectator, false));
+    assert!(!spawned(GameMode::Spectator, true));
+
+    // Becoming a spectator removes an entity a Survival observer already sees.
+    let local = player(0, 1.0, 1);
+    let mut other = player(1, 2.0, 1);
+    let mut observer = Observer::default();
+    let registry = Registry::from_snapshots(vec![local.clone(), other.clone()], 1);
+    observer.reconcile(&registry, 0, &terrain).unwrap();
+    drain(&mut observer);
+    assert!(observer.is_rendered(1));
+    other.game_mode = GameMode::Spectator;
+    let registry = Registry::from_snapshots(vec![local, other], 2);
+    observer.reconcile(&registry, 0, &terrain).unwrap();
+    assert!(drain(&mut observer).iter().any(|(id, _)| *id == RemoveEntities::ID.0));
+    assert!(!observer.is_rendered(1));
 }
 
 #[test]

@@ -75,6 +75,35 @@ fn flight_descends_over_edges_without_crouching_and_still_collides() {
 }
 
 #[test]
+fn spectators_pass_through_terrain_without_falls_poses_or_suffocation() {
+    let mut terrain = Map::floor();
+    for y in 1..=3 {
+        terrain.blocks.insert((1, y, 0), (FULL, false));
+    }
+    let mut movement = MovementState::new(position(0.5, 1.0, 0.5));
+    movement.set_spectator(true);
+    let mut proposals = ProposalQueue::default();
+    for target in [position(1.5, 1.2, 0.5), position(1.5, -8.0, 0.5), position(1.5, 2.0, 0.5)] {
+        proposals.push(MovementProposal { transform: target, sneaking: true, sprinting: true });
+        let result = movement.advance_with(&terrain, &mut proposals);
+        assert!(!result.correction);
+        assert_eq!([result.transform.x, result.transform.y], [target.x, target.y]);
+        assert!(!result.transform.on_ground);
+        assert_eq!(result.pose, PlayerPose::Standing);
+        assert!(result.landed_fall_damage.is_none());
+        assert_eq!(result.collision_cells, 0);
+    }
+    // Leaving spectator may escape the overlap, then collision resumes.
+    movement.set_spectator(false);
+    propose(&mut proposals, position(1.5, 5.0, 0.5));
+    assert!(!movement.advance_with(&terrain, &mut proposals).correction);
+    propose(&mut proposals, position(1.5, 3.5, 0.5));
+    let result = movement.advance_with(&terrain, &mut proposals);
+    assert!(result.correction);
+    assert_eq!(result.transform.y, 4.0);
+}
+
+#[test]
 fn imported_spawn_preserves_clear_positions_and_recovers_bounded_obstructions() {
     use halcyon_world::loader::{LoadedChunk, LoadedWorld};
     use halcyon_world::{SECTION_COUNT, Section};

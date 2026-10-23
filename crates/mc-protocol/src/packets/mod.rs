@@ -63,6 +63,8 @@ pub enum Packets<'p> {
     ClientTickEnd(ClientTickEnd),
     PlayerLoaded(PlayerLoaded),
     Punch(Punch),
+    Attack(Attack),
+    TeleportToEntity(TeleportToEntity),
     UseItemOn(UseItemOn),
     UseItem(UseItem),
     PlayClientInformation(ClientInformation<'p>),
@@ -156,6 +158,10 @@ impl<'p> Packets<'p> {
             }
             (0x2C, State::Play) => Ok(Packets::PlayerLoaded(PlayerLoaded)),
             (0x2E, State::Play) => Ok(Packets::Punch(Punch)),
+            (0x01, State::Play) => Ok(Packets::Attack(Attack::decode_payload(buf)?)),
+            (0x40, State::Play) => {
+                Ok(Packets::TeleportToEntity(TeleportToEntity::decode_payload(buf)?))
+            }
             _ => Err(DecodeError::UnknownPacket(id)),
         }
     }

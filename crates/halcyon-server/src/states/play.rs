@@ -5,10 +5,12 @@ use mc_protocol::packets::client::{
     GameEvent, SetDefaultSpawnPosition, SetEntityMetadata, SetHealth,
 };
 use mc_protocol::packets::server::PlayerAction as PlayerActionPacket;
+use mc_protocol::types::GameMode;
 
 use crate::Client;
 use crate::error::Error;
 use crate::inventory::InventoryAction;
+use crate::player::{CameraRequest, PlayerAction};
 
 pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), Error> {
     match pkt {
@@ -101,6 +103,13 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
                 client.proposed.pitch,
             );
             let sneaking = input.sneaking;
+            // Sneaking returns a spectator's view from another player's camera.
+            if sneaking
+                && client.camera.is_some()
+                && let Some(session) = &client.session
+            {
+                session.submit(PlayerAction::Spectate(CameraRequest::Stop));
+            }
             if client.sneaking != sneaking {
                 client.sneaking = sneaking;
                 client.propose_position();
@@ -221,6 +230,28 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
                 .await?;
             if let Some(session) = &client.session {
                 session.inventory(InventoryAction::Resync);
+            }
+        }
+        Packets::Attack(p) => {
+            // Combat is unavailable; a spectator's attack views through its target.
+            if client.game_mode.current == GameMode::Spectator
+                && let Some(session) = &client.session
+            {
+                session.submit(PlayerAction::Spectate(CameraRequest::Follow(p.entity_id)));
+            }
+        }
+        Packets::TeleportToEntity(p) => {
+            if client.game_mode.current == GameMode::Spectator
+                && let Some(session) = &client.session
+                && let Some(target) = client.lobby.with_registry(|registry| {
+                    // Rare spectator-menu selection; the roster is bounded.
+                    registry
+                        .players()
+                        .find(|player| player.profile.uuid == p.target)
+                        .map(|player| player.entity_id)
+                })
+            {
+                session.submit(PlayerAction::Spectate(CameraRequest::TeleportTo(target)));
             }
         }
         Packets::Punch(_) => {

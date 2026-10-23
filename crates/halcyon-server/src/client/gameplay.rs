@@ -175,6 +175,12 @@ impl Client {
                 self.selected_slot = inventory.selected;
             }
         }
+        // The camera precedes its teleport, as in vanilla.
+        if let Some(camera) = update.camera {
+            self.camera = camera;
+            let camera_id = camera.map_or_else(|| self.entity_id(), Ok)?;
+            self.send(&mc_protocol::packets::client::SetCamera { camera_id }).await?;
+        }
         if let Some(teleport) = update.teleport {
             let p = teleport.destination;
             self.pos = p;

@@ -170,6 +170,12 @@ pub struct GameEvent {
     pub value: f32,
 }
 
+#[packet(Play, 0x5F, Client)]
+pub struct SetCamera {
+    #[format = "varint"]
+    pub camera_id: i32,
+}
+
 #[packet(Play, 0x41, Client)]
 pub struct PlayerAbilities {
     pub flags: u8,

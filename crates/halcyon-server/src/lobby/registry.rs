@@ -24,6 +24,9 @@ pub(super) struct Player {
 }
 
 type ColumnMove = (i32, Option<(i32, i32)>, (i32, i32));
+
+/// Generous allowance over a spectator's three-block entity interaction range.
+const SPECTATE_REACH: f64 = 8.0;
 type ActionResponse =
     glommio::channels::oneshot::Receiver<Result<(), crate::player::PlayerActionError>>;
 
@@ -45,6 +48,7 @@ pub struct Registry {
     pub(super) coalesced: u64,
     closed_scratch: Vec<i32>,
     moved_scratch: Vec<ColumnMove>,
+    camera_scratch: Vec<i32>,
 }
 
 impl Registry {
@@ -219,6 +223,7 @@ impl Registry {
                 .sum::<usize>()
             + self.closed_scratch.capacity() * std::mem::size_of::<i32>()
             + self.moved_scratch.capacity() * std::mem::size_of::<ColumnMove>()
+            + self.camera_scratch.capacity() * std::mem::size_of::<i32>()
             + self
                 .players
                 .values()
@@ -325,6 +330,7 @@ impl Registry {
                     equipment: Rc::new(std::array::from_fn(|_| ItemStack::default())),
                     life_generation: 0,
                     visible: true,
+                    camera_attached: false,
                 },
                 active: false,
                 input,
@@ -453,7 +459,7 @@ impl Registry {
                     self.effects.hurt(id, damage);
                 }
                 let swings = input.swings.replace(0);
-                if player.state.life.alive() {
+                if player.state.life.alive() && !player.state.spectator() {
                     for hand in [InteractionHand::Main, InteractionHand::Off] {
                         if swings & (1 << hand as u8) != 0 {
                             // Bots have no client; a human already saw its own swing.
@@ -463,6 +469,9 @@ impl Registry {
                 }
             } else {
                 input.swings.set(0);
+            }
+            if player.state.camera_pending() {
+                self.camera_scratch.push(id);
             }
             let accepted = player.state.movement.transform();
             let old = input.accepted.replace(accepted);
@@ -488,7 +497,60 @@ impl Registry {
                 notices.push(input.clone());
             }
         }
+        self.resolve_cameras(notices);
         metrics
+    }
+
+    /// Spectator cameras read other players' authority after every player advanced.
+    fn resolve_cameras(&mut self, notices: &mut Vec<Rc<Input>>) {
+        use crate::player::{CameraRequest, CameraTarget};
+        while let Some(id) = self.camera_scratch.pop() {
+            let Some(player) = self.players.get(&id) else { continue };
+            let observer = player.state.movement.transform();
+            // A new follow targets an entity the client attacked, within its reach.
+            let reach = matches!(player.state.camera_request(),
+                Some(CameraRequest::Follow(target)) if Some(target) != player.state.camera());
+            let target = player
+                .state
+                .camera_target()
+                .filter(|target| *target != id)
+                .and_then(|target| self.players.get(&target))
+                .filter(|target| {
+                    target.active && !target.input.closed.get() && target.state.life.alive()
+                })
+                .map(|target| CameraTarget {
+                    transform: target.state.movement.transform(),
+                    attached: target.state.camera().is_some(),
+                })
+                .filter(|target| {
+                    let [dx, dy, dz] = [
+                        target.transform.x - observer.x,
+                        target.transform.y - observer.y,
+                        target.transform.z - observer.z,
+                    ];
+                    !reach || dx * dx + dy * dy + dz * dz <= SPECTATE_REACH * SPECTATE_REACH
+                });
+            let Some(player) = self.players.get_mut(&id) else {
+                continue;
+            };
+            let input = &player.input;
+            let mut update = PlayerUpdate::default();
+            player.state.resolve_camera(target, &mut input.proposals.borrow_mut(), &mut update);
+            let accepted = player.state.movement.transform();
+            let old = input.accepted.replace(accepted);
+            if old != accepted {
+                input.transform.set(Some(accepted));
+            }
+            input.ready.set(
+                player.state.life.alive()
+                    && player.state.life.pending_teleport().is_none()
+                    && (player.active || input.activate.get()),
+            );
+            if update.changed() || old.chunk() != accepted.chunk() {
+                input.update.borrow_mut().merge(update);
+                notices.push(input.clone());
+            }
+        }
     }
 
     pub(super) fn publish(&mut self) -> bool {
@@ -503,9 +565,17 @@ impl Registry {
             self.coalesced = self.coalesced.saturating_add(player.input.coalesced.replace(0));
             let old_column = player.snapshot.transform.chunk();
             let mut player_changed = false;
-            if player.snapshot.game_mode != player.state.game_mode.current {
+            let camera_attached = player.state.camera().is_some();
+            if player.snapshot.game_mode != player.state.game_mode.current
+                || player.snapshot.camera_attached != camera_attached
+            {
+                if player.snapshot.game_mode != player.state.game_mode.current {
+                    self.roster_revision = self.roster_revision.wrapping_add(1);
+                }
                 player.snapshot.game_mode = player.state.game_mode.current;
-                self.roster_revision = self.roster_revision.wrapping_add(1);
+                player.snapshot.camera_attached = camera_attached;
+                // Spectator visibility depends on both modes.
+                self.spatial_revision = self.spatial_revision.wrapping_add(1);
                 player_changed = true;
             }
             let sneaking = player.state.movement.sneaking();

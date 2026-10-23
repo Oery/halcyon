@@ -119,6 +119,8 @@ pub struct MovementState {
     fall_distance: f64,
     powder_walk: bool,
     flying: bool,
+    /// Spectators pass through terrain and fluids without collision or contact.
+    spectator: bool,
     pub motion: MotionState,
     colliders: Vec<Aabb>,
     step_heights: Vec<f64>,
@@ -192,6 +194,7 @@ impl MovementState {
             fall_distance: 0.0,
             powder_walk: false,
             flying: false,
+            spectator: false,
             motion: MotionState::default(),
             colliders: Vec::with_capacity(64),
             step_heights: Vec::with_capacity(16),
@@ -230,6 +233,16 @@ impl MovementState {
         self.flying = enabled;
     }
 
+    pub fn set_spectator(&mut self, enabled: bool) {
+        if self.spectator != enabled {
+            self.fall_distance = 0.0;
+            self.motion = MotionState::default();
+            self.pose = PlayerPose::Standing;
+            self.swimming = false;
+        }
+        self.spectator = enabled;
+    }
+
     fn shape_context(&self, descending: bool) -> ShapeContext {
         ShapeContext {
             feet: self.transform.y,
@@ -242,6 +255,9 @@ impl MovementState {
     /// Vanilla's thin eye-level envelope, rather than the entire player body.
     /// Existing solid overlaps do not forbid movement out of a settled block.
     pub fn suffocating(&self, world: &impl BlockView) -> bool {
+        if self.spectator {
+            return false;
+        }
         let eye = self.transform.y + eye_height(self.pose);
         let radius = f64::from(0.6f32 * 0.8f32) / 2.0;
         let eyes = Aabb {
@@ -303,6 +319,9 @@ impl MovementState {
     pub fn supports_destination(&mut self, world: &impl BlockView, transform: Transform) -> bool {
         if !transform.is_valid() {
             return false;
+        }
+        if self.spectator {
+            return true;
         }
         let bounds = player_box(transform, false);
         let mut cells = 0;
@@ -367,6 +386,16 @@ impl MovementState {
             if !proposal.transform.is_valid() {
                 result.correction = true;
                 break;
+            }
+            if self.spectator {
+                self.transform = Transform { on_ground: false, ..proposal.transform };
+                self.sneaking = proposal.sneaking;
+                self.pose = PlayerPose::Standing;
+                self.swimming = false;
+                self.sprinting = proposal.sprinting;
+                self.fall_distance = 0.0;
+                self.motion = MotionState::default();
+                continue;
             }
             let delta = [
                 proposal.transform.x - self.transform.x,
