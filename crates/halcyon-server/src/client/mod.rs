@@ -130,7 +130,7 @@ impl Client {
                 let previous = self.pos;
                 self.pos = accepted;
                 if previous.chunk() != accepted.chunk() {
-                    self.chunks.reconcile(&self.server.lobby, accepted.chunk());
+                    self.chunks.reconcile(self.instance.world(), accepted.chunk());
                 }
                 let update = session.take_update();
                 self.apply_player_update(update).await?;

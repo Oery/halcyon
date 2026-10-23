@@ -7,7 +7,7 @@ use mc_protocol::packets::Payload;
 
 use super::Client;
 use crate::error::Error;
-use crate::instance::{Profile, Session, Transform};
+use crate::instance::{Profile, Session};
 use crate::inventory::InventorySlot;
 
 impl Client {
@@ -63,12 +63,14 @@ impl Client {
             .await?;
         let info: Rc<[u8]> = Rc::from(self.packet_buffer.as_slice());
         let profile = Rc::new(Profile { uuid, username: username.to_owned(), info: info.clone() });
-        let (x, y, z, yaw, pitch) = self.server.lobby.spawn;
-        self.pos = Transform { x, y, z, yaw, pitch, on_ground: false };
+        self.pos = self.instance.map().spawn();
         self.pos = self
             .instance
             .with_registry(|registry| {
-                crate::movement::resolve_spawn(&registry.arena.view(&self.server.lobby), self.pos)
+                crate::movement::resolve_spawn(
+                    &registry.arena.view(self.instance.world()),
+                    self.pos,
+                )
             })
             .ok_or(Error::UnsupportedSpawn)?;
         self.proposed = self.pos;
@@ -123,7 +125,7 @@ impl Client {
             // Same-world respawn also restarts the client's level-load gate.
             let center =
                 update.teleport.map_or(self.pos.chunk(), |teleport| teleport.destination.chunk());
-            self.chunks.resend_center(&self.server.lobby, center);
+            self.chunks.resend_center(self.instance.world(), center);
             self.send(&GameEvent { event: 13, value: 0.0 }).await?;
         }
         if mode_changed {
@@ -206,7 +208,7 @@ impl Client {
             self.proposed = p;
             self.sneaking = false;
             self.sprinting = false;
-            self.chunks.reconcile(&self.server.lobby, p.chunk());
+            self.chunks.reconcile(self.instance.world(), p.chunk());
             self.send(&SyncPlayerPosition {
                 teleport_id: teleport.id,
                 x: p.x,

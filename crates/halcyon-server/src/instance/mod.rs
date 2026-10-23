@@ -4,6 +4,8 @@ use glommio::channels::{local_channel, oneshot};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
+
+use crate::map::Map;
 use uuid::Uuid;
 
 use mc_protocol::types::ItemStack;
@@ -162,17 +164,15 @@ pub struct Instance {
     registrations: Rc<local_channel::LocalSender<Registration>>,
     owner: Rc<Signal>,
     metrics: Rc<Metrics>,
+    map: Arc<Map>,
 }
 
 impl Instance {
-    pub fn spawn(
-        world: Arc<halcyon_world::World>,
-        diagnostics: bool,
-    ) -> Result<Self, crate::arena::EditError> {
+    pub fn spawn(map: Arc<Map>, diagnostics: bool) -> Result<Self, crate::arena::EditError> {
         let mut state = Registry::default();
         // Temporary until matches own their rules: HALCYON_PVP=1 opens the lobby to combat.
         state.open_pvp = std::env::var("HALCYON_PVP").is_ok_and(|value| value == "1");
-        state.arena.initialize(&world)?;
+        state.arena.initialize(&map.world)?;
         // Build the shared openings catalog before the first use reaches a tick.
         halcyon_world::opening(0);
         crate::interaction::initialize();
@@ -186,10 +186,19 @@ impl Instance {
             owner.clone(),
             metrics.clone(),
             diagnostics,
-            world,
+            map.clone(),
         ))
         .detach();
-        Ok(Self { registry, registrations: Rc::new(sender), owner, metrics })
+        Ok(Self { registry, registrations: Rc::new(sender), owner, metrics, map })
+    }
+
+    /// The immutable template under this instance's terrain overlay.
+    pub fn map(&self) -> &Arc<Map> {
+        &self.map
+    }
+
+    pub fn world(&self) -> &halcyon_world::World {
+        &self.map.world
     }
 
     /// Trusted edits use the same bounded shape/support transaction as players.

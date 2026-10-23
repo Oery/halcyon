@@ -69,20 +69,20 @@ pub fn spawn(server: Arc<Server>, lobby: Instance, count: usize, seed: u64) {
     let mut service = NavService::new(Budget::PerWindow { limit, window: TICK });
     service.goal = std::env::var("HALCYON_BOT_GOAL").ok().and_then(|goal| parse_cell(&goal));
     if service.goal.is_none() {
-        let (x, y, z, _, _) = server.lobby.spawn;
+        let (x, y, z, _, _) = lobby.world().spawn;
         let around = [x.floor() as i32, y.floor() as i32, z.floor() as i32];
         let start = Instant::now();
         service.goal = lobby.with_registry(|registry| {
-            service.detect_goal(&registry.arena.view(&server.lobby), around, GOAL_RADIUS)
+            service.detect_goal(&registry.arena.view(lobby.world()), around, GOAL_RADIUS)
         });
         println!("bots: goal {:?} detected in {}ms", service.goal, start.elapsed().as_millis());
     }
     if std::env::var_os("HALCYON_BOT_NO_CHECKPOINTS").is_none() {
-        let (x, y, z, _, _) = server.lobby.spawn;
+        let (x, y, z, _, _) = lobby.world().spawn;
         let around = [x.floor() as i32, y.floor() as i32, z.floor() as i32];
         let start = Instant::now();
         service.checkpoints = lobby.with_registry(|registry| {
-            service.detect_checkpoints(&registry.arena.view(&server.lobby), around, GOAL_RADIUS)
+            service.detect_checkpoints(&registry.arena.view(lobby.world()), around, GOAL_RADIUS)
         });
         println!(
             "bots: {} checkpoints detected in {}ms",
@@ -110,7 +110,6 @@ pub fn spawn(server: Arc<Server>, lobby: Instance, count: usize, seed: u64) {
     }));
     let (low, high) = profile::parse_levels(std::env::var("HALCYON_BOT_LEVEL").ok().as_deref());
     for index in 0..count {
-        let server = server.clone();
         let lobby = lobby.clone();
         let nav = nav.clone();
         let report = report.clone();
@@ -118,7 +117,7 @@ pub fn spawn(server: Arc<Server>, lobby: Instance, count: usize, seed: u64) {
         let level = Rng::new(seed ^ 0x1e7e1).ticks(u32::from(low), u32::from(high)) as u8;
         glommio::spawn_local(async move {
             let bot = Bot { index, seed, profile: BotProfile::new(level), start, nav, report };
-            if let Err(error) = run(server, lobby, bot).await {
+            if let Err(error) = run(lobby, bot).await {
                 eprintln!("bot {index}: {error}");
             }
         })
@@ -190,7 +189,7 @@ struct Bot {
     report: Rc<RefCell<Report>>,
 }
 
-async fn run(server: Arc<Server>, lobby: Instance, bot: Bot) -> Result<(), crate::error::Error> {
+async fn run(lobby: Instance, bot: Bot) -> Result<(), crate::error::Error> {
     let Bot { index, seed, profile: skill, start, nav, report } = bot;
     let mut rng = Rng::new(seed);
     let username = format!("Bot{}", index + 1);
@@ -202,7 +201,7 @@ async fn run(server: Arc<Server>, lobby: Instance, bot: Bot) -> Result<(), crate
         .await?;
     let profile = Rc::new(Profile { uuid, username, info: Rc::from(info) });
 
-    let (x, y, z, _, _) = server.lobby.spawn;
+    let (x, y, z, _, _) = lobby.world().spawn;
     // Spread around spawn, or within a starting checkpoint's plate.
     let ([x, y, z], spread) = match start {
         Some((_, [cx, cy, cz])) => {
@@ -220,7 +219,7 @@ async fn run(server: Arc<Server>, lobby: Instance, bot: Bot) -> Result<(), crate
     };
     let spawn = lobby
         .with_registry(|registry| {
-            crate::movement::resolve_spawn(&registry.arena.view(&server.lobby), requested)
+            crate::movement::resolve_spawn(&registry.arena.view(lobby.world()), requested)
         })
         .unwrap_or(Transform { x, y, z, ..requested });
     // Bots join in bursts; wait out a full registration queue like a
@@ -266,7 +265,7 @@ async fn run(server: Arc<Server>, lobby: Instance, bot: Bot) -> Result<(), crate
             }
             let mut nav = nav.borrow_mut();
             nav.sync(&registry.arena);
-            Some(brain.tick(position, &mut nav, &registry.arena.view(&server.lobby)))
+            Some(brain.tick(position, &mut nav, &registry.arena.view(lobby.world())))
         });
         let Some(input) = input else { continue };
         body.drive(&session, input);

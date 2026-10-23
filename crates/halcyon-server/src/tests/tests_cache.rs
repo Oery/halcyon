@@ -4,13 +4,7 @@ use mc_protocol::types::Heightmap;
 #[test]
 fn configuration_preserves_tags_and_identifies_supported_movement_blocks_and_fluids() {
     futures_lite::future::block_on(async {
-        let world = halcyon_world::World::from_loaded(halcyon_world::LoadedWorld {
-            chunks: vec![],
-            spawn: (0.0, 0.0, 0.0, 0.0, 0.0),
-            missing_blocks: 0,
-            remapped_biomes: 0,
-        });
-        let cache = PacketCache::new(&world).await.unwrap();
+        let cache = PacketCache::new().await.unwrap();
         let mut found = false;
         for frame in &cache.configuration {
             let mut payload = frame.as_ref();

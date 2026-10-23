@@ -49,7 +49,7 @@ pub(super) async fn run_owner(
     owner: Rc<Signal>,
     metrics: Rc<Metrics>,
     diagnostics: bool,
-    world: Arc<halcyon_world::World>,
+    map: Arc<crate::map::Map>,
 ) {
     let mut clock = SimulationClock::new(Instant::now());
     let mut report_at = Instant::now() + Duration::from_secs(5);
@@ -117,7 +117,7 @@ pub(super) async fn run_owner(
                 late_samples.record(due.lateness);
                 for _ in 0..due.steps {
                     let start = Instant::now();
-                    let step = registry.borrow_mut().simulate(&world, start, &mut self_notices);
+                    let step = registry.borrow_mut().simulate(&map.world, start, &mut self_notices);
                     for notice in self_notices.drain(..) {
                         notice.changed.notify();
                     }

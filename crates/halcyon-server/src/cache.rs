@@ -15,9 +15,14 @@ pub struct EncodedChunk {
     pub data: Arc<[u8]>,
 }
 
+/// Frames shared by every connection, whatever map it plays on.
 pub struct PacketCache {
     pub commands: Box<[u8]>,
     pub configuration: Vec<Box<[u8]>>,
+}
+
+/// One map's terrain frames, shared by every instance of that map.
+pub struct ChunkCache {
     pub chunks: HashMap<(i32, i32), EncodedChunk>,
     pub empty: EncodedChunk,
     pub empty_coordinates: usize,
@@ -59,7 +64,7 @@ async fn chunk_header(
 }
 
 impl PacketCache {
-    pub async fn new(world: &halcyon_world::World) -> Result<Self, Error> {
+    pub async fn new() -> Result<Self, Error> {
         let commands = encode(&crate::commands::tree()).await?;
         let mut configuration = Vec::new();
         configuration.push(
@@ -139,7 +144,12 @@ impl PacketCache {
         });
         configuration.push(encode(&UpdateTags { registries: tagged }).await?);
         configuration.push(encode(&FinishConfiguration).await?);
+        Ok(Self { commands, configuration })
+    }
+}
 
+impl ChunkCache {
+    pub async fn new(world: &halcyon_world::World) -> Result<Self, Error> {
         let mut suffix = Vec::new();
         // Supported block entities follow terrain patches as revisioned snapshots.
         VarInt(0).write(&mut suffix).await?;
@@ -156,8 +166,6 @@ impl PacketCache {
         let (header, empty_coordinates) =
             chunk_header(0, 0, &[0; 37], data.len(), suffix.len()).await?;
         Ok(Self {
-            commands,
-            configuration,
             chunks,
             empty: EncodedChunk { header, data },
             empty_coordinates,

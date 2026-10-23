@@ -20,7 +20,7 @@ pub enum Error {
     #[error("invalid player data")]
     InvalidPlayerData,
 
-    #[error("the imported lobby spawn has no nearby clear destination on supported terrain")]
+    #[error("the imported map spawn has no nearby clear destination on supported terrain")]
     UnsupportedSpawn,
 
     #[error("instance admission failed: {0}")]

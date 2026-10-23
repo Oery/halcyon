@@ -96,7 +96,7 @@ impl Client {
         let cells: Vec<_> = cells.into_iter().take(crate::player::MAX_USED_BLOCKS).collect();
         let mut frames = Vec::new();
         self.instance.with_registry(|registry| {
-            let world = registry.arena.view(&self.server.lobby);
+            let world = registry.arena.view(self.instance.world());
             for pos in cells {
                 if !self.chunks.terrain().contains(&crate::arena::column(pos)) {
                     continue;

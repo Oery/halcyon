@@ -170,7 +170,7 @@ pub async fn send_pending(client: &mut Client) -> Result<(), Error> {
     }
     let count = client.chunks.batch_size.min(client.chunks.pending.len());
     client.send(&ChunkBatchStart).await?;
-    let server = std::sync::Arc::clone(&client.server);
+    let map = std::sync::Arc::clone(client.instance.map());
     for _ in 0..count {
         let Some((pos, kind)) = client.chunks.pending.pop() else {
             break;
@@ -178,7 +178,7 @@ pub async fn send_pending(client: &mut Client) -> Result<(), Error> {
         if kind == Residency::Padding && client.chunks.terrain.contains(&pos) {
             client.remove_players_before_unload(pos).await?;
         }
-        let cache = &server.packets;
+        let cache = &map.chunks;
         match kind {
             Residency::Terrain => {
                 let frame = cache.chunks.get(&pos).ok_or(Error::InvalidPlayerData)?;

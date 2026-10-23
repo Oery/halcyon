@@ -289,7 +289,7 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
             }
             client.chunks.set_view_distance(p.render_distance);
             client.chunks.reconcile(
-                &client.server.lobby,
+                client.instance.world(),
                 ((client.pos.x.floor() as i32) >> 4, (client.pos.z.floor() as i32) >> 4),
             );
             let entity_id = client.entity_id()?;
@@ -366,7 +366,7 @@ pub async fn enter_play(client: &mut Client) -> Result<(), Error> {
     client.send_abilities().await?;
     client.send(&SetHealth { health: 20.0, food: 20, saturation: 5.0 }).await?;
 
-    client.chunks.reconcile(&client.server.lobby, (scx, scz));
+    client.chunks.reconcile(client.instance.world(), (scx, scz));
     let session = client.session.as_ref().ok_or(Error::UnexpectedResponse)?;
     session.teleport(client.pos);
     session.inventory(InventoryAction::Resync);
