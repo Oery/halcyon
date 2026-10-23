@@ -376,7 +376,9 @@ impl Brain {
             return self.idle(position);
         };
         if !self.search.is_active() {
-            if !position.on_ground {
+            // Plan from the ground, or while holding on to a ladder.
+            let climbing = nav.stand(view, cell_of(position)).is_some_and(|s| s.kind.climbable());
+            if !position.on_ground && !climbing {
                 return self.idle(position);
             }
             let Some(start) = self.locate(position, nav, view) else {
@@ -596,6 +598,7 @@ impl Brain {
                             robustness: 1.0,
                             via: None,
                             damage: 0.0,
+                            onto_ladder: None,
                         },
                     }
                 } else {

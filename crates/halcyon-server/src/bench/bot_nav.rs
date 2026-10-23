@@ -580,6 +580,10 @@ fn trace_edge() {
             robustness: 0.0,
             via,
             damage: 0.0,
+            onto_ladder: match there.kind {
+                StandKind::Ladder(facing) => Some(facing),
+                _ => None,
+            },
         };
         let mut run = EdgeRun::new(from, &here, edge, Execution::IDEAL);
         let [x, z] = super::stand::centre(from);
@@ -608,6 +612,30 @@ fn trace_edge() {
                 advance.uncertain_motion,
                 advance.collisions
             );
+            if status == Status::Done {
+                // The hold validation checks after arrival.
+                for settle in 0..12 {
+                    let position = state.transform();
+                    let intent = if edge.onto_ladder.is_some() {
+                        crate::bot::motor::Intent {
+                            sneak: true,
+                            ..super::follow::brake(position, velocity)
+                        }
+                    } else {
+                        super::follow::brake(position, velocity)
+                    };
+                    state.step(&view, intent.exact());
+                    let now = state.transform();
+                    eprintln!(
+                        "  settle {settle} pos=({:.3},{:.3},{:.3}) arrived={}",
+                        now.x,
+                        now.y,
+                        now.z,
+                        run.arrived(now)
+                    );
+                    velocity = [now.x - position.x, now.y - position.y, now.z - position.z];
+                }
+            }
             if status != Status::Running {
                 break;
             }
@@ -1116,6 +1144,8 @@ fn jump_grid() {
     let back = here.rim([-dir[0], -dir[1]]) as f32;
     let runway = nav.graph.runway(&view, from, here, dir, back);
     eprintln!("rim {rim} back {back} runway {runway} distance {distance}");
+    eprintln!("here {here:?}\nthere {there:?}");
+    eprintln!("clear_flight {}", super::moves::clear_flight(&view, from, here, to, there));
     let candidate = nav
         .graph
         .candidates(&view, from)
@@ -1139,6 +1169,10 @@ fn jump_grid() {
                 robustness: 0.0,
                 via: None,
                 damage: 0.0,
+                onto_ladder: match there.kind {
+                    StandKind::Ladder(facing) => Some(facing),
+                    _ => None,
+                },
             };
             let out =
                 nav.graph.simulate(&view, from, here, edge, super::follow::Execution::IDEAL, false);

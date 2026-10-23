@@ -83,6 +83,9 @@ pub struct Edge {
     pub via: Option<(Cell, f64)>,
     /// Fall damage taken on landing, in half hearts.
     pub damage: f32,
+    /// A jump that ends by grabbing a ladder rather than landing on a floor:
+    /// the ladder's facing, away from the wall that must be pushed to climb.
+    pub onto_ladder: Option<u8>,
 }
 
 /// Closed hand-operated doors and fence gates, mapped to their open state.

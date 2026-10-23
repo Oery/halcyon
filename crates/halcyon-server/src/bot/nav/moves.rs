@@ -74,7 +74,13 @@ fn reach(rise: f64) -> f64 {
 
 /// Cheap rejection before simulating: no solid block may cut through the
 /// body along the straight line between the two feet positions.
-fn clear_flight(view: &impl BlockView, from: Cell, here: Stand, to: Cell, there: Stand) -> bool {
+pub(super) fn clear_flight(
+    view: &impl BlockView,
+    from: Cell,
+    here: Stand,
+    to: Cell,
+    there: Stand,
+) -> bool {
     let [ax, az] = centre(from);
     let [bx, bz] = centre(to);
     let distance = (bx - ax).hypot(bz - az);
@@ -83,6 +89,11 @@ fn clear_flight(view: &impl BlockView, from: Cell, here: Stand, to: Cell, there:
         let t = f64::from(k) / f64::from(samples);
         let x = (ax + (bx - ax) * t).floor() as i32;
         let z = (az + (bz - az) * t).floor() as i32;
+        // The landing's own column is the destination, not an obstacle:
+        // a ladder's plate stands there.
+        if [x, z] == [to[0], to[2]] {
+            return true;
+        }
         let feet = here.feet_y.max(there.feet_y);
         [feet + 0.6, feet + 1.4].into_iter().all(|height| {
             let y = height.floor() as i32;
@@ -174,6 +185,9 @@ impl NavGraph {
                 // Brake to a stop; on a ladder, sneaking holds position.
                 if edge.kind == EdgeKind::Climb {
                     Intent { yaw: position.yaw, sneak: true, ..Intent::default() }
+                } else if edge.onto_ladder.is_some() {
+                    // A grab still drifts along the ladder: brake it too.
+                    Intent { sneak: true, ..brake(position, velocity) }
                 } else {
                     brake(position, velocity)
                 }
@@ -385,6 +399,7 @@ impl NavGraph {
             robustness: 1.0,
             via: None,
             damage: 0.0,
+            onto_ladder: None,
         };
         match candidate.kind {
             EdgeKind::Jump | EdgeKind::Bounce => {
@@ -476,7 +491,14 @@ impl NavGraph {
                     let walked = existing
                         .iter()
                         .any(|c| c.to == to && (c.kind != EdgeKind::Walk || rise <= STEP));
-                    if there.kind != StandKind::Ground || walked {
+                    // Ladders are jumped at and grabbed, as on ladder courses:
+                    // aimed at their top, where they are left, and caught
+                    // anywhere below it.
+                    let ladder = matches!(there.kind, StandKind::Ladder(_))
+                        && !self
+                            .stand(view, [to[0], to[1] + 1, to[2]])
+                            .is_some_and(|above| above.kind.climbable());
+                    if !(there.kind == StandKind::Ground || ladder) || walked {
                         continue;
                     }
                     let adjacent = distance < 1.5;
@@ -574,6 +596,7 @@ impl NavGraph {
             robustness: 0.0,
             via,
             damage: 0.0,
+            onto_ladder: ladder_facing(there),
         };
         // Probe with the farthest-reaching plan: if even it lands well short,
         // no plan can succeed. It is a feasibility check, never a preference.
@@ -761,4 +784,11 @@ fn soft_landing(view: &impl BlockView, cell: Cell, stand: Stand) -> bool {
         let info = motion_info(id);
         matches!(info.surface, Surface::Hay | Surface::Honey) || info.fall_reduction > 0.0
     })
+}
+
+fn ladder_facing(stand: Stand) -> Option<u8> {
+    match stand.kind {
+        StandKind::Ladder(facing) => Some(facing),
+        _ => None,
+    }
 }

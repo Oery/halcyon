@@ -253,9 +253,9 @@ Code: `crates/halcyon-server/src/bot/`. Tests: `src/tests/tests_bot_*.rs`. Real-
 - **Nodes** (`nav/stand.rs`): standable cells. A node is the block cell containing the feet; support comes from that cell (slabs, carpets, lily pads, stair steps) or the block below. Lava, unsupported and contextual blocks are never nodes. Ladders and vines are climb nodes.
 - **Candidates** (`nav/moves.rs`): from geometry alone, a node proposes:
   - walks and step-ups to its 8 neighbours;
-  - drops of up to 3.6 blocks that cost no health (health does not regenerate);
+  - drops of up to 3.6 blocks that cost no health (health does not regenerate), or up to 14 onto hay, honey or beds for at most one heart;
   - ladder and vine climbs;
-  - jumps of up to 5 blocks horizontally and +1.3 up.
+  - jumps of up to 5 blocks horizontally and +1.3 up, onto floors or onto the top cell of a ladder, which is grabbed.
 
   Cheap filters remove jumps through solid blocks and jumps over continuous floor.
 - **Validation:** a candidate becomes an edge only after a simulation succeeds. The simulation runs the real player physics (`MovementState::step`) under the **same closed-loop controller** live bots use (`nav/follow.rs`), from rest, with ideal hands. It must then settle on the target.
@@ -269,8 +269,9 @@ Code: `crates/halcyon-server/src/bot/`. Tests: `src/tests/tests_bot_*.rs`. Real-
 - **Search** (`nav/search.rs`): weighted A*. The heuristic counts horizontal distance plus about 15 ticks per block of height. Edge cost is ticks, plus risk aversion × (1 − robustness), plus remembered failures. Searches resume across ticks under a shared validation budget (`HALCYON_BOT_NAV_MS`, default 4 ms per tick). They return a partial route to the closest cell when the goal is unreachable.
 - **Execution:** the brain (`brain.rs`) follows a route edge by edge with the same controller:
   - jumps back up to the run-up point, line up, hesitate, then commit;
-  - walks steer cell to cell;
-  - climbs push into ladders or hold jump on vines.
+  - walks steer cell to cell, leaning along a wall to round its corner on diagonals;
+  - climbs push into ladders or hold jump on vines;
+  - a grabbed ladder is held (sneaking, steering out the drift) before climbing on.
 
   The motor (`motor.rs`) adds humanlike error: eased, rate-limited turning, tremor, committed aim error and occasional late jump presses.
 - **Failure handling:** a failed edge is remembered and penalised for that bot, which pauses and replans. In water, the bot swims to the nearest floor and replans.

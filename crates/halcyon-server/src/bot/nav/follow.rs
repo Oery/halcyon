@@ -76,6 +76,8 @@ const HOP_LENGTH: f64 = 3.6;
 const HOP_LANDING: f64 = 0.1;
 /// How far a walk may stray from the line between its cells.
 const CORRIDOR: f64 = 1.3;
+/// Horizontal speed below which a grabbed ladder counts as held.
+const LADDER_STILL: f64 = 0.05;
 /// Jump before this tick's motion would carry the centre this far past the rim.
 const RIM_SAFETY: f64 = 0.29;
 
@@ -215,11 +217,17 @@ impl EdgeRun {
     /// still overlapping its block, even if the centre overhangs the rim.
     pub fn arrived(&self, position: Transform) -> bool {
         let [x, y, z] = self.edge.to;
-        if self.edge.kind == EdgeKind::Climb {
+        if self.edge.kind == EdgeKind::Climb || self.edge.onto_ladder.is_some() {
+            // A grab at the cell's edge still carries sideways speed off the
+            // ladder: it counts once near the middle.
+            let [cx, cz] = centre(self.edge.to);
+            let centred = self.edge.onto_ladder.is_none()
+                || (position.x - cx).hypot(position.z - cz) < CENTRED;
             return position.x.floor() as i32 == x
                 && position.z.floor() as i32 == z
                 && position.y >= f64::from(y) - 1e-3
-                && position.y < f64::from(y) + 1.0;
+                && position.y < f64::from(y) + 1.0
+                && centred;
         }
         if self.edge.to == self.from {
             // Stepping onto the current cell: arrive near its centre.
@@ -263,7 +271,14 @@ impl EdgeRun {
         self.ticks = self.ticks.saturating_add(1);
         let idle = self.look(position, position.yaw);
         let rebounded = self.edge.via.is_none() || self.bounced_at.is_some();
-        if self.arrived(position) && (!self.edge.kind.is_jump() || self.airborne) && rebounded {
+        // A ladder is held once the grab's drift has died down.
+        let held = self.edge.onto_ladder.is_none()
+            || obs.velocity[0].hypot(obs.velocity[2]) < LADDER_STILL;
+        if self.arrived(position)
+            && (!self.edge.kind.is_jump() || self.airborne)
+            && rebounded
+            && held
+        {
             return (idle, Status::Done);
         }
         let pad = self.edge.via.map_or(f64::INFINITY, |(_, feet)| feet);
@@ -438,7 +453,29 @@ impl EdgeRun {
                 intent.yaw = wrap_degrees(self.towards_target(position) + self.exec.yaw_offset);
                 intent.precise = true;
                 intent.sprint = self.edge.plan.sprint;
-                if self.airborne {
+                let [x, _, z] = self.edge.to;
+                let grabbed = self
+                    .edge
+                    .onto_ladder
+                    .filter(|_| position.x.floor() as i32 == x && position.z.floor() as i32 == z);
+                if let Some(facing) = grabbed {
+                    // On the ladder: face its wall, climb (pushing into it)
+                    // only when caught below the top, otherwise sneak to hold
+                    // on, and steer the sideways drift onto its middle.
+                    let wall = ladder_wall(facing);
+                    intent.yaw = wrap_degrees(yaw_of(wall));
+                    let below = position.y < f64::from(self.edge.to[1]);
+                    intent.forward = below;
+                    intent.sneak = !below;
+                    intent.sprint = false;
+                    let [cx, cz] = centre(self.edge.to);
+                    let side = [wall[1], -wall[0]];
+                    let off = dot(sub([position.x, position.z], [cx, cz]), side);
+                    let drift = dot([obs.velocity[0], obs.velocity[2]], side);
+                    let ahead = off + drift * 3.0;
+                    intent.left = ahead < -0.05;
+                    intent.right = ahead > 0.05;
+                } else if self.airborne {
                     self.air_control(obs, &mut intent);
                 } else {
                     intent.forward = true;
