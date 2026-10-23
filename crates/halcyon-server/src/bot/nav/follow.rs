@@ -146,6 +146,8 @@ impl EdgeRun {
                 ];
             }
         }
+        let [lx, lz] = edge.plan.lean;
+        target = [target[0] + f64::from(lx), target[1] + f64::from(lz)];
         let delta = sub(target, origin);
         let length = delta[0].hypot(delta[1]);
         let dir = if length > 1e-6 {

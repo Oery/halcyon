@@ -20,6 +20,8 @@ const MAX_DROP: f64 = 3.6;
 /// Deepest walk-off onto a landing that softens falls, such as hay: a
 /// player survives about 13 blocks onto hay for one heart.
 const SOFT_DROP: i32 = 14;
+/// How far past the target a walk around a wall's corner aims.
+const LEAN: f32 = 0.7;
 /// Courses drop players onto lower stages; accept losing up to one heart.
 const MAX_FALL_DAMAGE: f32 = 2.0;
 const MAX_REACH: i32 = 5;
@@ -393,10 +395,18 @@ impl NavGraph {
                 Some(edge)
             }
             _ => {
-                let outcome = self.simulate(view, from, here, edge, Execution::IDEAL, false);
-                edge.ticks = outcome.ticks?.max(1);
-                edge.damage = outcome.damage;
-                Some(edge)
+                // A diagonal past a wall's corner may need to lean along it.
+                let (dx, dz) = ((to[0] - from[0]) as f32, (to[2] - from[2]) as f32);
+                let leans: &[[f32; 2]] = if candidate.kind == EdgeKind::Walk && dx * dz != 0.0 {
+                    &[[0.0; 2], [dx * LEAN, 0.0], [0.0, dz * LEAN]]
+                } else {
+                    &[[0.0; 2]]
+                };
+                leans.iter().find_map(|&lean| {
+                    let edge = Edge { plan: Plan { lean, ..edge.plan }, ..edge };
+                    let outcome = self.simulate(view, from, here, edge, Execution::IDEAL, false);
+                    Some(Edge { ticks: outcome.ticks?.max(1), damage: outcome.damage, ..edge })
+                })
             }
         }
     }
@@ -572,7 +582,8 @@ impl NavGraph {
         let full = (runway - RUNWAY_STEP).clamp(0.0, LONG_RUNUP);
         let farthest = if long { full } else { full.min(0.3) };
         let hop = long && runway >= MIN_HOP_RUNUP;
-        let probe = Plan { runup: farthest, takeoff: rim + 0.2, sprint: true, hop: false };
+        let probe =
+            Plan { runup: farthest, takeoff: rim + 0.2, sprint: true, hop: false, lean: [0.0; 2] };
         let probed = self.simulate(view, from, here, edge_for(probe), Execution::IDEAL, false);
         // Only a probe that got past the rim says anything about reach.
         let took_off = probed.furthest > f64::from(rim);
@@ -603,7 +614,7 @@ impl NavGraph {
             }
             for sprint in sprints {
                 for takeoff in takeoffs {
-                    let plan = Plan { runup, takeoff: takeoff.max(-0.3), sprint, hop: false };
+                    let plan = Plan { takeoff: takeoff.max(-0.3), runup, sprint, ..probe };
                     if !plans.contains(&plan) {
                         plans.push(plan);
                     }
@@ -621,7 +632,7 @@ impl NavGraph {
             // From as far back as the runway allows: on a short one the hop
             // starts nearly from a stand, as players chain them on small ledges.
             let start = (runway - RUNWAY_STEP).min(HOP_RUNUP);
-            let hopping = Plan { runup: start, takeoff: rim + 0.2, sprint: true, hop: true };
+            let hopping = Plan { runup: start, hop: true, ..probe };
             // The hop must land just short of the rim: try several phases.
             plans.extend(
                 (0..HOP_PHASES)

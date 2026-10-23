@@ -569,12 +569,13 @@ fn trace_edge() {
     let (kind, via) = candidate.map_or((EdgeKind::Jump, None), |c| (c.kind, c.via));
     let runup: f32 = std::env::var("HALCYON_TRACE_RUNUP").map_or(0.3, |r| r.parse().unwrap());
     let takeoff: f32 = std::env::var("HALCYON_TRACE_TAKEOFF").map_or(0.6, |r| r.parse().unwrap());
-    for (runup, takeoff, sprint) in [(runup, takeoff, true)] {
+    let sprint = std::env::var("HALCYON_TRACE_WALK").is_err();
+    for (runup, takeoff, sprint) in [(runup, takeoff, sprint)] {
         let edge = Edge {
             to,
             to_feet: there.feet_y,
             kind,
-            plan: Plan { runup, takeoff, sprint, hop: false },
+            plan: Plan { runup, takeoff, sprint, hop: false, lean: [0.0; 2] },
             ticks: 0,
             robustness: 0.0,
             via,
@@ -1133,7 +1134,7 @@ fn jump_grid() {
                 to,
                 to_feet: there.feet_y,
                 kind: EdgeKind::Jump,
-                plan: Plan { runup, takeoff, sprint: true, hop },
+                plan: Plan { runup, takeoff, sprint: true, hop, lean: [0.0; 2] },
                 ticks: 0,
                 robustness: 0.0,
                 via: None,

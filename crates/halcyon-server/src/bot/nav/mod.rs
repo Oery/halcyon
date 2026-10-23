@@ -58,10 +58,15 @@ pub struct Plan {
     /// Sprint-jump once along the run-up first: each sprint jump adds speed
     /// that landing does not take away, enough for the longest level jumps.
     pub hop: bool,
+    /// For walks: aim this far past the target centre, in world x/z. Around
+    /// a wall's corner, leaning along the wall resolves that axis first and
+    /// slides onto the next block instead of into the wall.
+    pub lean: [f32; 2],
 }
 
 impl Plan {
-    pub const WALK: Plan = Plan { runup: 0.0, takeoff: f32::INFINITY, sprint: false, hop: false };
+    pub const WALK: Plan =
+        Plan { runup: 0.0, takeoff: f32::INFINITY, sprint: false, hop: false, lean: [0.0; 2] };
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
