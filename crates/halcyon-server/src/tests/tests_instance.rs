@@ -678,3 +678,83 @@ fn members_stay_in_entity_order_through_admission_and_departure() {
     assert!(!registry.remove(ids[1]));
     assert_eq!(registry.members, [ids[0], ids[2]]);
 }
+
+#[test]
+fn match_runner_gathers_counts_down_runs_the_round_and_returns_everyone() {
+    use crate::game::matches::{Match, MatchRules, Outcome};
+    use crate::game::{Destination, Game, MatchRunner, Phase};
+    use std::cell::RefCell;
+
+    #[derive(Default)]
+    struct Probe {
+        roster: Rc<RefCell<Vec<i32>>>,
+        finished: Rc<Cell<bool>>,
+    }
+    impl Match for Probe {
+        fn kind(&self) -> &'static str {
+            "probe"
+        }
+        fn rules(&self) -> MatchRules {
+            MatchRules { min_players: 2, max_players: 4, countdown_seconds: 1, end_seconds: 1 }
+        }
+        fn on_start(&mut self, _: &mut GameCtx<'_>, roster: &[i32]) {
+            *self.roster.borrow_mut() = roster.to_vec();
+        }
+        fn tick(&mut self, _: &mut GameCtx<'_>) -> Option<Outcome> {
+            self.finished.get().then(Outcome::default)
+        }
+    }
+
+    let world = gameplay_benchmarks::terrain(false, false);
+    let mut registry = Registry::default();
+    let probe = Probe::default();
+    let (roster, finished) = (probe.roster.clone(), probe.finished.clone());
+    let mut runner = MatchRunner::new(probe);
+    let mut close = false;
+    let mut step = |registry: &mut Registry, runner: &mut MatchRunner<Probe>, steps: u64| {
+        for _ in 0..steps {
+            let mut notices = Vec::new();
+            let mut ctx = GameCtx {
+                id: InstanceId { shard: 0, local: 0 },
+                registry: &mut *registry,
+                world: &world,
+                notices: &mut notices,
+                close: &mut close,
+            };
+            runner.tick(&mut ctx);
+        }
+    };
+    let join = |registry: &mut Registry, runner: &mut MatchRunner<Probe>, uuid| {
+        let session = reserve(registry, uuid);
+        let (mut notices, mut close) = (Vec::new(), false);
+        let mut ctx = GameCtx {
+            id: InstanceId { shard: 0, local: 0 },
+            registry: &mut *registry,
+            world: &world,
+            notices: &mut notices,
+            close: &mut close,
+        };
+        runner.on_join(&mut ctx, session.entity_id());
+        session
+    };
+
+    let first = join(&mut registry, &mut runner, 1);
+    step(&mut registry, &mut runner, 40);
+    assert_eq!(runner.phase(), Phase::Open, "one player keeps gathering");
+    let second = join(&mut registry, &mut runner, 2);
+    step(&mut registry, &mut runner, 21);
+    assert_eq!(runner.phase(), Phase::Open, "still counting down");
+    step(&mut registry, &mut runner, 1);
+    assert_eq!(runner.phase(), Phase::Running);
+    assert_eq!(*roster.borrow(), [first.entity_id(), second.entity_id()]);
+
+    finished.set(true);
+    step(&mut registry, &mut runner, 1);
+    assert_eq!(runner.phase(), Phase::Ending);
+    step(&mut registry, &mut runner, 21);
+    for session in [&first, &second] {
+        let update = registry.players[&session.entity_id()].input.update.borrow();
+        assert_eq!(update.destination, Some(Destination::Hub));
+    }
+    assert!(close, "the instance stops once its players have left");
+}

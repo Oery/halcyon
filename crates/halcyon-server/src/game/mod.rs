@@ -1,6 +1,7 @@
 //! Minigame logic attached to an instance. The instance owner runs a game
 //! synchronously: `on_join` during admission, events and `tick` after every
 //! simulation step, all with direct access to the instance's players.
+//! Round-based games implement `Match` instead and run inside `MatchRunner`.
 use std::sync::Arc;
 
 use crate::instance::{GameCtx, InstanceId};
@@ -9,9 +10,11 @@ use crate::server::Server;
 
 mod ffa;
 mod hub;
+pub(crate) mod matches;
 
 pub use ffa::Ffa;
 pub use hub::Hub;
+pub use matches::MatchRunner;
 
 /// Game kinds players can ask for by name.
 pub const KINDS: [&str; 2] = [Hub::KIND, Ffa::KIND];
@@ -70,7 +73,7 @@ pub trait Game {
 pub fn create(kind: &str, server: &Server) -> Option<(Box<dyn Game>, Arc<Map>)> {
     match kind {
         Hub::KIND => Some((Box::new(Hub::from_env(false)), hub_map(server)?.clone())),
-        Ffa::KIND => Some((Box::new(Ffa::default()), ffa_map(server)?.clone())),
+        Ffa::KIND => Some((Box::new(MatchRunner::new(Ffa::default())), ffa_map(server)?.clone())),
         _ => None,
     }
 }

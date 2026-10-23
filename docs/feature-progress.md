@@ -395,7 +395,7 @@ Game-facing capabilities and how to write a minigame: [minigames.md](minigames.m
 | Feature | Progress |
 | --- | --- |
 | Game definitions and native hooks | Partial — games attach to an instance with join, death, respawn, departure and per-step hooks; built-in hub and free-for-all. |
-| Match state machine | Partial — free-for-all waits for two players, counts down, fights to the last player and returns everyone to the hub. |
+| Match state machine | Partial — a shared match lifecycle gathers players, counts down, runs the round, announces winners and returns everyone to the hub; free-for-all uses it. No joining a running match. |
 | Player queues and match assignment | Partial — `/play <game>` joins an open instance of that game or starts one; `/hub` returns. No queues or parties. |
 | Bot-filled starts and replacement policy | Not started |
 | Native team membership and objectives | Not started |
