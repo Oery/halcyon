@@ -227,7 +227,7 @@ Level and trait profiles are data, not code: declarative, tunable and comparable
 
 1. **Embodiment:** done. Bots are visible, register and respawn like clients. Still missing: animation packet.
 2. **Motor layer:** first version done, hand-tuned.
-3. **Parkour skills and route graph:** navigation done (§8). On Parkour Spiral, bots cross the lily pads to the spire base. Map-specific mechanics then block the climb (§8, "Parkour Spiral status").
+3. **Parkour skills and route graph:** navigation done (§8). On Parkour Spiral, bots climb through checkpoint 22 of 35 (§8, "Parkour Spiral status").
 4. **Level, trait and state profiles:** several distinct bots racing together.
 5. **Match director and queue/fill policy** (depends on §18 matches).
 6. **Combat and team-game layers.**
@@ -297,34 +297,28 @@ Code: `crates/halcyon-server/src/bot/`. Tests: `src/tests/tests_bot_*.rs`. Real-
 ### Checkpoints, bounces and resets
 
 - **Checkpoints:** gold (light weighted) pressure plates within 128 blocks of spawn are the course's checkpoints, ordered by height (`NavService::detect_checkpoints`). Each bot routes to its next plate and advances when it stands on one. It never skips a plate: if no route exists, it waits and retries. Set `HALCYON_BOT_NO_CHECKPOINTS` to aim straight for the top instead.
-- **Bounces:** a slime block within jumping reach becomes a bounce edge to floors up to about 75% of the fall height above it. The bot lands on the pad's far side and sprint-jumps off it toward the ledge, then validation simulates the result like any other edge.
-- **Resets:** a bot trapped in water for 30 s asks to be returned to its last checkpoint, or to spawn. The server teleports it. This stands in for the course's own fall handling, which Halcyon does not run for humans yet.
+- **Bounces:** a slime block within jumping reach becomes a bounce edge to floors its rebound reaches, possibly through a second pad. The bot lands on each pad's far side, holding jump and facing where the rebound goes next; validation simulates the result like any other edge.
+- **Resets:** a bot trapped in water for 30 s, or stranded (no route, the same dead end, or nowhere it can locate itself, three times in a row), asks to be returned to its last checkpoint, or to spawn. The server teleports it. This stands in for the course's own fall handling, which Halcyon does not run for humans yet.
 
 ### Parkour Spiral status
 
-**Works:**
-1. Bots cross the lily pad trail to the first checkpoint `(0, 52, -49)`.
-2. They climb the azalea and sand steps to checkpoint 2 `(-17, 59, -39)`.
-3. They bounce off the slime pad onto the grass ledge, pass through the jungle hut tunnel, and reach the stone-slab path around `(-46, 64.5, -14)`.
+The planner connects every leg from spawn to checkpoint 22 of 35. Live and headless bots of levels 40–90 climb that far, weaker ones more slowly and with more falls. Along the way they handle:
 
-In a headless run, all six bots (levels 0–100) got that far. On the jump over the tunnel's water pit, the live controller succeeds 20/20 at level 100, 17/20 at level 50 and 0/20 at level 0.
+- lily pads, slabs, stairs, carpets, sand steps and floating sand that settled at startup;
+- 4-block gaps through a momentum hop on a short runway;
+- diagonals around a wall's corner;
+- wooden doors (opened), closed iron doors (avoided);
+- ladders and vines, including jumps onto ladders across lava;
+- a 9-block drop onto hay;
+- single and double slime bounces.
 
-**Blocked:** the slab path ends against ground 1.5 blocks higher (out of jump reach) under a cherry tree. Checkpoint 3 `(-46, 69, 12)` sits on a floating end-stone island. It can be reached from cherry leaves at 69–70 to its north or from a black concrete floor at 67 to its south, but even loosened geometric searches find no way onto either. The intended route needs a mechanic or move not identified yet.
-
-**Mechanics the spire uses:**
-
-| Count | Mechanic | Status |
-| --- | --- | --- |
-| 116 | bubble columns | unsupported by physics |
-| 3 | scaffolding | unsupported by physics |
-| 7,000+ | water blocks (pools, pits) | swimming routes not planned |
-| 129 | slime blocks | bounce edges |
+Leg 22 → 23 and several later legs remain partial. Extending the climb further is deliberately on hold: the next work is making bots better rather than going higher.
 
 ### Known gaps
 
-- Swimming routes; bubble columns.
-- Momentum carried between jumps; neo and corner jumps.
-- Doors and redstone.
+- Swimming routes; bubble columns and scaffolding (supported by physics, not planned).
+- Momentum carried across edges, except the single hop; neo jumps; jumps off ladders.
+- Redstone (pressure-plate or button doors).
 - A game rule returning fallen humans to checkpoints (bots have a stand-in).
-- Fall-damage edges (health does not regenerate).
+- Validation runs without the one-tick observation latency live bots have, so a few edges validate better than they execute.
 - Perception: bots know the terrain but not other players.
