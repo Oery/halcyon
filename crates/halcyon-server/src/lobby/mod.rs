@@ -77,6 +77,8 @@ pub struct PlayerSnapshot {
     pub equipment: Rc<[ItemStack; 6]>,
     pub life_generation: u64,
     pub visible: bool,
+    /// A spectator viewing through another player's camera.
+    pub camera_attached: bool,
     pub revision: u64,
 }
 

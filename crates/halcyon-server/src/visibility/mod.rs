@@ -148,17 +148,21 @@ impl Observer {
         }
 
         if spatial_changed {
+            let spectating =
+                registry.get(self_id).is_some_and(|player| player.game_mode == GameMode::Spectator);
             self.candidate_ids = registry
                 .candidates(resident)
                 .into_iter()
-                .filter(|player| player.entity_id != self_id)
+                .filter(|player| player.entity_id != self_id && shown_to(player, spectating))
                 .map(|player| player.entity_id)
                 .collect();
             self.desired = self.candidate_ids.iter().copied().collect();
             self.cancel_where(|frame| {
                 matches!(&frame.delivery, Delivery::Spawn(player)
                     if registry.get(player.entity_id).is_none_or(|current|
-                        current.entity_id == self_id || !current.visible || !resident.contains(&current.transform.chunk())))
+                        current.entity_id == self_id || !current.visible
+                            || !shown_to(current, spectating)
+                            || !resident.contains(&current.transform.chunk())))
             });
             self.latest.retain(|id, _| self.desired.contains(id));
             let removals: Vec<i32> =
@@ -512,6 +516,12 @@ impl Observer {
     fn removal_pending(&self, id: i32) -> bool {
         self.pending_removals.contains(&id)
     }
+}
+
+/// Vanilla shows spectators only to other spectators, and hides a spectator
+/// viewing through another player's camera from everyone.
+fn shown_to(player: &PlayerSnapshot, spectating: bool) -> bool {
+    player.game_mode != GameMode::Spectator || (spectating && !player.camera_attached)
 }
 
 #[cfg(test)]

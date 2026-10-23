@@ -169,6 +169,79 @@ fn creative_breaks_share_bounded_block_work_and_resynchronize_stale_predictions(
 }
 
 #[test]
+fn spectator_cameras_follow_players_and_return_on_stop_or_target_loss() {
+    use crate::player::CameraRequest;
+    use mc_protocol::types::GameMode;
+    let world = gameplay_benchmarks::terrain(false, false);
+    let mut registry = Registry::default();
+    let spectator = command_player(&mut registry, 1, "Spectator");
+    let target = command_player(&mut registry, 2, "Target");
+    let far = command_player(&mut registry, 3, "Far");
+    let set_position = |registry: &mut Registry, session: &Session, transform| {
+        registry.players.get_mut(&session.entity_id()).unwrap().state.movement.reset(transform)
+    };
+    let near = Transform { x: 12.5, y: 64.0, z: 8.5, yaw: 90.0, ..Default::default() };
+    set_position(&mut registry, &target, near);
+    set_position(&mut registry, &far, Transform { x: 40.5, ..near });
+    let step = |registry: &mut Registry| {
+        registry.simulate(&world, Instant::now(), &mut Vec::new());
+        spectator.take_update()
+    };
+    // Survival players cannot spectate; spectators cannot follow beyond reach.
+    spectator.submit(PlayerAction::Spectate(CameraRequest::Follow(target.entity_id())));
+    assert!(step(&mut registry).camera.is_none());
+    registry.players.get_mut(&spectator.entity_id()).unwrap().state.game_mode.current =
+        GameMode::Spectator;
+    spectator.submit(PlayerAction::Spectate(CameraRequest::Follow(far.entity_id())));
+    assert!(step(&mut registry).camera.is_none());
+
+    spectator.submit(PlayerAction::Spectate(CameraRequest::Follow(target.entity_id())));
+    let update = step(&mut registry);
+    assert_eq!(update.camera, Some(Some(target.entity_id())));
+    let teleport = update.teleport.unwrap();
+    assert_eq!(teleport.destination, near);
+    spectator.confirm_teleport(teleport.id);
+    assert!(step(&mut registry).camera.is_none());
+    assert!(spectator.ready());
+    // Following snaps silently; a player viewing another camera cannot be followed.
+    let moved = Transform { x: 14.5, ..near };
+    set_position(&mut registry, &target, moved);
+    let update = step(&mut registry);
+    assert!(update.teleport.is_none());
+    assert_eq!(spectator.accepted_transform(), moved);
+    registry.publish();
+    assert!(registry.get(spectator.entity_id()).unwrap().camera_attached);
+
+    // A spectator-menu teleport ignores reach and leaves the camera.
+    spectator.submit(PlayerAction::Spectate(CameraRequest::TeleportTo(far.entity_id())));
+    let update = step(&mut registry);
+    assert_eq!(update.camera, Some(None));
+    let teleport = update.teleport.unwrap();
+    assert_eq!(teleport.destination.x, 40.5);
+    spectator.confirm_teleport(teleport.id);
+    step(&mut registry);
+
+    spectator.submit(PlayerAction::Spectate(CameraRequest::Follow(far.entity_id())));
+    spectator.confirm_teleport(step(&mut registry).teleport.unwrap().id);
+    step(&mut registry);
+    spectator.submit(PlayerAction::Spectate(CameraRequest::Stop));
+    let update = step(&mut registry);
+    assert_eq!(update.camera, Some(None));
+    spectator.confirm_teleport(update.teleport.unwrap().id);
+    step(&mut registry);
+
+    // Losing the target returns the camera to the spectator where it was.
+    spectator.submit(PlayerAction::Spectate(CameraRequest::Follow(far.entity_id())));
+    spectator.confirm_teleport(step(&mut registry).teleport.unwrap().id);
+    step(&mut registry);
+    drop(far);
+    registry.cleanup();
+    let update = step(&mut registry);
+    assert_eq!(update.camera, Some(None));
+    assert_eq!(update.teleport.unwrap().destination.x, 40.5);
+}
+
+#[test]
 fn command_targets_resolve_names_and_publish_owner_applied_modes() {
     use crate::player::PlayerActionError;
     use mc_protocol::types::GameMode;

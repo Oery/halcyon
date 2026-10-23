@@ -35,7 +35,7 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Survival mode | Partial — player lifecycle and damage rules; no survival loop. |
 | Creative mode | Partial — mode switching, flight, invulnerability and instant block breaking with no drops; creative item acquisition remains unavailable. |
 | Adventure mode | Partial — mode switching and client synchronization; lobby gameplay rules remain shared. |
-| Spectator mode | Partial — mode switching and client synchronization; spectator movement remains unavailable. |
+| Spectator mode | Done — always-on flight through terrain and fluids, invulnerability except void rules, no block, item or inventory interaction, visibility only to other spectators, viewing through a player's camera (attack to follow, sneak to leave) and spectator-menu teleports. Portals are not available. |
 | Hardcore rules | Excluded |
 | Ground movement | Done — 20 TPS input-driven ground physics and collision-checked human predictions; no speed/flight enforcement. |
 | Collision and stepping | Partial — static shapes and stepping, offset bamboo/dripstone/sulfur spikes, scaffolding and powder-snow player contexts, retained dripleaf tilt shapes, closed shulker boxes and empty moving-piston placeholders; animated block entities and scheduled dripleaf tilting unavailable. |

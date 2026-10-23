@@ -40,6 +40,8 @@ pub struct Client {
     pub proposed: Transform,
     pub sneaking: bool,
     pub sprinting: bool,
+    /// The followed player while this spectator views through its camera.
+    pub camera: Option<i32>,
     pub lobby: Lobby,
     pub session: Option<Session>,
     pub profile_info: Option<Rc<[u8]>>,
@@ -82,6 +84,7 @@ impl Client {
             proposed: Transform::default(),
             sneaking: false,
             sprinting: false,
+            camera: None,
             lobby,
             session: None,
             profile_info: None,

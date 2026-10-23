@@ -150,6 +150,18 @@ pub struct PlayerLoaded;
 #[packet(Play, 0x2E, Server)]
 pub struct Punch;
 
+#[packet(Play, 0x01, Server)]
+pub struct Attack {
+    #[format = "varint"]
+    pub entity_id: i32,
+}
+
+/// Spectator-menu teleport; the target may be any entity UUID.
+#[packet(Play, 0x40, Server)]
+pub struct TeleportToEntity {
+    pub target: Uuid,
+}
+
 #[packet(Play, 0x00, Server)]
 pub struct ConfirmTeleportation {
     #[format = "varint"]

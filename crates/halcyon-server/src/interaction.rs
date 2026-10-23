@@ -215,8 +215,13 @@ pub fn use_block(
     player: &PlayerState,
     used: BlockUse,
 ) -> Option<Vec<BlockPos>> {
-    // Off-hand use never reaches an empty-hand block interaction.
-    if !used.main_hand || !player.life.alive() || player.life.pending_teleport().is_some() {
+    // Off-hand use never reaches an empty-hand block interaction; spectators
+    // cannot operate blocks.
+    if !used.main_hand
+        || player.spectator()
+        || !player.life.alive()
+        || player.life.pending_teleport().is_some()
+    {
         return None;
     }
     if !used.cursor.iter().all(|c| (c - 0.5).abs() < 1.000_000_1) {

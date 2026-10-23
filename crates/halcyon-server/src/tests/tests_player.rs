@@ -62,7 +62,7 @@ fn game_mode_changes_are_authoritative_coalesced_and_retained_on_respawn() {
         GameModeState {
             current: GameMode::Spectator,
             previous: Some(GameMode::Creative),
-            flying: false
+            flying: true
         }
     );
     let (reply, response) = oneshot::oneshot();
@@ -82,6 +82,42 @@ fn game_mode_changes_are_authoritative_coalesced_and_retained_on_respawn() {
     assert_eq!(player.game_mode.current, GameMode::Spectator);
     // Switching identity does not replace the protected lobby's gameplay rules.
     assert!(player.life.rules.protected);
+}
+
+#[test]
+fn spectators_always_fly_ignore_damage_and_items_and_enter_walls() {
+    use glommio::channels::oneshot;
+    let world = ground_world(&[(8, 0, 8, 1), (8, 1, 8, 1)]);
+    let mut player = PlayerState::new(Transform { x: 8.5, y: 66.0, z: 8.5, ..Default::default() });
+    player.life.rules.protected = false;
+    let mut proposals = ProposalQueue::default();
+    let mut actions = ActionQueue::default();
+    let now = Instant::now();
+    let (reply, _) = oneshot::oneshot();
+    actions.push(0, PlayerAction::SetGameMode { mode: GameMode::Spectator, reply });
+    actions.push(0, PlayerAction::SetFlying(false));
+    actions.push(
+        0,
+        PlayerAction::Damage(Damage { kind: DamageKind::Game, amount: 30.0, source: None }),
+    );
+    actions.push(0, PlayerAction::UseItem(Some(InteractionHand::Main)));
+    let (update, _) = player.advance(&world, &mut proposals, &mut actions, now, false);
+    assert_eq!(update.game_mode.unwrap().ability_flags(), 0x07);
+    assert!(player.game_mode.flying);
+    assert_eq!(player.life.health(), 20.0);
+    assert_eq!(player.using(), None);
+    // Destinations and authority inside terrain neither obstruct nor suffocate.
+    let wall = Transform { x: 8.5, y: 64.0, z: 8.5, ..Default::default() };
+    actions.push(0, PlayerAction::Teleport(wall));
+    let (update, _) = player.advance(&world, &mut proposals, &mut actions, now, false);
+    player.life.confirm(update.teleport.unwrap().id);
+    let (update, _) = player.advance(&world, &mut proposals, &mut actions, now, false);
+    assert!(update.damage.is_none());
+    let (reply, _) = oneshot::oneshot();
+    actions.push(0, PlayerAction::SetGameMode { mode: GameMode::Survival, reply });
+    let (update, _) = player.advance(&world, &mut proposals, &mut actions, now, false);
+    assert!(!update.game_mode.unwrap().flying);
+    assert_eq!(update.damage.unwrap().kind, DamageKind::Suffocation);
 }
 
 #[test]
