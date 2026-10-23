@@ -343,7 +343,6 @@ fn trace_bot() {
 #[test]
 #[ignore = "opt-in survey of a real map for navigation work"]
 fn edge_success_rate() {
-    use super::follow::{EdgeRun, Execution, Obs, Status};
     let world = load_world();
     let parse = |name: &str, default: &str| {
         let text = std::env::var(name).unwrap_or_else(|_| default.into());
@@ -364,45 +363,135 @@ fn edge_success_rate() {
         .expect("a candidate");
     let edge = nav.graph.validate(&world, from, &candidate).expect("a valid edge");
     let profile = BotProfile::new(level);
-    let mut successes = 0;
     let trials = 20;
-    for seed in 0..trials {
-        let mut rng = crate::bot::rng::Rng::new(seed);
-        let mut motor = crate::bot::motor::Motor::new(0.0, 0.0);
-        let exec = Execution {
-            aim_tolerance: profile.aim_tolerance(),
-            approach_tolerance: profile.approach_tolerance(),
-            hesitation: profile.hesitation(edge.robustness, &mut rng),
-            ..Execution::IDEAL
-        };
-        let mut run = EdgeRun::new(from, &here, edge, exec);
-        let [x, z] = super::stand::centre(from);
-        let start = Transform { x, y: here.feet_y, z, on_ground: true, ..Transform::default() };
-        let mut state = crate::movement::MovementState::new(start);
-        state.place(start);
-        let mut previous = start;
-        let mut velocity = [0.0; 3];
-        for _ in 0..200 {
-            let position = state.transform();
-            let (intent, status) = run.tick(&Obs { position, velocity });
-            match status {
-                Status::Running => {}
-                Status::Done => {
-                    successes += 1;
-                    break;
-                }
-                Status::Failed(_) => break,
-            }
-            state.step(&world, motor.tick(intent, profile, &mut rng));
-            let now = state.transform();
-            velocity = [now.x - previous.x, now.y - previous.y, now.z - previous.z];
-            previous = now;
-        }
-    }
+    let successes = (0..trials)
+        .filter(|&seed| live_trial(&world, from, here, edge, profile, seed, 0.0))
+        .count();
     eprintln!(
         "edge {from:?} -> {to:?} plan={:?} robustness={} level={level}: {successes}/{trials}",
         edge.plan, edge.robustness
     );
+}
+
+/// One run of `edge` from rest on `from`'s centre under the live controller
+/// and motor at `profile`, facing `yaw`. Whether it arrived.
+fn live_trial(
+    view: &impl halcyon_world::BlockView,
+    from: Cell,
+    here: Stand,
+    edge: Edge,
+    profile: BotProfile,
+    seed: u64,
+    yaw: f32,
+) -> bool {
+    use super::follow::{EdgeRun, Execution, Obs, Status};
+    let mut rng = crate::bot::rng::Rng::new(seed);
+    let mut motor = crate::bot::motor::Motor::new(yaw, 0.0);
+    let exec = Execution {
+        aim_tolerance: profile.aim_tolerance(),
+        approach_tolerance: profile.approach_tolerance(),
+        hesitation: profile.hesitation(edge.robustness, &mut rng),
+        ..Execution::IDEAL
+    };
+    let mut run = EdgeRun::new(from, &here, edge, exec);
+    let [x, z] = super::stand::centre(from);
+    let start = Transform {
+        x,
+        y: here.feet_y,
+        z,
+        yaw,
+        on_ground: matches!(here.kind, StandKind::Ground),
+        ..Transform::default()
+    };
+    let mut state = crate::movement::MovementState::new(start);
+    state.place(start);
+    let mut previous = start;
+    let mut velocity = [0.0; 3];
+    for _ in 0..400 {
+        let position = state.transform();
+        let (intent, status) = run.tick(&Obs { position, velocity });
+        match status {
+            Status::Running => {}
+            Status::Done => return true,
+            Status::Failed(_) => return false,
+        }
+        state.step(view, motor.tick(intent, profile, &mut rng));
+        let now = state.transform();
+        velocity = [now.x - previous.x, now.y - previous.y, now.z - previous.z];
+        previous = now;
+    }
+    false
+}
+
+/// How well the planner's promises hold under the live motor: every edge of
+/// the route from spawn, run repeatedly from rest at several levels, facing
+/// the way the previous edge left the bot.
+#[test]
+#[ignore = "opt-in survey of a real map for navigation work"]
+fn route_fidelity() {
+    let world = load_world();
+    let view = OpenDoors(&world);
+    let (x, y, z, yaw, pitch) = world.spawn;
+    let spawn =
+        crate::movement::resolve_spawn(&world, Transform { x, y, z, yaw, pitch, on_ground: false })
+            .expect("spawn resolves");
+    let mut settle = crate::movement::MovementState::new(spawn);
+    for _ in 0..40 {
+        settle.step(&world, crate::movement::MovementInput::default());
+    }
+    let mut nav = NavService::new(Budget::Unlimited);
+    let around = [spawn.x.floor() as i32, spawn.y.floor() as i32, spawn.z.floor() as i32];
+    let goal = nav.detect_goal(&world, around, 128).expect("a goal");
+    let mut search = Search::default();
+    search.start(super::stand::cell_of(settle.transform()), goal);
+    let path = loop {
+        match search.step(&mut nav, &view, 100_000, &|_, _| 0.0) {
+            SearchStatus::Running => {}
+            SearchStatus::Found(path) | SearchStatus::Partial(path) => break path,
+            _ => panic!("no route"),
+        }
+    };
+    let trials = env_or("HALCYON_FIDELITY_TRIALS", 20) as u64;
+    let levels = [0u8, 50, 100];
+    let mut passed = [0u64; 3];
+    let mut weak = [0usize; 3];
+    let mut facing = settle.transform().yaw;
+    for step in &path {
+        let here = nav.stand(&view, step.from).expect("route cells stand");
+        for (index, &level) in levels.iter().enumerate() {
+            let profile = BotProfile::new(level);
+            let ok = (0..trials)
+                .filter(|&seed| {
+                    live_trial(&view, step.from, here, step.edge, profile, seed, facing)
+                })
+                .count() as u64;
+            passed[index] += ok;
+            if ok * 2 < trials {
+                weak[index] += 1;
+                if level == 100 {
+                    eprintln!(
+                        "  {:?} -> {:?} {:?} robustness={:.2}: {ok}/{trials} at level 100",
+                        step.from, step.edge.to, step.edge.kind, step.edge.robustness
+                    );
+                }
+            }
+        }
+        let [fx, fz] = super::stand::centre(step.from);
+        let [tx, tz] = super::stand::centre(step.edge.to);
+        if (tx - fx).hypot(tz - fz) > 1e-6 {
+            facing = super::follow::yaw_of([tx - fx, tz - fz]);
+        }
+    }
+    let total = path.len() as u64 * trials;
+    for (index, level) in levels.iter().enumerate() {
+        eprintln!(
+            "level {level}: {:.1}% of {} edge runs arrive, {} of {} edges below half",
+            passed[index] as f64 * 100.0 / total as f64,
+            total,
+            weak[index],
+            path.len()
+        );
+    }
 }
 
 /// Validated route search for every leg between consecutive checkpoints:

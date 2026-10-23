@@ -63,16 +63,9 @@ impl Motor {
         }
         self.precise = intent.precise;
 
-        let target = intent.yaw + self.aim_error;
-        let delta = wrap_degrees(target - self.yaw);
-        let easing = if intent.precise { 0.6 } else { profile.turn_easing() };
-        let tremor = profile.tremor();
-        self.yaw += (delta * easing).clamp(-profile.turn_rate(), profile.turn_rate())
-            + rng.range(-f64::from(tremor), f64::from(tremor)) as f32;
-        self.yaw = wrap_degrees(self.yaw);
-        self.pitch += (intent.pitch - self.pitch) * easing
-            + rng.range(-f64::from(tremor), f64::from(tremor)) as f32 * 0.5;
-        self.pitch = self.pitch.clamp(-90.0, 90.0);
+        let tremor = f64::from(profile.tremor());
+        let shake = [rng.range(-tremor, tremor) as f32, rng.range(-tremor, tremor) as f32 * 0.5];
+        self.turn(intent, profile, shake);
 
         // A fresh press may slip one tick; a held key never repeats the slip.
         let mut jumping = intent.jump;
@@ -86,6 +79,27 @@ impl Motor {
         self.jump_held = intent.jump;
 
         MovementInput { jumping, yaw: self.yaw, pitch: self.pitch, ..intent.exact() }
+    }
+
+    /// Noise-free hands that turn at `profile`'s pace: exact aim and timing,
+    /// but the camera still takes ticks to come round. Used to validate
+    /// maneuvers against the turning bots actually have.
+    pub fn steady(&mut self, intent: Intent, profile: BotProfile) -> MovementInput {
+        self.aim_error = 0.0;
+        self.precise = intent.precise;
+        self.turn(intent, profile, [0.0; 2]);
+        MovementInput { yaw: self.yaw, pitch: self.pitch, ..intent.exact() }
+    }
+
+    /// Eased, rate-limited camera motion toward the intent, plus `shake`.
+    fn turn(&mut self, intent: Intent, profile: BotProfile, shake: [f32; 2]) {
+        let target = intent.yaw + self.aim_error;
+        let delta = wrap_degrees(target - self.yaw);
+        let easing = if intent.precise { 0.6 } else { profile.turn_easing() };
+        self.yaw += (delta * easing).clamp(-profile.turn_rate(), profile.turn_rate()) + shake[0];
+        self.yaw = wrap_degrees(self.yaw);
+        self.pitch += (intent.pitch - self.pitch) * easing + shake[1];
+        self.pitch = self.pitch.clamp(-90.0, 90.0);
     }
 }
 

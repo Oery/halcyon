@@ -8,7 +8,7 @@ use halcyon_world::BlockView;
 use super::follow::{EdgeRun, Execution, Obs, Status, brake};
 use super::stand::centre;
 use super::{Cell, Edge, EdgeKind, NavGraph, Plan, Stand, StandKind};
-use crate::bot::motor::Intent;
+use crate::bot::motor::{Intent, Motor};
 use crate::lobby::Transform;
 
 const STEP: f64 = 0.6;
@@ -138,7 +138,7 @@ pub struct Outcome {
 }
 
 impl NavGraph {
-    /// Run `edge` from rest on `from` with ideal hands and the given
+    /// Run `edge` from rest on `from` with steady hands and the given
     /// perturbations, then require the player to settle at the destination.
     pub fn simulate(
         &mut self,
@@ -161,6 +161,7 @@ impl NavGraph {
             on_ground: matches!(from_stand.kind, StandKind::Ground),
         };
         self.sim.place(start);
+        let mut hands = Motor::new(start.yaw, start.pitch);
         self.stats.simulations += 1;
         let mut previous = start;
         let mut velocity = [0.0; 3];
@@ -207,7 +208,7 @@ impl NavGraph {
                     }
                 }
             };
-            let mut input = intent.exact();
+            let mut input = hands.steady(intent, exec.hands);
             if late_jump {
                 if input.jumping && !delayed {
                     input.jumping = false;

@@ -259,7 +259,7 @@ Code: `crates/halcyon-server/src/bot/`. Tests: `src/tests/tests_bot_*.rs`. Real-
   - bounces off one slime pad, or two in a row, onto floors the rebound reaches. Bots hold jump coming down onto a pad and face where the rebound goes next, so the sprint jump's boost carries them on.
 
   Cheap filters remove jumps through solid blocks and jumps over continuous floor.
-- **Validation:** a candidate becomes an edge only after a simulation succeeds. The simulation runs the real player physics (`MovementState::step`) under the **same closed-loop controller** live bots use (`nav/follow.rs`), from rest, with ideal hands. It must then settle on the target.
+- **Validation:** a candidate becomes an edge only after a simulation succeeds. The simulation runs the real player physics (`MovementState::step`) under the **same closed-loop controller** live bots use (`nav/follow.rs`), from rest, with steady hands: exact aim and key timing, but the camera turns at a level-100 bot's rate and easing, as the live motor does. It must then settle on the target.
   - Jumps try several plans: run-up, takeoff point, sprint.
   - Each accepted jump gets a **robustness** score: the success rate under perturbed aim (±3°), early takeoff and a one-tick-late jump.
 - **Laziness:** the search queues candidates at optimistic costs and validates one only when it reaches the front of the queue. Most candidates are never simulated.
@@ -293,6 +293,7 @@ Code: `crates/halcyon-server/src/bot/`. Tests: `src/tests/tests_bot_*.rs`. Real-
 | `HALCYON_BOT_CHECKPOINT=n` | Starts every bot on the n-th checkpoint (from 1), heading for the next, to work on later parts of a course without waiting for the climb. A fallen bot returns there. |
 | `geometric_route` with `HALCYON_ROUTE_FROM`/`HALCYON_ROUTE_TO` | One leg, e.g. between checkpoints: optimistic route, near misses and a reached/unreached height map. |
 | `edge_success_rate`, `trace_bot`, `survey_checkpoints`, `survey_approaches` | Live-controller success rate of one edge per level, a traced headless bot, the checkpoint list, floors around a goal. |
+| `route_fidelity` (`HALCYON_FIDELITY_TRIALS`) | Every edge of the route from spawn, run under the live motor at levels 0, 50 and 100: how often the planner's promises hold, and the edges a level-100 bot fails. |
 
 ### Checkpoints, bounces and resets
 

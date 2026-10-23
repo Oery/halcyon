@@ -1,10 +1,11 @@
 //! Closed-loop execution of one edge. The same controller validates edges
-//! (with ideal hands) and drives bots at runtime (through the motor), so a
+//! (with steady hands) and drives bots at runtime (through the motor), so a
 //! validated edge is a promise about exactly this behaviour.
 
 use super::stand::centre;
 use super::{Cell, Edge, EdgeKind, Stand, StandKind};
 use crate::bot::motor::{Intent, wrap_degrees};
+use crate::bot::profile::BotProfile;
 use crate::lobby::Transform;
 
 /// What the bot observes about itself each tick.
@@ -26,6 +27,8 @@ pub struct Execution {
     pub hesitation: u16,
     pub yaw_offset: f32,
     pub takeoff_offset: f32,
+    /// Validation only: whose camera turning the simulated hands have.
+    pub hands: BotProfile,
 }
 
 impl Execution {
@@ -36,6 +39,7 @@ impl Execution {
         hesitation: 0,
         yaw_offset: 0.0,
         takeoff_offset: 0.0,
+        hands: BotProfile { level: 100 },
     };
 }
 
