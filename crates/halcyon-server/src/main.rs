@@ -38,6 +38,11 @@ static ADDR: &str = "127.0.0.1:25565";
 static WORLDS: &str = "worlds";
 
 fn main() -> std::io::Result<()> {
+    // Shards bind with SO_REUSEPORT, which would silently share the port with
+    // another running server. A plain bind fails while any listener holds it.
+    drop(std::net::TcpListener::bind(ADDR).map_err(|error| {
+        std::io::Error::new(error.kind(), format!("{ADDR} is already in use: {error}"))
+    })?);
     let shards = shard::count();
     // Maps and wire caches load once; every shard shares them read-only.
     let server = futures_lite::future::block_on(async {

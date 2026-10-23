@@ -282,6 +282,11 @@ impl Instance {
         self.status.closed.get()
     }
 
+    /// Admitted players, including those still loading.
+    pub fn population(&self) -> usize {
+        self.registry.borrow().players.len()
+    }
+
     /// Whether matchmaking may place one more player here.
     pub fn has_room(&self) -> bool {
         !self.closed()

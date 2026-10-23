@@ -37,42 +37,46 @@ impl Client {
         self.session.as_ref().map(Session::entity_id).ok_or(Error::UnexpectedResponse)
     }
 
-    /// Reserve an authenticated human before its entity ID is sent in Play Login.
-    pub async fn reserve_player(&mut self, entity_id: Option<i32>) -> Result<(), Error> {
+    /// Claims the account across every shard and encodes the player's profile
+    /// once, before Play Login. Both follow the connection between instances.
+    pub async fn claim_identity(&mut self) -> Result<(), Error> {
         use mc_protocol::packets::client::PlayerInfoUpdate;
         use mc_protocol::types::ProfileProperty;
 
+        let uuid = self.ctx.player_uuid.ok_or(Error::UnexpectedResponse)?;
+        let username = self.ctx.username.as_deref().ok_or(Error::UnexpectedResponse)?;
+        let account = self.server.claim_account(uuid);
+        self.account = Some(account.ok_or(crate::instance::AdmissionError::DuplicateUuid)?);
+        let properties = self
+            .ctx
+            .profile_properties
+            .iter()
+            .map(|p| ProfileProperty {
+                name: &p.name,
+                value: &p.value,
+                signature: p.signature.as_deref(),
+            })
+            .collect();
+        self.packet_buffer.clear();
+        PlayerInfoUpdate { uuid, username, properties }
+            .write_packet(&mut self.packet_buffer)
+            .await?;
+        self.profile_info = Some(Rc::from(self.packet_buffer.as_slice()));
+        // The shared encoded profile is sufficient for subsequent player-info sends.
+        self.ctx.profile_properties.clear();
+        Ok(())
+    }
+
+    /// Admits the player to its current instance under the entity ID its
+    /// client learned in Play Login.
+    pub async fn reserve_player(&mut self, entity_id: i32) -> Result<(), Error> {
         if self.session.is_some() {
             return Err(Error::UnexpectedResponse);
         }
         let uuid = self.ctx.player_uuid.ok_or(Error::UnexpectedResponse)?;
-        if self.account.is_none() {
-            let account = self.server.claim_account(uuid);
-            self.account = Some(account.ok_or(crate::instance::AdmissionError::DuplicateUuid)?);
-        }
         let username = self.ctx.username.as_deref().ok_or(Error::UnexpectedResponse)?;
-        // Later instances reuse the profile encoded for the first one.
-        let info = match &self.profile_info {
-            Some(info) => info.clone(),
-            None => {
-                let properties = self
-                    .ctx
-                    .profile_properties
-                    .iter()
-                    .map(|p| ProfileProperty {
-                        name: &p.name,
-                        value: &p.value,
-                        signature: p.signature.as_deref(),
-                    })
-                    .collect();
-                self.packet_buffer.clear();
-                PlayerInfoUpdate { uuid, username, properties }
-                    .write_packet(&mut self.packet_buffer)
-                    .await?;
-                Rc::from(self.packet_buffer.as_slice())
-            }
-        };
-        let profile = Rc::new(Profile { uuid, username: username.to_owned(), info: info.clone() });
+        let info = self.profile_info.clone().ok_or(Error::UnexpectedResponse)?;
+        let profile = Rc::new(Profile { uuid, username: username.to_owned(), info });
         self.pos = self.instance.map().spawn();
         self.pos = self
             .instance
@@ -84,14 +88,11 @@ impl Client {
             })
             .ok_or(Error::UnsupportedSpawn)?;
         let session =
-            self.instance.register(entity_id, profile, self.pos, self.ctx.skin_parts).await?;
+            self.instance.register(Some(entity_id), profile, self.pos, self.ctx.skin_parts).await?;
         // The game may have placed the player elsewhere while admitting it.
         self.pos = session.accepted_transform();
         self.proposed = self.pos;
         self.session = Some(session);
-        self.profile_info = Some(info);
-        // The shared encoded profile is sufficient for subsequent player-info sends.
-        self.ctx.profile_properties.clear();
         Ok(())
     }
 

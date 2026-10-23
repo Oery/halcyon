@@ -59,8 +59,9 @@ impl Drop for Account {
 #[derive(Clone, Debug, Default)]
 pub struct ShardSummary {
     pub players: usize,
-    /// Game kinds with an instance here that is open and has room.
-    pub open: Vec<&'static str>,
+    /// Per game kind with an open instance here that has room, the players
+    /// in the fullest such instance.
+    pub open: Vec<(&'static str, usize)>,
 }
 
 pub struct Directory {
@@ -90,13 +91,18 @@ impl Directory {
         self.lock().iter().map(|shard| shard.players).sum()
     }
 
-    /// The least-loaded shard with an open instance of `kind`, if any.
-    pub fn open(&self, kind: &str) -> Option<u16> {
+    /// The shard other than `except` holding the fullest open instance of
+    /// `kind`, with that instance's players. Ties go to the less-loaded shard.
+    pub fn fullest(&self, kind: &str, except: u16) -> Option<(u16, usize)> {
         let shards = self.lock();
         (0..shards.len())
-            .filter(|&shard| shards[shard].open.contains(&kind))
-            .min_by_key(|&shard| shards[shard].players)
-            .map(|shard| shard as u16)
+            .filter(|&shard| shard != usize::from(except))
+            .filter_map(|shard| {
+                let &(_, players) = shards[shard].open.iter().find(|(open, _)| *open == kind)?;
+                Some((shard, players))
+            })
+            .max_by_key(|&(shard, players)| (players, std::cmp::Reverse(shards[shard].players)))
+            .map(|(shard, players)| (shard as u16, players))
     }
 
     pub fn load(&self, shard: u16) -> usize {

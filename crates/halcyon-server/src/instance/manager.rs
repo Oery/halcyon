@@ -1,4 +1,6 @@
 //! The instances one shard owns: creation, matchmaking, routing and reaping.
+//! Matchmaking fills the fullest instance of a kind that has room, on any
+//! shard, before starting another on the least-loaded shard.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -6,7 +8,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use super::{Instance, InstanceId};
-use crate::game::{Destination, Hub};
+use crate::game::{Destination, Game, Hub};
+use crate::map::Map;
 use crate::server::{Server, ShardSummary};
 
 struct Instances {
@@ -14,7 +17,7 @@ struct Instances {
     shard: u16,
     next: u32,
     instances: BTreeMap<u32, Instance>,
-    hub: Option<InstanceId>,
+    home: Option<InstanceId>,
 }
 
 /// Where a connection should go to reach a destination.
@@ -32,7 +35,7 @@ pub struct InstanceManager {
 
 impl InstanceManager {
     pub fn new(server: Arc<Server>, shard: u16) -> Self {
-        let inner = Instances { server, shard, next: 0, instances: BTreeMap::new(), hub: None };
+        let inner = Instances { server, shard, next: 0, instances: BTreeMap::new(), home: None };
         Self { inner: Rc::new(RefCell::new(inner)) }
     }
 
@@ -42,11 +45,16 @@ impl InstanceManager {
 
     /// Starts a new instance of `kind` on its configured map.
     pub fn create(&self, kind: &str) -> Option<Instance> {
+        let (game, map) = crate::game::create(kind, &self.inner.borrow().server)?;
+        self.start(game, map)
+    }
+
+    fn start(&self, game: Box<dyn Game>, map: Arc<Map>) -> Option<Instance> {
         let instance = {
             let mut inner = self.inner.borrow_mut();
-            let (game, map) = crate::game::create(kind, &inner.server)?;
             let id = InstanceId { shard: inner.shard, local: inner.next };
             let ids = inner.server.entity_ids.clone();
+            let kind = game.kind();
             let instance = match Instance::spawn(id, map, game, ids, inner.server.diagnostics) {
                 Ok(instance) => instance,
                 Err(error) => {
@@ -69,33 +77,43 @@ impl InstanceManager {
         inner.instances.get(&id.local).filter(|_| id.shard == inner.shard).cloned()
     }
 
-    /// This shard's hub, restarted if it ever stopped. Every shard has one.
-    pub fn hub(&self) -> Option<Instance> {
-        let hub = self.inner.borrow().hub;
-        if let Some(hub) = hub.and_then(|id| self.get(id)) {
-            return Some(hub);
+    /// The hub this shard never stops, restarted if it ever did. A new
+    /// connection belongs to it until login places the player.
+    pub fn home(&self) -> Option<Instance> {
+        let home = self.inner.borrow().home;
+        if let Some(home) = home.and_then(|id| self.get(id)) {
+            return Some(home);
         }
-        let hub = self.create(Hub::KIND)?;
-        self.inner.borrow_mut().hub = Some(hub.id());
-        Some(hub)
+        let map = crate::game::hub_map(&self.inner.borrow().server)?.clone();
+        let home = self.start(Box::new(Hub::from_env(true)), map)?;
+        self.inner.borrow_mut().home = Some(home.id());
+        Some(home)
     }
 
-    fn open(&self, kind: &str) -> Option<Instance> {
+    /// The fullest hub here with room, or a new one.
+    pub fn hub(&self) -> Option<Instance> {
+        self.matchmake(Hub::KIND)
+    }
+
+    /// The fullest instance of `kind` here that has room.
+    fn fullest(&self, kind: &str) -> Option<Instance> {
+        if kind == Hub::KIND {
+            // Keep the home hub running before anything else is considered.
+            self.home();
+        }
         let mut inner = self.inner.borrow_mut();
         inner.reap();
         inner
             .instances
             .values()
-            .find(|instance| instance.kind() == kind && instance.has_room())
+            .filter(|instance| instance.kind() == kind && instance.has_room())
+            .max_by_key(|instance| instance.population())
             .cloned()
     }
 
-    /// An open instance of `kind` here with room, oldest first, or a new one.
+    /// The fullest instance of `kind` here with room, or a new one.
     pub fn matchmake(&self, kind: &str) -> Option<Instance> {
-        if kind == Hub::KIND {
-            return self.hub();
-        }
-        self.open(kind).or_else(|| self.create(kind))
+        self.fullest(kind).or_else(|| self.create(kind))
     }
 
     /// Resolves a destination on this shard only.
@@ -107,25 +125,36 @@ impl InstanceManager {
         }
     }
 
-    /// Resolves a destination across shards: an open game anywhere first,
-    /// then a new one on the least-loaded shard, preferring this one on ties.
+    /// Resolves a destination across shards: the fullest open instance of its
+    /// kind anywhere (this shard on ties), else a new one on the least-loaded
+    /// shard (this shard on ties).
     pub fn route(&self, destination: Destination) -> Route {
         let shard = self.shard();
-        let local = |instance: Option<Instance>| instance.map_or(Route::Unavailable, Route::Local);
-        match destination {
-            Destination::Instance(id) if id.shard != shard => Route::Remote(id.shard, destination),
-            Destination::Matchmake(kind) if kind != Hub::KIND => {
-                if let Some(open) = self.open(kind) {
-                    return Route::Local(open);
-                }
-                let server = self.inner.borrow().server.clone();
-                let target = server.directory.open(kind).filter(|&other| other != shard);
-                match target.unwrap_or_else(|| self.placement(&server)) {
-                    target if target == shard => local(self.create(kind)),
-                    target => Route::Remote(target, destination),
-                }
+        let kind = match destination {
+            Destination::Instance(id) if id.shard != shard => {
+                return Route::Remote(id.shard, destination);
             }
-            _ => local(self.resolve(destination)),
+            Destination::Instance(id) => {
+                return self.get(id).map_or(Route::Unavailable, Route::Local);
+            }
+            Destination::Hub => Hub::KIND,
+            Destination::Matchmake(kind) => kind,
+        };
+        let remote = Destination::Matchmake(kind);
+        let server = self.inner.borrow().server.clone();
+        let local = self.fullest(kind);
+        match (local, server.directory.fullest(kind, shard)) {
+            (Some(local), Some((other, players))) if players > local.population() => {
+                Route::Remote(other, remote)
+            }
+            (Some(local), _) => Route::Local(local),
+            (None, Some((other, _))) => Route::Remote(other, remote),
+            (None, None) => match self.placement(&server) {
+                target if target == shard => {
+                    self.create(kind).map_or(Route::Unavailable, Route::Local)
+                }
+                target => Route::Remote(target, remote),
+            },
         }
     }
 
@@ -145,20 +174,18 @@ impl InstanceManager {
     }
 
     pub fn publish(&self) {
-        let summary = {
-            let mut inner = self.inner.borrow_mut();
-            inner.reap();
-            let mut open: Vec<&'static str> = Vec::new();
-            for instance in inner.instances.values() {
-                if instance.has_room() && !open.contains(&instance.kind()) {
-                    open.push(instance.kind());
-                }
+        let players = self.online();
+        let inner = &mut *self.inner.borrow_mut();
+        inner.reap();
+        let mut open: Vec<(&'static str, usize)> = Vec::new();
+        for instance in inner.instances.values().filter(|instance| instance.has_room()) {
+            let population = instance.population();
+            match open.iter_mut().find(|(kind, _)| *kind == instance.kind()) {
+                Some((_, fullest)) => *fullest = (*fullest).max(population),
+                None => open.push((instance.kind(), population)),
             }
-            ShardSummary { players: 0, open }
-        };
-        let summary = ShardSummary { players: self.online(), ..summary };
-        let inner = self.inner.borrow();
-        inner.server.directory.publish(inner.shard, summary);
+        }
+        inner.server.directory.publish(inner.shard, ShardSummary { players, open });
     }
 }
 

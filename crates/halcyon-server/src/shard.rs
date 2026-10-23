@@ -69,7 +69,7 @@ pub async fn run(server: Arc<Server>, mesh: Mesh, address: &'static str) {
     let id = senders.peer_id() as u16;
     let shard = Rc::new(Shard { id, senders });
     let instances = InstanceManager::new(server.clone(), id);
-    let Some(hub) = instances.hub() else {
+    let Some(hub) = instances.home() else {
         eprintln!("shard {id}: the hub map is missing; set HALCYON_HUB_MAP");
         return;
     };
@@ -123,7 +123,7 @@ pub async fn run(server: Arc<Server>, mesh: Mesh, address: &'static str) {
                 continue;
             }
         };
-        let Some(hub) = instances.hub() else {
+        let Some(hub) = instances.home() else {
             eprintln!("shard {id}: hub unavailable; dropping connection");
             continue;
         };

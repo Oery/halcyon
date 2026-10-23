@@ -439,7 +439,7 @@ Design expectations and layered architecture: [bots.md](bots.md).
 | --- | --- |
 | Durable player identity and preferences | Not started |
 | Match results and progression records | Not started |
-| Game selection and lobby flow | Partial — players start in the hub and pick a game with `/play`. |
+| Game selection and lobby flow | Partial — players join the fullest hub with room, which opens another hub when full, and pick a game with `/play`. |
 | Spectator and results flow | Not started |
 | Rankings, economy, and unlock systems | Conditional |
 
@@ -448,7 +448,7 @@ Design expectations and layered architecture: [bots.md](bots.md).
 | Feature | Progress |
 | --- | --- |
 | Authoritative simulation ownership | Partial — one owner per instance; instances spread over executors. |
-| Multi-core execution | Partial — one executor per core, each with its own hub; games are placed on the least-loaded core and players move between cores with their connection. No load rebalancing of running games. |
+| Multi-core execution | Partial — one executor per core, players fill one hub across cores before another opens; new games fill or start on the least-loaded core and players move between cores with their connection. No load rebalancing of running games. |
 | Separate decision and simulation scheduling | Not started |
 | Bounded queues and admission | Done |
 | Reusable data and work buffers | Done |

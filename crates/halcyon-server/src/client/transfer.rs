@@ -50,6 +50,15 @@ impl Client {
         if self.handoff.is_some() {
             return Ok(());
         }
+        // Asking for the kind of game the player is already in keeps it there.
+        let kind = match destination {
+            Destination::Hub => Some(crate::game::Hub::KIND),
+            Destination::Matchmake(kind) => Some(kind),
+            Destination::Instance(_) => None,
+        };
+        if kind == Some(self.instance.kind()) {
+            return Ok(());
+        }
         match self.instances.route(destination) {
             Route::Unavailable => self.notify_player("That game is unavailable right now.").await,
             Route::Local(target) if target.id() == self.instance.id() => Ok(()),
@@ -63,6 +72,19 @@ impl Client {
                 self.handoff = Some(Handoff { shard, destination, entity_id });
                 Ok(())
             }
+        }
+    }
+
+    /// First placement after Play Login: the fullest hub with room on any
+    /// shard. The client has loaded no level yet, so nothing is left behind.
+    pub async fn place(&mut self, entity_id: i32) -> Result<(), Error> {
+        match self.instances.route(Destination::Hub) {
+            Route::Local(target) => self.join_instance(target, entity_id).await,
+            Route::Remote(shard, destination) => {
+                self.handoff = Some(Handoff { shard, destination, entity_id });
+                Ok(())
+            }
+            Route::Unavailable => Err(crate::instance::AdmissionError::Closed.into()),
         }
     }
 
@@ -110,12 +132,14 @@ impl Client {
     /// full or stopped, after `leave_instance`.
     async fn join_instance(&mut self, target: Instance, entity_id: i32) -> Result<(), Error> {
         self.instance = target;
-        if let Err(error) = self.reserve_player(Some(entity_id)).await {
+        if let Err(error) = self.reserve_player(entity_id).await {
             let hub = self.instances.hub().filter(|hub| hub.id() != self.instance.id());
             let Some(hub) = hub else { return Err(error) };
             self.instance = hub;
-            self.reserve_player(Some(entity_id)).await?;
+            self.reserve_player(entity_id).await?;
         }
+        // Placement on other shards should count this player straight away.
+        self.instances.publish();
         crate::states::play::enter_instance(self).await
     }
 
@@ -163,9 +187,9 @@ impl Client {
         let shard = shard.clone();
         let instances = instances.clone();
         async move {
-            let Some(hub) = instances.hub() else { return };
+            let Some(home) = instances.home() else { return };
             let stream = parked.stream.map_inner(AcceptedTcpStream::bind_to_executor);
-            let mut client = Client::with_stream(stream, server, shard, instances, hub.clone());
+            let mut client = Client::with_stream(stream, server, shard, instances, home.clone());
             client.ctx = parked.ctx;
             client.login = parked.login;
             client.keepalive = parked.keepalive;
@@ -174,7 +198,7 @@ impl Client {
             client.profile_info = Some(Rc::from(parked.profile_info));
             client.dimension = parked.dimension;
             client.levels = parked.levels;
-            let target = client.instances.resolve(parked.destination).unwrap_or(hub);
+            let target = client.instances.resolve(parked.destination).unwrap_or(home);
             if let Err(error) = client.join_instance(target, parked.entity_id).await {
                 if client.server.diagnostics {
                     eprintln!("dropping connection after handoff: {error}");

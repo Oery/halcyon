@@ -69,7 +69,7 @@ pub trait Game {
 /// A new game of `kind` and the map it plays on.
 pub fn create(kind: &str, server: &Server) -> Option<(Box<dyn Game>, Arc<Map>)> {
     match kind {
-        Hub::KIND => Some((Box::new(Hub::from_env()), hub_map(server)?.clone())),
+        Hub::KIND => Some((Box::new(Hub::from_env(false)), hub_map(server)?.clone())),
         Ffa::KIND => Some((Box::new(Ffa::default()), ffa_map(server)?.clone())),
         _ => None,
     }

@@ -44,6 +44,11 @@ impl GameCtx<'_> {
         ids
     }
 
+    /// `players().len()` without collecting them.
+    pub fn player_count(&self) -> usize {
+        self.registry.players.values().filter(|player| !player.input.closed.get()).count()
+    }
+
     pub fn name(&self, player: i32) -> Option<&str> {
         Some(&self.registry.players.get(&player)?.snapshot.profile.username)
     }

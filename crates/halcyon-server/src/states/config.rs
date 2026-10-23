@@ -15,9 +15,13 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
             if client.login != crate::lifecycle::LoginProgress::Complete {
                 return Err(Error::UnexpectedResponse);
             }
-            // Reserve a unique entity ID before the client creates its local player.
-            client.reserve_player(None).await?;
-            let entity_id = client.entity_id()?;
+            client.claim_identity().await?;
+            // The player keeps this entity ID in every instance it visits.
+            let entity_id = client
+                .server
+                .entity_ids
+                .next()
+                .ok_or(crate::instance::AdmissionError::IdExhausted)?;
             client
                 .send(&PlayLogin {
                     entity_id,
@@ -28,9 +32,11 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
                     ..PlayLogin::default()
                 })
                 .await?;
-            super::play::enter_play(client).await?;
+            let server = client.server.clone();
+            client.send_encoded(&server.packets.commands).await?;
             client.ctx.state = mc_protocol::State::Play;
-            return Ok(());
+            // The fullest hub with room, which may be on another shard.
+            return client.place(entity_id).await;
         }
         _ => return Err(Error::UnexpectedResponse),
     };

@@ -347,12 +347,6 @@ async fn send_skin(client: &mut Client) -> Result<(), Error> {
 
     Ok(())
 }
-pub async fn enter_play(client: &mut Client) -> Result<(), Error> {
-    let server = client.server.clone();
-    client.send_encoded(&server.packets.commands).await?;
-    enter_instance(client).await
-}
-
 /// Everything a client needs once it has a session in its current instance,
 /// both after login and after moving between instances.
 pub async fn enter_instance(client: &mut Client) -> Result<(), Error> {
