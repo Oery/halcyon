@@ -1169,7 +1169,7 @@ fn spire_climb_scenario() {
     for bot in &bots {
         let stats = bot.brain.stats;
         eprintln!(
-            "bot level={} mode={:?} checkpoint={} max_y={:.1} y={:.1} finished_at={:?} falls={} deaths={} edges={}",
+            "bot level={} mode={:?} checkpoint={} max_y={:.1} y={:.1} finished_at={:?} falls={} deaths={} edges={} stalled={} explored={}",
             bot.brain.profile.level,
             bot.brain.mode(),
             bot.brain.checkpoint(),
@@ -1179,6 +1179,8 @@ fn spire_climb_scenario() {
             stats.falls,
             bot.deaths,
             stats.edges_done,
+            stats.stalled,
+            stats.explored,
         );
         rows.push(json!({
             "level": bot.brain.profile.level,
@@ -1186,6 +1188,8 @@ fn spire_climb_scenario() {
             "finished_at": stats.finished_at,
             "falls": stats.falls,
             "deaths": bot.deaths,
+            "stalled": stats.stalled,
+            "explored": stats.explored,
         }));
     }
     let stats = nav.stats();

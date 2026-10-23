@@ -426,7 +426,7 @@ Design expectations and layered architecture: [bots.md](bots.md).
 | Perception and short-term memory | Not started |
 | Humanlike decisions and reaction timing | Partial — eased, rate-limited aiming with tremor, committed aim error, late key presses and hesitation before hard jumps; no perception or reaction model yet. |
 | Bot combat and item use | Not started |
-| Bot navigation and local steering | Partial — lazily validated walk/drop/jump/ladder/vine/slime-bounce graph, gold-plate checkpoints, budgeted A*, closed-loop edge execution, swim-to-shore recovery and checkpoint returns when trapped; no swimming routes, momentum chaining or neo jumps. |
+| Bot navigation and local steering | Partial — lazily validated walk/drop/jump/ladder/vine/slime-bounce graph, gold-plate checkpoints, budgeted A* with search-ahead and exploring while a route is unknown, closed-loop edge execution, swim-to-shore recovery and checkpoint returns when trapped; no swimming routes, momentum chaining or neo jumps. |
 | Navigation invalidation after edits | Partial — arena column revisions drop cached cells and edges nearby; unit-tested, not exercised by a live minigame. |
 | Team coordination and game objectives | Not started |
 | Difficulty and behavior profiles | Partial — a fixed per-bot level (`HALCYON_BOT_LEVEL`) sets aim, timing, hesitation and risk aversion; no traits or in-match state yet. |

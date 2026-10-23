@@ -267,15 +267,21 @@ Code: `crates/halcyon-server/src/bot/`. Tests: `src/tests/tests_bot_*.rs`. Real-
 
 ### Search and execution
 
-- **Search** (`nav/search.rs`): weighted A*. The heuristic counts horizontal distance plus about 15 ticks per block of height. Edge cost is ticks, plus risk aversion × (1 − robustness), plus remembered failures. Searches resume across ticks under a shared validation budget (`HALCYON_BOT_NAV_MS`, default 4 ms per tick). They return a partial route to the closest cell when the goal is unreachable.
+- **Search** (`nav/search.rs`): weighted A*. The heuristic counts horizontal distance plus about 15 ticks per block of height. Edge cost is ticks, plus risk aversion × (1 − robustness), plus remembered failures. Searches resume across ticks under a shared validation budget (`HALCYON_BOT_NAV_MS`, default 8 ms per tick). They return a partial route to the closest cell when the goal is unreachable.
+- **No waiting on the planner:** a bot never stands still while a search runs.
+  - It searches the next stretch (past a checkpoint, or on from a partial route's end) while walking the current one.
+  - With no route yet, it explores: one plausible move at a time toward its target, using validated edges and skipping long drops, fragile jumps and recently visited cells. A few walks are validated even when the shared budget is spent.
+  - When the search delivers, the bot joins the route where it stands, or finds a short way back onto it. Otherwise the search restarts from where the bot is, using cached validations.
+  - When no route exists, it explores a few moves before searching again.
 - **Execution:** the brain (`brain.rs`) follows a route edge by edge with the same controller:
   - jumps back up to the run-up point, line up, hesitate, then commit;
   - walks steer cell to cell, leaning along a wall to round its corner on diagonals;
+  - movement keys are chosen relative to where the camera points, so a bot still turning strafes straight to its mark instead of walking an arc around it;
   - climbs push into ladders or hold jump on vines;
   - a grabbed ladder is held (sneaking, steering out the drift) before climbing on.
 
   The motor (`motor.rs`) adds humanlike error: eased, rate-limited turning, tremor, committed aim error and occasional late jump presses.
-- **Failure handling:** a failed edge is remembered and penalised for that bot, which pauses and replans. In water, the bot swims to the nearest floor and replans.
+- **Failure handling:** a failed edge is remembered and penalised for that bot, which replans as soon as it lands, without a pause. A search started nearby survives the fall. In water, the bot swims to the nearest floor (still searching) and replans.
 - **Cadence:** live bots decide once per simulation step, woken by the owner's publication.
 
 ### Profiles
@@ -288,7 +294,7 @@ Code: `crates/halcyon-server/src/bot/`. Tests: `src/tests/tests_bot_*.rs`. Real-
 | --- | --- |
 | `cargo test --release -p halcyon-server spire_climb_scenario -- --ignored --nocapture` | Headless bots on a real map. Reports route existence, simulation cost, per-bot progress and, when the route is partial, a frontier report. |
 | `survey_map`, `survey_layers`, `survey_box`, `survey_inventory`, `survey_raised_water`, `survey_lily_pads`, `geometric_route`, `trace_edge` | Map forensics: height maps, slices, block inventories, optimistic routes and tick-by-tick traces of one edge. |
-| `HALCYON_DIAGNOSTICS=1` | Prints a `bots:` line every 5 s: modes, failures by cause, heights and navigation cache and cost. |
+| `HALCYON_DIAGNOSTICS=1` | Prints a `bots:` line every 5 s: modes, ticks stalled and moves explored, failures by cause, heights and navigation cache and cost. |
 | `HALCYON_BOT_TRACE=<name>` or `all` | Traces one bot (e.g. `Bot45`) or every bot: mode, position, route and current edge each second, and the cached moves around it when a search fails. |
 | `HALCYON_BOT_CHECKPOINT=n` | Starts every bot on the n-th checkpoint (from 1), heading for the next, to work on later parts of a course without waiting for the climb. A fallen bot returns there. |
 | `geometric_route` with `HALCYON_ROUTE_FROM`/`HALCYON_ROUTE_TO` | One leg, e.g. between checkpoints: optimistic route, near misses and a reached/unreached height map. |

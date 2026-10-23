@@ -321,7 +321,9 @@ impl EdgeRun {
         }
         let mut intent = self.look(position, self.towards_target(position));
         if position.on_ground || self.edge.kind == EdgeKind::Walk {
-            intent.forward = true;
+            // Head for the target even while the camera is still coming
+            // round, rather than walking an arc around it.
+            press_toward(&mut intent, sub(self.target, [position.x, position.z]), position.yaw);
             intent.sprint = self.edge.plan.sprint;
             // Leaving a climbable upwards: keep climbing until over the ledge.
             intent.jump = self.from_kind.climbable() && self.edge.to_feet > position.y + 0.1;
@@ -329,7 +331,9 @@ impl EdgeRun {
                 // Centring on the current cell: coast in rather than orbit.
                 let to = sub(self.target, [position.x, position.z]);
                 let speed = obs.velocity[0].hypot(obs.velocity[2]);
-                intent.forward = to[0].hypot(to[1]) > speed * 2.5 + 0.15;
+                if to[0].hypot(to[1]) <= speed * 2.5 + 0.15 {
+                    press_toward(&mut intent, [0.0; 2], position.yaw);
+                }
             }
         } else {
             self.air_control(obs, &mut intent);
@@ -352,16 +356,25 @@ impl EdgeRun {
                 let error = along + f64::from(self.edge.plan.runup);
                 let moving = dot([obs.velocity[0], obs.velocity[2]], self.dir);
                 // Press only when not already coasting onto the mark.
-                if error > tolerance && moving * -4.0 < error {
-                    intent.backward = true;
+                let back = if error > tolerance && moving * -4.0 < error {
+                    -1.0
                 } else if error < -tolerance && moving * 4.0 < -error {
-                    intent.forward = true;
-                }
-                if lateral > tolerance {
-                    intent.right = true;
+                    1.0
+                } else {
+                    0.0
+                };
+                let side = if lateral > tolerance {
+                    -1.0
                 } else if lateral < -tolerance {
-                    intent.left = true;
-                }
+                    1.0
+                } else {
+                    0.0
+                };
+                // Keys move relative to the camera, which may still be turning
+                // onto the jump line.
+                let want =
+                    [self.dir[0] * back + left[0] * side, self.dir[1] * back + left[1] * side];
+                press_toward(&mut intent, want, position.yaw);
                 let placed = error.abs() <= tolerance * 1.5
                     && lateral.abs() <= tolerance * 1.5
                     && speed < STILL;
@@ -561,6 +574,23 @@ impl EdgeRun {
             intent.backward = true;
         }
     }
+}
+
+/// Press the movement keys that best push towards world direction `want`
+/// with the camera at `yaw`: the nearest of the eight key combinations, or
+/// none for a zero vector.
+fn press_toward(intent: &mut Intent, want: [f64; 2], yaw: f32) {
+    let yaw = f64::from(yaw).to_radians();
+    let forward = [-yaw.sin(), yaw.cos()];
+    let left = [forward[1], -forward[0]];
+    let (ahead, side) = (dot(want, forward), dot(want, left));
+    let pressed = ahead.hypot(side) > 1e-9;
+    // Eight 45-degree sectors around the camera, 0 straight ahead.
+    let sector = (side.atan2(ahead) / std::f64::consts::FRAC_PI_4).round() as i32;
+    intent.forward = pressed && sector.abs() <= 1;
+    intent.backward = pressed && sector.abs() >= 3;
+    intent.left = pressed && (1..=3).contains(&sector);
+    intent.right = pressed && (-3..=-1).contains(&sector);
 }
 
 /// Stop moving: counter-steer against the current velocity.

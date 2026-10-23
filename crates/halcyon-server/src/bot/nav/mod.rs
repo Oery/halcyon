@@ -242,6 +242,21 @@ impl NavService {
         known.map_or(Validation::Invalid, Validation::Valid)
     }
 
+    /// Validate a walk or drop even when the budget is spent: a bot with no
+    /// route needs some move, and these cost at most a short simulation.
+    pub fn validate_step(
+        &mut self,
+        view: &impl BlockView,
+        from: Cell,
+        candidate: &Candidate,
+    ) -> Option<Edge> {
+        debug_assert!(matches!(candidate.kind, EdgeKind::Walk | EdgeKind::Drop));
+        let start = Instant::now();
+        let edge = self.graph.validate(view, from, candidate);
+        self.spent += start.elapsed();
+        edge
+    }
+
     /// Drop cached navigation around columns edited since the last call.
     pub fn sync(&mut self, arena: &Arena) {
         if self.arena_revision == Some(arena.revision) {

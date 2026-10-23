@@ -48,6 +48,9 @@ const GOAL_RADIUS: i32 = 128;
 #[derive(Default)]
 struct Report {
     bots: Vec<(Mode, f64, [u32; 3], usize)>,
+    /// Ticks stalled and moves explored, summed over bots.
+    stalled: u64,
+    explored: u64,
 }
 
 /// Spawn `count` bots on the current executor. They share one navigation
@@ -95,7 +98,11 @@ pub fn spawn(server: Arc<Server>, lobby: Lobby, count: usize, seed: u64) {
         println!("bots: starting on checkpoint {n} at {cell:?}");
     }
     let nav = Rc::new(RefCell::new(service));
-    let report = Rc::new(RefCell::new(Report { bots: vec![(Mode::Idle, 0.0, [0; 3], 0); count] }));
+    let report = Rc::new(RefCell::new(Report {
+        bots: vec![(Mode::Idle, 0.0, [0; 3], 0); count],
+        stalled: 0,
+        explored: 0,
+    }));
     let (low, high) = profile::parse_levels(std::env::var("HALCYON_BOT_LEVEL").ok().as_deref());
     for index in 0..count {
         let server = server.clone();
@@ -137,14 +144,14 @@ async fn report_loop(nav: Rc<RefCell<NavService>>, report: Rc<RefCell<Report>>) 
             .iter()
             .fold([0u32; 3], |sum, (_, _, f, _)| [sum[0] + f[0], sum[1] + f[1], sum[2] + f[2]]);
         eprintln!(
-            "bots: idle={} planning={} moving={} recovering={} swimming={} finished={} stuck={} fell={} missed={} timeouts={} checkpoint_median={} checkpoint_max={}/{} y_median={:.1} y_max={:.1} nav_nodes={} nav_edges={} nav_cells={} sims={} sim_ticks={} build_ms={} expansions={}",
+            "bots: idle={} exploring={} moving={} swimming={} finished={} stalled={} explored={} fell={} missed={} timeouts={} checkpoint_median={} checkpoint_max={}/{} y_median={:.1} y_max={:.1} nav_nodes={} nav_edges={} nav_cells={} sims={} sim_ticks={} build_ms={} expansions={}",
             count(Mode::Idle),
-            count(Mode::Planning),
+            count(Mode::Exploring),
             count(Mode::Moving),
-            count(Mode::Recovering),
             count(Mode::Swimming),
             count(Mode::Finished),
-            count(Mode::Stuck),
+            report.stalled,
+            report.explored,
             failures[0],
             failures[1],
             failures[2],
@@ -229,6 +236,7 @@ async fn run(server: Arc<Server>, lobby: Lobby, bot: Bot) -> Result<(), crate::e
     }
     let mut body = Body::default();
     let mut decided_at = None;
+    let (mut stalled, mut explored) = (0, 0);
     loop {
         // Decide once per simulation step, right after the owner publishes
         // it, so every observation is fresh and every input lands on the next
@@ -274,8 +282,11 @@ async fn run(server: Arc<Server>, lobby: Lobby, bot: Bot) -> Result<(), crate::e
             });
             session.teleport(to);
         }
-        report.borrow_mut().bots[index] =
-            (brain.mode(), position.y, brain.stats.failures, brain.checkpoint());
+        let mut report = report.borrow_mut();
+        report.bots[index] = (brain.mode(), position.y, brain.stats.failures, brain.checkpoint());
+        report.stalled += u64::from(brain.stats.stalled - stalled);
+        report.explored += u64::from(brain.stats.explored - explored);
+        (stalled, explored) = (brain.stats.stalled, brain.stats.explored);
     }
 }
 

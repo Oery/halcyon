@@ -62,8 +62,33 @@ fn weak_bots_climb_too_with_mistakes_and_recoveries() {
             bot.brain.stats, bot.deaths
         );
         falls += bot.brain.stats.falls;
+        // Falls cost no pause: a fall replans as soon as the bot lands.
+        assert!(bot.brain.stats.stalled <= bot.brain.stats.replans + 4, "{:?}", bot.brain.stats);
     }
     eprintln!("level 0 falls over four climbs: {falls}");
+}
+
+#[test]
+fn a_bot_explores_to_its_goal_while_its_search_waits() {
+    let mut view = MapView::default();
+    view.floor([0, 12], 10, [-2, 2]);
+    // No planning time at all: the search never gets anywhere.
+    let mut nav = NavService::new(Budget::PerWindow {
+        limit: std::time::Duration::ZERO,
+        window: std::time::Duration::from_secs(3_600),
+    });
+    nav.goal = Some([12, 11, 0]);
+    let spawn = Transform { x: 0.5, y: 11.0, z: 0.5, on_ground: true, ..Transform::default() };
+    let mut bot = SimBot::new(BotProfile::new(60), 3, spawn);
+    for _ in 0..400 {
+        bot.step(&mut nav, &view);
+        if bot.brain.mode() == Mode::Finished {
+            break;
+        }
+    }
+    assert_eq!(bot.brain.mode(), Mode::Finished, "at {:?}", bot.position());
+    assert!(bot.brain.stats.explored >= 6, "{:?}", bot.brain.stats);
+    assert!(bot.brain.stats.stalled <= 2, "{:?}", bot.brain.stats);
 }
 
 #[test]
