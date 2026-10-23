@@ -1,6 +1,6 @@
 use super::*;
 use crate::arena::test_world;
-use crate::lobby::Transform;
+use crate::instance::Transform;
 use halcyon_world::blockstates::block_state_id;
 use mc_protocol::types::ItemStack;
 

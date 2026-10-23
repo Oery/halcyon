@@ -7,7 +7,7 @@ use halcyon_world::{
 
 use super::collision::{intersects, player_box, translate};
 use super::{CELLS_PER_PROPOSAL, CELLS_PER_STEP, EPSILON, HALF_WIDTH, MAX_COLLIDERS};
-use crate::lobby::Transform;
+use crate::instance::Transform;
 
 #[derive(Clone, Copy)]
 pub(super) struct GroundContact {

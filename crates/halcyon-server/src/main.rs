@@ -16,10 +16,10 @@ mod commands;
 mod effects;
 mod encryption;
 mod error;
+mod instance;
 mod interaction;
 mod inventory;
 mod lifecycle;
-mod lobby;
 mod movement;
 mod packet;
 mod player;
@@ -39,7 +39,7 @@ async fn main() -> std::io::Result<()> {
     let lobby = halcyon_world::World::load(std::path::Path::new("worlds/Parkour Spiral"))
         .map_err(std::io::Error::other)?;
     let server = Arc::new(Server::new(lobby).await.map_err(std::io::Error::other)?);
-    let players = lobby::Lobby::spawn(server.lobby.clone(), server.diagnostics)
+    let players = instance::Instance::spawn(server.lobby.clone(), server.diagnostics)
         .map_err(std::io::Error::other)?;
 
     // Temporary until matches own bot populations: HALCYON_BOTS=<count>.

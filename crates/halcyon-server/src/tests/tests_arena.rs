@@ -11,7 +11,7 @@ fn rejected_multi_cell_edits_leave_revisions_schedules_and_terrain_untouched() {
     assert_eq!(arena.view(&base).block_at(8, 70, 8), Some(0));
 }
 use crate::{
-    lobby::Transform,
+    instance::Transform,
     movement::{MovementProposal, MovementState, ProposalQueue},
     player::{ActionQueue, PlayerState},
 };

@@ -2,7 +2,7 @@ use halcyon_commands::{CommandArgs, CommandValue, PlayerName};
 use mc_protocol::types::GameMode;
 
 use super::CommandError;
-use crate::lobby::Lobby;
+use crate::instance::Instance;
 
 #[derive(Debug, CommandValue)]
 #[value(into = GameMode)]
@@ -25,9 +25,14 @@ pub(super) struct GameModeCommand<'p> {
 }
 
 impl GameModeCommand<'_> {
-    pub(super) async fn execute(self, lobby: &Lobby, sender: i32) -> Result<String, CommandError> {
+    pub(super) async fn execute(
+        self,
+        instance: &Instance,
+        sender: i32,
+    ) -> Result<String, CommandError> {
         let mode = self.mode.into();
-        let name = lobby.set_game_mode(sender, self.target.map(PlayerName::as_str), mode).await?;
+        let name =
+            instance.set_game_mode(sender, self.target.map(PlayerName::as_str), mode).await?;
         Ok(format!("Set {name}'s game mode to {mode}."))
     }
 }

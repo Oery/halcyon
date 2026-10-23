@@ -8,7 +8,7 @@ use mc_protocol::types::{Nbt, VarInt};
 
 use crate::Client;
 use crate::error::Error;
-use crate::lobby::{Lobby, Registry};
+use crate::instance::{Instance, Registry};
 
 mod gamemode;
 mod give;
@@ -37,11 +37,11 @@ enum Command<'p> {
 }
 
 impl Command<'_> {
-    async fn execute(self, lobby: &Lobby, sender: i32) -> Result<String, CommandError> {
+    async fn execute(self, instance: &Instance, sender: i32) -> Result<String, CommandError> {
         match self {
-            Self::GameMode(command) => command.execute(lobby, sender).await,
-            Self::Teleport(command) => command.execute(lobby, sender).await,
-            Self::Give(command) => command.execute(lobby, sender).await,
+            Self::GameMode(command) => command.execute(instance, sender).await,
+            Self::Teleport(command) => command.execute(instance, sender).await,
+            Self::Give(command) => command.execute(instance, sender).await,
         }
     }
 }
@@ -53,7 +53,7 @@ pub async fn execute(text: &str, client: &mut Client) -> Result<(), Error> {
             .as_ref()
             .filter(|session| session.ready())
             .ok_or(CommandError::NotReady)?;
-        Command::parse(text)?.execute(&client.lobby, session.entity_id()).await
+        Command::parse(text)?.execute(&client.instance, session.entity_id()).await
     }
     .await;
     let failed = result.is_err();
@@ -129,7 +129,7 @@ impl CompletionContext for Registry {
 }
 
 pub async fn suggest(text: &str, transaction_id: i32, client: &mut Client) -> Result<(), Error> {
-    let completion = client.lobby.with_registry(|registry| complete(text, registry));
+    let completion = client.instance.with_registry(|registry| complete(text, registry));
     client
         .send(&CommandSuggestionsResponse {
             transaction_id,

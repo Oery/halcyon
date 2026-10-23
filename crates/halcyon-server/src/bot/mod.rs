@@ -15,7 +15,7 @@ use mc_protocol::packets::Payload;
 use mc_protocol::packets::client::PlayerInfoUpdate;
 use uuid::Uuid;
 
-use crate::lobby::{Lobby, Profile, Session, Transform};
+use crate::instance::{Instance, Profile, Session, Transform};
 use crate::movement::MovementInput;
 use crate::server::Server;
 
@@ -58,7 +58,7 @@ struct Report {
 
 /// Spawn `count` bots on the current executor. They share one navigation
 /// service, so routes validated for one bot are reused by all.
-pub fn spawn(server: Arc<Server>, lobby: Lobby, count: usize, seed: u64) {
+pub fn spawn(server: Arc<Server>, lobby: Instance, count: usize, seed: u64) {
     if count == 0 {
         return;
     }
@@ -190,7 +190,7 @@ struct Bot {
     report: Rc<RefCell<Report>>,
 }
 
-async fn run(server: Arc<Server>, lobby: Lobby, bot: Bot) -> Result<(), crate::error::Error> {
+async fn run(server: Arc<Server>, lobby: Instance, bot: Bot) -> Result<(), crate::error::Error> {
     let Bot { index, seed, profile: skill, start, nav, report } = bot;
     let mut rng = Rng::new(seed);
     let username = format!("Bot{}", index + 1);
@@ -227,7 +227,7 @@ async fn run(server: Arc<Server>, lobby: Lobby, bot: Bot) -> Result<(), crate::e
     // reconnecting client rather than giving up.
     let session = loop {
         match lobby.register(profile.clone(), spawn, 0x7f).await {
-            Err(crate::lobby::AdmissionError::QueueFull) => {
+            Err(crate::instance::AdmissionError::QueueFull) => {
                 Timer::new(TICK).await;
             }
             result => break result?,

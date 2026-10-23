@@ -19,13 +19,13 @@ impl Client {
 
     pub async fn send_encoded_buffer(&mut self) -> Result<(), Error> {
         let bytes = write_parts(&mut self.stream, [&self.packet_buffer]).await?;
-        self.lobby.record_sent(bytes);
+        self.instance.record_sent(bytes);
         Ok(())
     }
 
     pub async fn send_encoded(&mut self, bytes: &[u8]) -> Result<(), Error> {
         let bytes = write_parts(&mut self.stream, [bytes]).await?;
-        self.lobby.record_sent(bytes);
+        self.instance.record_sent(bytes);
         Ok(())
     }
 
@@ -36,13 +36,13 @@ impl Client {
         suffix: &[u8],
     ) -> Result<(), Error> {
         let bytes = write_parts(&mut self.stream, [header, data, suffix]).await?;
-        self.lobby.record_sent(bytes);
+        self.instance.record_sent(bytes);
         Ok(())
     }
 
     pub async fn send_buffered_chunk(&mut self, data: &[u8], suffix: &[u8]) -> Result<(), Error> {
         let bytes = write_parts(&mut self.stream, [&self.packet_buffer, data, suffix]).await?;
-        self.lobby.record_sent(bytes);
+        self.instance.record_sent(bytes);
         Ok(())
     }
 }

@@ -9,8 +9,8 @@ use futures_lite::{AsyncWrite, AsyncWriteExt, future::block_on};
 use mc_protocol::packets::{Payload, client::*};
 
 use crate::encryption::ciphers;
+use crate::instance::Registry;
 use crate::inventory::InventorySlot;
-use crate::lobby::Registry;
 use crate::player::PlayerUpdate;
 use crate::transport::ClientStream;
 use crate::visibility::{Observer, WRITE_SLICE_BYTES, WRITE_SLICE_FRAMES};

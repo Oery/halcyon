@@ -23,8 +23,8 @@ pub enum Error {
     #[error("the imported lobby spawn has no nearby clear destination on supported terrain")]
     UnsupportedSpawn,
 
-    #[error("lobby admission failed: {0}")]
-    Admission(#[from] crate::lobby::AdmissionError),
+    #[error("instance admission failed: {0}")]
+    Admission(#[from] crate::instance::AdmissionError),
 
     #[error("player output backlog exceeded its limit")]
     PlayerBacklog,

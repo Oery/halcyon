@@ -1,4 +1,4 @@
-//! Lobby scheduling, registration handling and aggregate diagnostics.
+//! Instance scheduling, registration handling and aggregate diagnostics.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -149,7 +149,7 @@ pub(super) async fn run_owner(
                         observers.accumulate(player.input.observer_metrics.get());
                     }
                     eprintln!(
-                        "lobby: players={} reserved={} ticks={} max_tick_us={} cpu_p95_us={} cpu_p99_us={} lateness_p95_us={} lateness_p99_us={} overruns={} skipped_steps={} proposals={} collision_cells={} corrections={} registration_slice_peak={} registration_queue={} registration_queue_peak={} coalesced={} sent_bytes={} slow_clients={} visible_edges={} roster_entries={} queued_bytes={} queued_frames={} observer_high_water_bytes={} observer_coalesced={} observer_sent_bytes={}",
+                        "instance: players={} reserved={} ticks={} max_tick_us={} cpu_p95_us={} cpu_p99_us={} lateness_p95_us={} lateness_p99_us={} overruns={} skipped_steps={} proposals={} collision_cells={} corrections={} registration_slice_peak={} registration_queue={} registration_queue_peak={} coalesced={} sent_bytes={} slow_clients={} visible_edges={} roster_entries={} queued_bytes={} queued_frames={} observer_high_water_bytes={} observer_coalesced={} observer_sent_bytes={}",
                         registry.active_count(),
                         registry.players.len(),
                         ticks,

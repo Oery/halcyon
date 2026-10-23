@@ -11,7 +11,7 @@ use super::moves::Candidate;
 use super::stand::{Stand, stand};
 use super::{Cell, Edge, EdgeKind, NavStats};
 use crate::arena::Column;
-use crate::lobby::Transform;
+use crate::instance::Transform;
 use crate::movement::MovementState;
 
 pub struct NavGraph {

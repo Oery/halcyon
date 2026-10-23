@@ -6,7 +6,7 @@ use halcyon_world::BlockView;
 use super::brain::Brain;
 use super::nav::NavService;
 use super::profile::BotProfile;
-use crate::lobby::Transform;
+use crate::instance::Transform;
 use crate::movement::MovementState;
 
 /// Below this the server's void damage would kill the player.

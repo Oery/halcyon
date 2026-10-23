@@ -2,7 +2,7 @@
 
 use super::tests::player;
 use super::*;
-use crate::lobby::Profile;
+use crate::instance::Profile;
 
 #[test]
 #[ignore = "manual synthetic lobby fanout measurement; no sockets or gameplay actors"]

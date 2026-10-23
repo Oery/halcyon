@@ -3,7 +3,7 @@
 use halcyon_world::Aabb;
 
 use super::{EDGE_INCREMENT, EPSILON, HALF_WIDTH, SNEAKING_HEIGHT, STANDING_HEIGHT, STEP_HEIGHT};
-use crate::lobby::Transform;
+use crate::instance::Transform;
 
 pub(super) fn player_box(position: Transform, sneaking: bool) -> Aabb {
     player_box_with_height(position, if sneaking { SNEAKING_HEIGHT } else { STANDING_HEIGHT })

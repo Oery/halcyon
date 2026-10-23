@@ -8,7 +8,7 @@ use halcyon_world::{
 };
 
 use super::Cell;
-use crate::lobby::Transform;
+use crate::instance::Transform;
 use crate::movement::MovementState;
 
 const EPSILON: f64 = 1e-6;

@@ -12,7 +12,7 @@ use super::nav::stand::cell_of;
 use super::nav::{Cell, Edge, EdgeKind, NavService, Validation};
 use super::profile::BotProfile;
 use super::rng::Rng;
-use crate::lobby::Transform;
+use crate::instance::Transform;
 use crate::movement::MovementInput;
 
 /// Graph expansions a bot may spend per tick while planning.

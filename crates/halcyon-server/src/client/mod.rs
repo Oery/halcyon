@@ -12,9 +12,9 @@ use std::time::{Duration, Instant};
 use crate::{
     chunks::{self, ChunkTracker},
     error::Error,
+    instance::{Instance, Session, Transform},
     inventory::HotbarSlot,
     lifecycle::{Keepalive, LOGIN_TIMEOUT, LoginProgress},
-    lobby::{Lobby, Session, Transform},
     packet::read_packet,
     server::Server,
     states::handle_packet,
@@ -42,7 +42,7 @@ pub struct Client {
     pub sprinting: bool,
     /// The followed player while this spectator views through its camera.
     pub camera: Option<i32>,
-    pub lobby: Lobby,
+    pub instance: Instance,
     pub session: Option<Session>,
     pub profile_info: Option<Rc<[u8]>>,
     observer: Observer,
@@ -71,7 +71,7 @@ pub async fn with_deadline<T>(
 }
 
 impl Client {
-    pub fn new(stream: TcpStream, server: Arc<Server>, lobby: Lobby) -> Self {
+    pub fn new(stream: TcpStream, server: Arc<Server>, instance: Instance) -> Self {
         let now = Instant::now();
         Self {
             game_mode: Default::default(),
@@ -85,7 +85,7 @@ impl Client {
             sneaking: false,
             sprinting: false,
             camera: None,
-            lobby,
+            instance,
             session: None,
             profile_info: None,
             observer: Observer::default(),
@@ -155,7 +155,7 @@ impl Client {
         // Release the reservation even when callers retain the Client after run.
         self.session.take();
         if matches!(result, Err(Error::PlayerBacklog)) {
-            self.lobby.record_slow_client();
+            self.instance.record_slow_client();
         }
         if let Err(error) = result {
             // Routine protocol errors and disconnects must not become a
@@ -205,7 +205,7 @@ impl Client {
             }
             if self.observer.has_pending()
                 || self.world_observer.pending_work()
-                || self.lobby.with_registry(|registry| self.effects.pending(&registry.effects))
+                || self.instance.with_registry(|registry| self.effects.pending(&registry.effects))
             {
                 wake = wake.min(Instant::now());
             }

@@ -1,6 +1,6 @@
 use super::frame::{movement_frame, rendered};
 use super::*;
-use crate::lobby::Profile;
+use crate::instance::Profile;
 use mc_protocol::packets::PacketWriter;
 use mc_protocol::packets::Payload;
 use mc_protocol::packets::client::PlayerInfoUpdate;

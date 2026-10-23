@@ -433,7 +433,7 @@ impl WorldObserver {
     }
 }
 
-pub fn resync_cells(position: crate::lobby::Transform) -> impl Iterator<Item = BlockPos> {
+pub fn resync_cells(position: crate::instance::Transform) -> impl Iterator<Item = BlockPos> {
     let [x, y, z] = [position.x, position.y, position.z].map(|n| n.floor() as i32);
     (x - 1..=x + 1).flat_map(move |bx| {
         (y - 1..=y + 2).flat_map(move |by| (z - 1..=z + 1).map(move |bz| [bx, by, bz]))

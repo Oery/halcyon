@@ -10,7 +10,7 @@ pub struct Server {
 impl Server {
     pub async fn new(mut lobby: halcyon_world::World) -> Result<Server, crate::error::Error> {
         let (x, y, z, yaw, pitch) = lobby.spawn;
-        let spawn = crate::lobby::Transform { x, y, z, yaw, pitch, on_ground: false };
+        let spawn = crate::instance::Transform { x, y, z, yaw, pitch, on_ground: false };
         let safe_spawn = crate::movement::resolve_spawn(&lobby, spawn)
             .ok_or(crate::error::Error::UnsupportedSpawn)?;
         if safe_spawn != spawn {

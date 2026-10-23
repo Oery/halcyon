@@ -1,7 +1,7 @@
 use halcyon_commands::{CommandArgs, PlayerName, Position};
 
 use super::CommandError;
-use crate::lobby::{Lobby, TeleportDestination};
+use crate::instance::{Instance, TeleportDestination};
 
 #[derive(Debug, CommandArgs)]
 pub(super) enum TpCommand<'p> {
@@ -34,7 +34,11 @@ pub(super) struct TargetPlayer<'p> {
 }
 
 impl TpCommand<'_> {
-    pub(super) async fn execute(self, lobby: &Lobby, sender: i32) -> Result<String, CommandError> {
+    pub(super) async fn execute(
+        self,
+        instance: &Instance,
+        sender: i32,
+    ) -> Result<String, CommandError> {
         let (target, destination) = match self {
             Self::Position(args) => (None, TeleportDestination::Position(args.location)),
             Self::Player(args) => (None, TeleportDestination::Player(args.destination.as_str())),
@@ -45,7 +49,7 @@ impl TpCommand<'_> {
                 (Some(args.target.as_str()), TeleportDestination::Player(args.destination.as_str()))
             }
         };
-        let (name, position) = lobby.teleport_player(sender, target, destination).await?;
+        let (name, position) = instance.teleport_player(sender, target, destination).await?;
         Ok(format!("Teleported {name} to {}, {}, {}.", position.x, position.y, position.z))
     }
 }

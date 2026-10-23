@@ -10,12 +10,12 @@ use halcyon_world::World;
 use mc_protocol::packets::client::InteractionHand;
 use mc_protocol::types::{GameMode, ItemStack};
 
+use crate::instance::Transform;
 use crate::inventory::{
     HotbarSlot, Inventory, InventoryAction, InventoryChange, InventoryError, InventorySlot,
     InventorySnapshot,
 };
 use crate::lifecycle::{Damage, DamageKind, DamageResult, PlayerLife, PlayerRules, Teleport};
-use crate::lobby::Transform;
 use crate::movement::{Advance, MovementInput, MovementState, ProposalQueue};
 
 const ACTIONS_PER_STEP: usize = 4;

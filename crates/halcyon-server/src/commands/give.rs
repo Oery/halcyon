@@ -3,7 +3,7 @@ use mc_protocol::data::items::ITEMS;
 use mc_protocol::types::ItemStack;
 
 use super::CommandError;
-use crate::lobby::Lobby;
+use crate::instance::Instance;
 
 #[derive(Debug)]
 pub(super) struct ItemName<'p>(&'p str);
@@ -57,7 +57,11 @@ pub(super) struct GiveCommand<'p> {
 }
 
 impl GiveCommand<'_> {
-    pub(super) async fn execute(self, lobby: &Lobby, sender: i32) -> Result<String, CommandError> {
+    pub(super) async fn execute(
+        self,
+        instance: &Instance,
+        sender: i32,
+    ) -> Result<String, CommandError> {
         let name = self.item.0.strip_prefix("minecraft:").unwrap_or(self.item.0);
         let id = ITEMS
             .iter()
@@ -69,7 +73,7 @@ impl GiveCommand<'_> {
         let stack = ItemStack::plain(id as i32, count).map_err(|_| {
             CommandError::Message("Count must be between 1 and the item's stack limit.")
         })?;
-        let remainder = lobby.give_creative(sender, stack).await?;
+        let remainder = instance.give_creative(sender, stack).await?;
         Ok(format!(
             "Gave {} {name}.{}",
             count - remainder.count(),

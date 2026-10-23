@@ -9,7 +9,7 @@ use super::*;
 use crate::bot::brain::Mode;
 use crate::bot::profile::BotProfile;
 use crate::bot::sim::SimBot;
-use crate::lobby::Transform;
+use crate::instance::Transform;
 use serde_json::{Value, json};
 
 /// The terrain overlay as the live lobby has it once loose blocks settle:

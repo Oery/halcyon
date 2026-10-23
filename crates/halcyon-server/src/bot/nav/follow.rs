@@ -6,7 +6,7 @@ use super::stand::centre;
 use super::{Cell, Edge, EdgeKind, Stand, StandKind};
 use crate::bot::motor::{Intent, wrap_degrees};
 use crate::bot::profile::BotProfile;
-use crate::lobby::Transform;
+use crate::instance::Transform;
 
 /// What the bot observes about itself each tick.
 #[derive(Clone, Copy, Debug, Default)]

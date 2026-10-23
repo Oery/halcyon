@@ -2,7 +2,7 @@
 
 use super::Client;
 use crate::error::Error;
-use crate::lobby::ObserverMetrics;
+use crate::instance::ObserverMetrics;
 use crate::visibility::{WRITE_SLICE_BYTES, WRITE_SLICE_FRAMES};
 
 impl Client {
@@ -12,7 +12,7 @@ impl Client {
         }
         let Some(session) = &self.session else { return Ok(()) };
         let id = session.entity_id();
-        self.lobby
+        self.instance
             .with_registry(|registry| self.observer.reconcile(registry, id, self.chunks.terrain()))
             .map_err(Error::from)
     }
@@ -35,7 +35,7 @@ impl Client {
         };
         let id = session.entity_id();
         let mut frames = Vec::new();
-        self.lobby.with_registry(|registry| {
+        self.instance.with_registry(|registry| {
             self.effects.collect(
                 &registry.effects,
                 id,
@@ -54,8 +54,9 @@ impl Client {
     }
 
     async fn send_world_frame(&mut self) -> Result<Option<(usize, usize)>, Error> {
-        let frame =
-            self.lobby.with_registry(|registry| self.world_observer.next_frame(&registry.arena))?;
+        let frame = self
+            .instance
+            .with_registry(|registry| self.world_observer.next_frame(&registry.arena))?;
         let Some(frame) = frame else {
             return Ok(None);
         };
@@ -70,7 +71,7 @@ impl Client {
     pub async fn send_terrain_overlay(&mut self, column: (i32, i32)) -> Result<(), Error> {
         self.world_observer.base_sent(column);
         loop {
-            let frame = self.lobby.with_registry(|registry| {
+            let frame = self.instance.with_registry(|registry| {
                 match self.world_observer.patch_column(&registry.arena, column)? {
                     Some(frame) => Ok(Some(frame)),
                     None => self.world_observer.patch_block_entities(&registry.arena, column),
@@ -94,7 +95,7 @@ impl Client {
         use mc_protocol::packets::client::BlockUpdate;
         let cells: Vec<_> = cells.into_iter().take(crate::player::MAX_USED_BLOCKS).collect();
         let mut frames = Vec::new();
-        self.lobby.with_registry(|registry| {
+        self.instance.with_registry(|registry| {
             let world = registry.arena.view(&self.server.lobby);
             for pos in cells {
                 if !self.chunks.terrain().contains(&crate::arena::column(pos)) {
@@ -133,7 +134,7 @@ impl Client {
 
     pub(super) async fn drain_players(&mut self) -> Result<(), Error> {
         self.reconcile_players()?;
-        self.lobby.with_registry(|registry| {
+        self.instance.with_registry(|registry| {
             self.world_observer.reconcile(&registry.arena, self.chunks.terrain())
         });
         let (mut bytes, mut frames) = self.send_effects().await?;

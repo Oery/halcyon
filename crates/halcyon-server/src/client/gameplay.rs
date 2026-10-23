@@ -7,8 +7,8 @@ use mc_protocol::packets::Payload;
 
 use super::Client;
 use crate::error::Error;
+use crate::instance::{Profile, Session, Transform};
 use crate::inventory::InventorySlot;
-use crate::lobby::{Profile, Session, Transform};
 
 impl Client {
     pub async fn reject_queued_block_predictions(&mut self) -> Result<(), Error> {
@@ -18,8 +18,9 @@ impl Client {
         // Drain the unsent authority and cancel queued actions without suspending.
         let cells = session.cancel_block_actions();
         let mut update = session.take_update();
-        update.inventory =
-            self.lobby.with_registry(|registry| registry.inventory_snapshot(session.entity_id()));
+        update.inventory = self
+            .instance
+            .with_registry(|registry| registry.inventory_snapshot(session.entity_id()));
         update.inventory_full = true;
         self.apply_player_update(update).await?;
         self.resync_blocks(cells).await
@@ -65,13 +66,13 @@ impl Client {
         let (x, y, z, yaw, pitch) = self.server.lobby.spawn;
         self.pos = Transform { x, y, z, yaw, pitch, on_ground: false };
         self.pos = self
-            .lobby
+            .instance
             .with_registry(|registry| {
                 crate::movement::resolve_spawn(&registry.arena.view(&self.server.lobby), self.pos)
             })
             .ok_or(Error::UnsupportedSpawn)?;
         self.proposed = self.pos;
-        self.session = Some(self.lobby.register(profile, self.pos, self.ctx.skin_parts).await?);
+        self.session = Some(self.instance.register(profile, self.pos, self.ctx.skin_parts).await?);
         self.profile_info = Some(info);
         // The shared encoded profile is sufficient for subsequent player-info sends.
         self.ctx.profile_properties.clear();

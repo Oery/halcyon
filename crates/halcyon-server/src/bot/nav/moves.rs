@@ -9,7 +9,7 @@ use super::follow::{EdgeRun, Execution, Obs, Status, brake};
 use super::stand::centre;
 use super::{Cell, Edge, EdgeKind, NavGraph, Plan, Stand, StandKind};
 use crate::bot::motor::{Intent, Motor};
-use crate::lobby::Transform;
+use crate::instance::Transform;
 
 const STEP: f64 = 0.6;
 /// Highest rise a walk is tried for: a stair's full block, in two steps.

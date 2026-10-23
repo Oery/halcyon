@@ -12,7 +12,7 @@ use mc_protocol::packets::client::{
 };
 
 use super::{Delivery, Frame, Rendered};
-use crate::lobby::PlayerSnapshot;
+use crate::instance::PlayerSnapshot;
 
 pub(super) fn rendered(player: &PlayerSnapshot) -> Rendered {
     Rendered {

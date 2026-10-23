@@ -181,7 +181,7 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
                 client.reject_queued_block_predictions().await?;
                 let [x, y, z] = crate::arena::unpack(p.location).map(f64::from);
                 client
-                    .resync_blocks(crate::world_sync::resync_cells(crate::lobby::Transform {
+                    .resync_blocks(crate::world_sync::resync_cells(crate::instance::Transform {
                         x: x + 0.5,
                         y,
                         z: z + 0.5,
@@ -215,7 +215,7 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
             }
             client.reject_queued_block_predictions().await?;
             client
-                .resync_blocks(crate::world_sync::resync_cells(crate::lobby::Transform {
+                .resync_blocks(crate::world_sync::resync_cells(crate::instance::Transform {
                     x: f64::from(x) + 0.5,
                     y: f64::from(y),
                     z: f64::from(z) + 0.5,
@@ -259,7 +259,7 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
         Packets::TeleportToEntity(p) => {
             if client.game_mode.current == GameMode::Spectator
                 && let Some(session) = &client.session
-                && let Some(target) = client.lobby.with_registry(|registry| {
+                && let Some(target) = client.instance.with_registry(|registry| {
                     // Rare spectator-menu selection; the roster is bounded.
                     registry
                         .players()
@@ -351,7 +351,7 @@ pub async fn enter_play(client: &mut Client) -> Result<(), Error> {
     let server = client.server.clone();
     client.send_encoded(&server.packets.commands).await?;
     send_skin(client).await?;
-    let crate::lobby::Transform { x: sx, y: sy, z: sz, yaw, pitch, .. } = client.pos;
+    let crate::instance::Transform { x: sx, y: sy, z: sz, yaw, pitch, .. } = client.pos;
     let scx = (sx.floor() as i32) >> 4;
     let scz = (sz.floor() as i32) >> 4;
     client.send(&GameEvent { event: 13, value: 0.0 }).await?;

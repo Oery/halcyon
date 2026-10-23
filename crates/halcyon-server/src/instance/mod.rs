@@ -109,11 +109,11 @@ impl ObserverMetrics {
 pub enum AdmissionError {
     #[error("this account is already connected")]
     DuplicateUuid,
-    #[error("the lobby registration queue is full")]
+    #[error("the instance registration queue is full")]
     QueueFull,
-    #[error("the lobby owner is unavailable")]
+    #[error("the instance owner is unavailable")]
     Closed,
-    #[error("the lobby entity ID space is exhausted")]
+    #[error("the instance entity ID space is exhausted")]
     IdExhausted,
     #[error("invalid initial player position")]
     InvalidTransform,
@@ -157,14 +157,14 @@ enum WorldEdit {
 }
 
 #[derive(Clone)]
-pub struct Lobby {
+pub struct Instance {
     registry: Rc<RefCell<Registry>>,
     registrations: Rc<local_channel::LocalSender<Registration>>,
     owner: Rc<Signal>,
     metrics: Rc<Metrics>,
 }
 
-impl Lobby {
+impl Instance {
     pub fn spawn(
         world: Arc<halcyon_world::World>,
         diagnostics: bool,
@@ -329,5 +329,5 @@ impl Lobby {
 mod gameplay_benchmarks;
 
 #[cfg(test)]
-#[path = "../tests/tests_lobby.rs"]
+#[path = "../tests/tests_instance.rs"]
 mod tests;

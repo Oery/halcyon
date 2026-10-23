@@ -1,7 +1,7 @@
 use crate::error::Error;
 use std::time::{Duration, Instant};
 
-use crate::lobby::Transform;
+use crate::instance::Transform;
 
 pub const LOGIN_TIMEOUT: Duration = Duration::from_secs(60);
 pub const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);

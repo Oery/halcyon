@@ -10,7 +10,7 @@ use mc_protocol::types::GameMode;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::lobby::{PlayerSnapshot, Registry, Transform};
+use crate::instance::{PlayerSnapshot, Registry, Transform};
 
 mod delivery;
 mod frame;

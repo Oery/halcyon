@@ -9,7 +9,7 @@ use halcyon_world::{
     Aabb, BlockView, MAX_BLOCK_Y, MIN_BLOCK_Y, MotionInfo, Surface, motion_info, state_info,
 };
 
-use crate::lobby::Transform;
+use crate::instance::Transform;
 
 mod collision;
 mod media;
