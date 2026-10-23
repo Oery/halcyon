@@ -19,6 +19,7 @@ fn world() -> World {
     World::from_loaded(LoadedWorld {
         chunks: (-4..=4)
             .map(|x| LoadedChunk {
+                block_entities: vec![],
                 x,
                 z: 0,
                 data: vec![],

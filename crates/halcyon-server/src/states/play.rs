@@ -152,11 +152,12 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
             }
         }
         Packets::PlayerAction(p) => {
-            if p.action == PlayerActionPacket::START_DESTROY_BLOCK {
+            if (0..=3).contains(&p.action) {
                 if p.face > 5 {
                     return Err(Error::InvalidPlayerData);
                 }
                 let broken = crate::interaction::BlockBreak {
+                    action: p.action,
                     sequence: p.sequence,
                     pos: crate::arena::unpack(p.location),
                 };
@@ -177,7 +178,16 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
             }
             // Restore unsupported digging and overflowed predictions before acknowledging.
             if matches!(p.action, 0..=3) {
-                client.resync_blocks([crate::arena::unpack(p.location)]).await?;
+                client.reject_queued_block_predictions().await?;
+                let [x, y, z] = crate::arena::unpack(p.location).map(f64::from);
+                client
+                    .resync_blocks(crate::world_sync::resync_cells(crate::lobby::Transform {
+                        x: x + 0.5,
+                        y,
+                        z: z + 0.5,
+                        ..Default::default()
+                    }))
+                    .await?;
                 client
                     .send(&mc_protocol::packets::client::AcknowledgeBlockChange {
                         sequence_id: p.sequence,
@@ -194,6 +204,7 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
             }
             let [x, y, z] = crate::arena::unpack(p.location);
             let used = crate::interaction::BlockUse {
+                face: p.face as usize,
                 sequence: p.sequence,
                 pos: [x, y, z],
                 cursor: [p.cursor_x, p.cursor_y, p.cursor_z],
@@ -202,6 +213,7 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
             if client.session.as_ref().is_some_and(|session| session.use_block(used)) {
                 return Ok(());
             }
+            client.reject_queued_block_predictions().await?;
             client
                 .resync_blocks(crate::world_sync::resync_cells(crate::lobby::Transform {
                     x: f64::from(x) + 0.5,
@@ -215,22 +227,24 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
                     sequence_id: p.sequence,
                 })
                 .await?;
-            if let Some(session) = &client.session {
-                session.inventory(InventoryAction::Resync);
-            }
         }
         Packets::UseItem(p) => {
             if !(0..=1).contains(&p.hand) || !p.yaw.is_finite() || !p.pitch.is_finite() {
                 return Err(Error::InvalidPlayerData);
             }
+            if client
+                .session
+                .as_ref()
+                .is_some_and(|session| session.use_item_prediction(p.sequence, p.hand == 0))
+            {
+                return Ok(());
+            }
+            client.reject_queued_block_predictions().await?;
             client
                 .send(&mc_protocol::packets::client::AcknowledgeBlockChange {
                     sequence_id: p.sequence,
                 })
                 .await?;
-            if let Some(session) = &client.session {
-                session.inventory(InventoryAction::Resync);
-            }
         }
         Packets::Attack(p) => {
             // A spectator's attack views through its target instead of hitting it.

@@ -39,6 +39,7 @@ fn block_queries_handle_negative_coordinates_and_missing_columns() {
     sections[SECTION_COUNT - 1] = Section::Uniform(2);
     let world = World::from_loaded(LoadedWorld {
         chunks: vec![loader::LoadedChunk {
+            block_entities: vec![],
             x: -1,
             z: -1,
             data: vec![],

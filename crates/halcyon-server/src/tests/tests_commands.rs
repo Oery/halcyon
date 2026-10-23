@@ -3,6 +3,16 @@ use halcyon_commands::{ArgumentError, ParseError};
 use mc_protocol::types::GameMode;
 
 #[test]
+fn basic_give_accepts_plain_items_and_completes_only_the_supported_catalog() {
+    assert!(matches!(Command::parse("give minecraft:stone 4").unwrap(), Command::Give(_)));
+    assert!(matches!(Command::parse("give oak_sign").unwrap(), Command::Give(_)));
+    assert!(Command::parse("give stone[foo=bar]").is_err());
+    assert!(Command::parse("give stone 1 Player").is_err());
+    assert_eq!(complete("/give diamond_pick", &Registry::default()).matches, ["diamond_pickaxe"]);
+    assert!(complete("/give water_buck", &Registry::default()).matches.is_empty());
+}
+
+#[test]
 fn gamemode_parses_names_numeric_aliases_and_optional_targets() {
     for (name, id) in [
         ("survival", 0),
@@ -45,7 +55,7 @@ fn advertised_tree_matches_execution_syntax() {
     let tree = tree();
     let root = &tree.nodes[tree.root_index as usize];
     assert_eq!(root.kind, CommandNodeKind::Root);
-    assert_eq!(root.children.len(), 2);
+    assert_eq!(root.children.len(), 3);
     let command = &tree.nodes[root.children[0].0 as usize];
     assert_eq!(command.kind, CommandNodeKind::Literal("gamemode"));
     assert_eq!(command.children.len(), 8);

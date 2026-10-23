@@ -92,6 +92,10 @@ impl Inventory {
         self.selected
     }
 
+    pub fn stack(&self, slot: InventorySlot) -> &ItemStack {
+        &self.slots[slot.index()]
+    }
+
     pub fn can_walk_on_powder_snow(&self) -> bool {
         let boots = &self.slots[InventorySlot::FEET.index()];
         !boots.is_empty()

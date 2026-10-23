@@ -66,6 +66,8 @@ pub struct Teleport {
 /// Deliberate minigame rules; protection is evaluated before damage-type bypasses.
 #[derive(Clone, Copy, Debug)]
 pub struct PlayerRules {
+    /// Editing is independent of damage protection; games opt Survival in.
+    pub block_edits: BlockEditRules,
     pub protected: bool,
     pub fall_damage: bool,
     pub void_damage: bool,
@@ -74,14 +76,39 @@ pub struct PlayerRules {
     pub respawn: Transform,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct BlockEditRules {
+    pub creative: bool,
+    pub survival: bool,
+}
+
+impl Default for BlockEditRules {
+    fn default() -> Self {
+        Self { creative: true, survival: false }
+    }
+}
+
 impl PlayerRules {
     pub fn lobby(spawn: Transform) -> Self {
-        Self { protected: true, fall_damage: false, void_damage: false, pvp: false, respawn: spawn }
+        Self {
+            block_edits: BlockEditRules::default(),
+            protected: true,
+            fall_damage: false,
+            void_damage: false,
+            pvp: false,
+            respawn: spawn,
+        }
     }
 
     /// Combat-ready rules: damage, fall/void deaths and PvP all enabled.
     pub fn open(spawn: Transform) -> Self {
-        Self { protected: false, fall_damage: true, void_damage: true, pvp: true, respawn: spawn }
+        Self {
+            protected: false,
+            fall_damage: true,
+            void_damage: true,
+            pvp: true,
+            ..Self::lobby(spawn)
+        }
     }
 }
 

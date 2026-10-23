@@ -28,6 +28,7 @@ const HEIGHTS_LEN: usize = 37;
 const FALLBACK_SPAWN: (f64, f64, f64, f32, f32) = (8.5, 64.0, 8.5, 0.0, 0.0);
 
 pub struct LoadedChunk {
+    pub block_entities: Vec<crate::blocks::entities::BlockEntity>,
     pub x: i32,
     pub z: i32,
     pub data: Vec<u8>,
@@ -115,7 +116,10 @@ fn load_region(path: &Path, out: &mut Vec<LoadedChunk>) -> Result<(usize, usize)
                 out.push(chunk.chunk);
             }
             Ok(None) => {}
-            Err(e @ LoadError::UnknownBlockState { .. }) => return Err(e),
+            Err(
+                e
+                @ (LoadError::UnknownBlockState { .. } | LoadError::UnsupportedBlockEntity { .. }),
+            ) => return Err(e),
             Err(e) => {
                 eprintln!("world: skipping chunk {name}: {e}");
             }
@@ -193,8 +197,74 @@ fn decode_chunk_payload(
     }
 
     let wire_bytes = data.len();
+    let mut block_entities = Vec::new();
+    if let Some(entries) = root.get("block_entities").and_then(DiskNbt::as_list) {
+        use crate::blocks::entities::{
+            BlockEntity, BlockEntityData, MAX_BLOCK_ENTITIES_PER_COLUMN, Sign,
+        };
+        for entry in entries {
+            let Some(pos) = (|| {
+                Some([
+                    entry.get("x")?.as_i32()?,
+                    entry.get("y")?.as_i32()?,
+                    entry.get("z")?.as_i32()?,
+                ])
+            })() else {
+                continue;
+            };
+            if pos[0].div_euclid(16) != x
+                || pos[2].div_euclid(16) != z
+                || !(crate::MIN_BLOCK_Y..crate::MAX_BLOCK_Y).contains(&pos[1])
+            {
+                continue;
+            }
+            let index = (pos[1] - crate::MIN_BLOCK_Y) as usize;
+            let state = terrain_sections[index / 16].block_at(
+                pos[0].rem_euclid(16) as usize,
+                index % 16,
+                pos[2].rem_euclid(16) as usize,
+            );
+            let block = crate::blocks::metadata(state).name;
+            let data = if block.ends_with("_sign") {
+                let Some(sign) = Sign::from_nbt(entry) else {
+                    return Err(LoadError::UnsupportedBlockEntity {
+                        chunk: name.to_owned(),
+                        reason: "invalid or excessive sign text".to_owned(),
+                    });
+                };
+                BlockEntityData::Sign(std::sync::Arc::new(sign))
+            } else if block == "minecraft:jukebox" {
+                let disc = entry
+                    .get("RecordItem")
+                    .and_then(|v| v.get("id"))
+                    .and_then(DiskNbt::as_str)
+                    .filter(|s| s.starts_with("minecraft:music_disc_"))
+                    .map(str::to_owned);
+                BlockEntityData::Jukebox { disc }
+            } else {
+                continue;
+            };
+            if block_entities.len() == MAX_BLOCK_ENTITIES_PER_COLUMN
+                || block_entities.iter().any(|entry: &BlockEntity| entry.pos == pos)
+            {
+                return Err(LoadError::UnsupportedBlockEntity {
+                    chunk: name.to_owned(),
+                    reason: "excessive or duplicate supported block entities".to_owned(),
+                });
+            }
+            block_entities.push(BlockEntity { pos, data });
+        }
+    }
     Ok(Some(Decoded {
-        chunk: LoadedChunk { x, z, data, heights, wire_bytes, sections: terrain_sections },
+        chunk: LoadedChunk {
+            block_entities,
+            x,
+            z,
+            data,
+            heights,
+            wire_bytes,
+            sections: terrain_sections,
+        },
         missing,
         remapped,
     }))

@@ -162,6 +162,7 @@ fn ground_world(obstacles: &[(usize, usize, usize, u16)]) -> World {
     }
     World::from_loaded(LoadedWorld {
         chunks: vec![LoadedChunk {
+            block_entities: vec![],
             x: 0,
             z: 0,
             data: vec![],

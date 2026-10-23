@@ -20,8 +20,7 @@ use crate::movement::{Advance, MovementInput, MovementState, ProposalQueue};
 
 const ACTIONS_PER_STEP: usize = 4;
 const MAX_ACTIONS: usize = 32;
-/// Dropped cells still reach the client through terrain publication.
-const MAX_USED_BLOCKS: usize = 16;
+pub const MAX_USED_BLOCKS: usize = 4096;
 
 /// Arena hooks deliberately precede the first minigame implementation.
 #[allow(dead_code)]
@@ -53,6 +52,10 @@ pub enum PlayerAction {
     EditInventory {
         edit: InventoryEdit,
         reply: glommio::channels::oneshot::Sender<Result<ItemStack, InventoryEditError>>,
+    },
+    GiveCreative {
+        stack: ItemStack,
+        reply: glommio::channels::oneshot::Sender<Result<ItemStack, PlayerActionError>>,
     },
 }
 
@@ -120,6 +123,8 @@ pub enum PlayerActionError {
     StaleLife,
     #[error("The destination is outside loaded terrain, obstructed or unsupported.")]
     InvalidDestination,
+    #[error("This command requires Creative mode.")]
+    CreativeRequired,
 }
 
 #[cfg(test)]
@@ -148,6 +153,7 @@ pub enum InventoryEditError {
 }
 
 struct QueuedAction {
+    order: u64,
     generation: u64,
     action: PlayerAction,
 }
@@ -155,15 +161,30 @@ struct QueuedAction {
 pub struct ActionQueue {
     pending: VecDeque<QueuedAction>,
     overflow: bool,
+    submitted: u64,
+    completed: u64,
+    pub barrier: Option<u64>,
 }
 
 impl Default for ActionQueue {
     fn default() -> Self {
-        Self { pending: VecDeque::with_capacity(MAX_ACTIONS), overflow: false }
+        Self {
+            pending: VecDeque::with_capacity(MAX_ACTIONS),
+            overflow: false,
+            submitted: 0,
+            completed: 0,
+            barrier: None,
+        }
     }
 }
 
 impl ActionQueue {
+    pub fn submitted(&self) -> u64 {
+        self.submitted
+    }
+    pub fn completed(&self) -> u64 {
+        self.pending.front().map_or(self.submitted, |q| q.order - 1).max(self.completed)
+    }
     #[cfg(test)]
     pub(crate) fn capacity_payload_bytes(&self) -> usize {
         self.pending.capacity() * std::mem::size_of::<QueuedAction>()
@@ -173,7 +194,8 @@ impl ActionQueue {
             self.overflow = true;
             return false;
         }
-        self.pending.push_back(QueuedAction { generation, action });
+        self.submitted += 1;
+        self.pending.push_back(QueuedAction { order: self.submitted, generation, action });
         true
     }
 }
@@ -231,7 +253,7 @@ impl PlayerUpdate {
             self.block_resync = newer.block_resync;
         }
         for pos in newer.used_blocks {
-            if self.used_blocks.len() < MAX_USED_BLOCKS && !self.used_blocks.contains(&pos) {
+            if !self.used_blocks.contains(&pos) {
                 self.used_blocks.push(pos);
             }
         }
@@ -258,7 +280,8 @@ impl PlayerUpdate {
     }
 
     pub fn changed(&self) -> bool {
-        self.game_mode.is_some()
+        !self.used_blocks.is_empty()
+            || self.game_mode.is_some()
             || self.camera.is_some()
             || self.block_resync.is_some()
             || self.block_ack.is_some()
@@ -273,6 +296,7 @@ impl PlayerUpdate {
 }
 
 pub struct PlayerState {
+    pub mining: Option<crate::interaction::Mining>,
     pub game_mode: GameModeState,
     pub movement: MovementState,
     pub life: PlayerLife,
@@ -293,6 +317,7 @@ pub struct PlayerState {
 impl PlayerState {
     pub fn new(transform: Transform) -> Self {
         Self {
+            mining: None,
             game_mode: GameModeState::default(),
             movement: MovementState::new(transform),
             life: PlayerLife::new(transform),
@@ -455,6 +480,7 @@ impl PlayerState {
         if self.movement.supports_destination(world, transform)
             && let Some(teleport) = self.life.teleport(transform)
         {
+            self.mining = None;
             if self.camera.take().is_some() {
                 update.camera = Some(None);
             }
@@ -472,6 +498,7 @@ impl PlayerState {
     /// pose and fall baseline. A standing-only teleport check could reject a
     /// correction inside a low tunnel and silently leave the client desynced.
     fn correct_movement(&mut self, proposals: &mut ProposalQueue, update: &mut PlayerUpdate) {
+        self.mining = None;
         if let Some(teleport) = self.life.teleport(self.movement.transform()) {
             self.movement.motion = Default::default();
             self.movement_input = None;
@@ -522,6 +549,7 @@ impl PlayerState {
             update.health = Some(health);
             update.damage = Some(damage);
             if died {
+                self.mining = None;
                 update.death = Some(damage);
                 self.using = None;
                 self.inventory.cancel_drag();
@@ -543,7 +571,14 @@ impl PlayerState {
         }
     }
 
-    fn inventory_changed(&mut self, changed: InventoryChange, update: &mut PlayerUpdate) {
+    pub(crate) fn inventory_changed(
+        &mut self,
+        changed: InventoryChange,
+        update: &mut PlayerUpdate,
+    ) {
+        if self.mining.as_ref().is_some_and(|m| !m.hand_valid(&self.inventory)) {
+            self.mining = None;
+        }
         let previous = changed
             .equipment_changed
             .then(|| std::mem::replace(&mut self.equipment, Rc::new(self.inventory.equipment())));
@@ -604,9 +639,17 @@ impl PlayerState {
             update.inventory_full = true;
         }
         for _ in 0..ACTIONS_PER_STEP {
+            if actions
+                .pending
+                .front()
+                .is_some_and(|queued| actions.barrier.is_some_and(|barrier| queued.order > barrier))
+            {
+                break;
+            }
             let Some(queued) = actions.pending.pop_front() else {
                 break;
             };
+            actions.completed = queued.order;
             if matches!(queued.action, PlayerAction::Attack(_)) && self.attack.is_some() {
                 // One attack resolves per step. Vanilla would land later ones
                 // uncharged inside the damage window, so they are dropped
@@ -622,11 +665,26 @@ impl PlayerState {
                     | PlayerAction::TeleportRequest { reply, .. } => {
                         let _ = reply.send(Err(PlayerActionError::StaleLife));
                     }
+                    PlayerAction::GiveCreative { reply, .. } => {
+                        let _ = reply.send(Err(PlayerActionError::StaleLife));
+                    }
                     _ => {}
                 }
                 continue;
             }
             match queued.action {
+                PlayerAction::GiveCreative { stack, reply } => {
+                    let result = if self.game_mode.current != GameMode::Creative {
+                        Err(PlayerActionError::CreativeRequired)
+                    } else if !self.life.alive() || self.life.pending_teleport().is_some() {
+                        Err(PlayerActionError::NotReady)
+                    } else {
+                        let (remainder, change) = self.inventory.give(stack);
+                        self.inventory_changed(change, &mut update);
+                        Ok(remainder)
+                    };
+                    let _ = reply.send(result);
+                }
                 PlayerAction::SetFlying(flying) => {
                     // Spectators cannot stop flying.
                     self.game_mode.flying = self.spectator()
@@ -642,6 +700,7 @@ impl PlayerState {
                         continue;
                     }
                     if mode != self.game_mode.current {
+                        self.mining = None;
                         self.game_mode.previous = Some(self.game_mode.current);
                         self.game_mode.current = mode;
                         self.game_mode.flying = self.spectator();

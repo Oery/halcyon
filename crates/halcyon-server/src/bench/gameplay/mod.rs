@@ -99,7 +99,15 @@ fn make_terrain(spread: bool, steps: bool, surfaces: bool, medium: Medium) -> Wo
                 }
                 sections[8] = Section::from_states(layer);
             }
-            LoadedChunk { x, z, data: vec![], heights: [0; 37], wire_bytes: 0, sections }
+            LoadedChunk {
+                block_entities: vec![],
+                x,
+                z,
+                data: vec![],
+                heights: [0; 37],
+                wire_bytes: 0,
+                sections,
+            }
         })
         .collect();
     World::from_loaded(LoadedWorld {
@@ -119,6 +127,7 @@ struct Scenario {
     churn: bool,
     driven: bool,
     falling: bool,
+    blocks: bool,
     medium: Medium,
 }
 
@@ -179,6 +188,38 @@ async fn measure(case: Scenario, paced: bool) -> Value {
             )
             .unwrap();
         player.state.equipment = Rc::new(player.state.inventory.equipment());
+        if case.blocks {
+            player.state.life.rules.block_edits.survival = true;
+            let tool = mc_protocol::data::items::ITEMS
+                .iter()
+                .position(|(name, ..)| *name == "minecraft:diamond_pickaxe")
+                .unwrap();
+            player
+                .state
+                .inventory
+                .set_slot(
+                    HotbarSlot::try_from(1usize).unwrap().inventory_slot(),
+                    ItemStack::plain(tool as i32, 1).unwrap(),
+                )
+                .unwrap();
+            let x = transform.x.floor() as i32;
+            registry
+                .arena
+                .edit(
+                    &world,
+                    [x + 3, 64, 8],
+                    halcyon_world::blocks::named("minecraft:oak_sign").unwrap().default,
+                )
+                .unwrap();
+            registry
+                .arena
+                .edit(
+                    &world,
+                    [x + 4, 64, 8],
+                    halcyon_world::blocks::named("minecraft:jukebox").unwrap().default,
+                )
+                .unwrap();
+        }
         inputs.push((entity_id, input, transform));
         let terrain = world
             .iter()
@@ -225,6 +266,87 @@ async fn measure(case: Scenario, paced: bool) -> Value {
         skipped += due.skipped_steps;
         let start = Instant::now();
         let now = if paced { start } else { due_at };
+        if case.blocks {
+            use crate::interaction::{BlockBreak, BlockInteraction, BlockUse};
+            for (id, input, transform) in &inputs {
+                let x = transform.x.floor() as i32;
+                let sequence = ((tick + 1) * 4) as i32;
+                if tick % 40 == 0 || tick % 40 == 2 {
+                    let selected = if tick % 40 == 0 { 0usize } else { 1usize };
+                    input.actions.borrow_mut().push(
+                        input.generation.get(),
+                        PlayerAction::Inventory(InventoryAction::Select {
+                            slot: HotbarSlot::try_from(selected).unwrap(),
+                        }),
+                    );
+                    let barrier = input.actions.borrow().submitted();
+                    let action = if tick % 40 == 0 {
+                        BlockInteraction::Use(BlockUse {
+                            sequence,
+                            face: 1,
+                            pos: [x + 1, 63, 8],
+                            cursor: [0.5; 3],
+                            main_hand: true,
+                        })
+                    } else {
+                        BlockInteraction::Break(BlockBreak {
+                            sequence,
+                            action: 0,
+                            pos: [x + 1, 64, 8],
+                        })
+                    };
+                    assert!(input.block_actions.borrow_mut().push_ordered(
+                        input.generation.get(),
+                        barrier,
+                        action
+                    ));
+                    if tick % 40 == 2 {
+                        assert!(input.block_actions.borrow_mut().push_ordered(
+                            input.generation.get(),
+                            barrier,
+                            BlockInteraction::Break(BlockBreak {
+                                sequence: sequence + 1,
+                                action: 3,
+                                pos: [x + 1, 64, 8]
+                            })
+                        ));
+                    }
+                }
+                if tick % 10 == 0 {
+                    let text = halcyon_world::blocks::entities::Sign {
+                        front: halcyon_world::blocks::entities::SignFace::plain([
+                            format!("Player {id}"),
+                            format!("Step {tick}"),
+                            String::new(),
+                            String::new(),
+                        ]),
+                        ..Default::default()
+                    };
+                    registry.arena.block_entities.set_sign([x + 3, 64, 8], text).unwrap();
+                }
+                if tick % 40 == 10 {
+                    let song = &crate::interaction::entities::songs()[0];
+                    crate::interaction::set_jukebox(
+                        &mut registry.arena,
+                        &world,
+                        [x + 4, 64, 8],
+                        ItemStack::plain(song.item, 1).unwrap(),
+                        true,
+                    )
+                    .unwrap();
+                }
+                if tick % 40 == 30 {
+                    crate::interaction::set_jukebox(
+                        &mut registry.arena,
+                        &world,
+                        [x + 4, 64, 8],
+                        ItemStack::default(),
+                        false,
+                    )
+                    .unwrap();
+                }
+            }
+        }
         if case.falling && tick % 40 == 0 {
             for index in 0..32 {
                 let x = 12 + index % 4;
@@ -340,7 +462,11 @@ async fn measure(case: Scenario, paced: bool) -> Value {
         }
         let mut pending_motions = 0;
         for ((id, input, _), receiver) in inputs.iter().zip(&mut receivers) {
-            receiver.self_update(std::mem::take(&mut *input.update.borrow_mut()));
+            receiver.self_update(
+                &registry,
+                &world,
+                std::mem::take(&mut *input.update.borrow_mut()),
+            );
             receiver.observer.reconcile(&registry, *id, &receiver.terrain).unwrap();
             receiver.world_observer.reconcile(&registry.arena, &receiver.terrain);
             queue_peak = queue_peak.max(receiver.observer.queued_frames());
@@ -424,6 +550,7 @@ async fn measure(case: Scenario, paced: bool) -> Value {
         "players": PLAYERS,
         "receivers": PLAYERS,
         "input_period": case.input_period,
+        "block_interactions":case.blocks,
         "paced": paced,
         "combined": stats(&mut combined),
         "simulation": stats(&mut simulation),
@@ -485,6 +612,28 @@ fn gameplay_world_benchmark() {
         let mut cases = Vec::new();
         for case in [
             Scenario {
+                name: "crowded_block_interactions",
+                spread: false,
+                input_period: 0,
+                steps: false,
+                churn: false,
+                driven: false,
+                falling: false,
+                blocks: true,
+                medium: Medium::Dry,
+            },
+            Scenario {
+                name: "block_interactions",
+                spread: true,
+                input_period: 0,
+                steps: false,
+                churn: false,
+                driven: false,
+                falling: false,
+                blocks: true,
+                medium: Medium::Dry,
+            },
+            Scenario {
                 name: "crowded_movement_media",
                 spread: false,
                 input_period: 1,
@@ -492,6 +641,7 @@ fn gameplay_world_benchmark() {
                 churn: false,
                 driven: true,
                 falling: false,
+                blocks: false,
                 medium: Medium::Contexts,
             },
             Scenario {
@@ -502,6 +652,7 @@ fn gameplay_world_benchmark() {
                 churn: false,
                 driven: true,
                 falling: false,
+                blocks: false,
                 medium: Medium::Water,
             },
             Scenario {
@@ -512,6 +663,7 @@ fn gameplay_world_benchmark() {
                 churn: false,
                 driven: true,
                 falling: false,
+                blocks: false,
                 medium: Medium::Crawl,
             },
             Scenario {
@@ -522,6 +674,7 @@ fn gameplay_world_benchmark() {
                 churn: false,
                 driven: false,
                 falling: false,
+                blocks: false,
                 medium: Medium::Dry,
             },
             Scenario {
@@ -532,6 +685,7 @@ fn gameplay_world_benchmark() {
                 churn: false,
                 driven: false,
                 falling: false,
+                blocks: false,
                 medium: Medium::Dry,
             },
             Scenario {
@@ -542,6 +696,7 @@ fn gameplay_world_benchmark() {
                 churn: false,
                 driven: false,
                 falling: false,
+                blocks: false,
                 medium: Medium::Dry,
             },
             Scenario {
@@ -552,6 +707,7 @@ fn gameplay_world_benchmark() {
                 churn: false,
                 driven: true,
                 falling: false,
+                blocks: false,
                 medium: Medium::Dry,
             },
             Scenario {
@@ -562,6 +718,7 @@ fn gameplay_world_benchmark() {
                 churn: true,
                 driven: false,
                 falling: false,
+                blocks: false,
                 medium: Medium::Dry,
             },
             Scenario {
@@ -572,6 +729,7 @@ fn gameplay_world_benchmark() {
                 churn: false,
                 driven: false,
                 falling: true,
+                blocks: false,
                 medium: Medium::Dry,
             },
         ] {
@@ -600,6 +758,7 @@ fn gameplay_scheduler_benchmark() {
                 churn: true,
                 driven: true,
                 falling: true,
+                blocks: false,
                 medium: Medium::Dry,
             },
             true,

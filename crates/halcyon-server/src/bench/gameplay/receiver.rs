@@ -67,7 +67,21 @@ impl Receiver {
         });
     }
 
-    pub(super) fn self_update(&mut self, update: PlayerUpdate) {
+    pub(super) fn self_update(
+        &mut self,
+        registry: &Registry,
+        world: &halcyon_world::World,
+        update: PlayerUpdate,
+    ) {
+        use halcyon_world::BlockView;
+        for pos in update.used_blocks {
+            if let Some(state) = registry.arena.view(world).block_at(pos[0], pos[1], pos[2]) {
+                self.packet(&BlockUpdate {
+                    location: crate::arena::pack(pos),
+                    block_state: i32::from(state),
+                });
+            }
+        }
         if update.respawn {
             self.packet(&Respawn {
                 dimension_type: 0,
@@ -125,6 +139,9 @@ impl Receiver {
             }
             self.packet(&SetCursorItem { stack: &inventory.cursor });
             self.packet(&SetHeldItemResponse { slot: i32::from(inventory.selected.protocol_id()) });
+        }
+        if let Some(sequence_id) = update.block_ack {
+            self.packet(&AcknowledgeBlockChange { sequence_id });
         }
         if let Some(teleport) = update.teleport {
             let p = teleport.destination;

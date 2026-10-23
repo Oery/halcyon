@@ -11,6 +11,19 @@ use crate::inventory::InventorySlot;
 use crate::lobby::{Profile, Session, Transform};
 
 impl Client {
+    pub async fn reject_queued_block_predictions(&mut self) -> Result<(), Error> {
+        let Some(session) = &self.session else {
+            return Ok(());
+        };
+        // Drain the unsent authority and cancel queued actions without suspending.
+        let cells = session.cancel_block_actions();
+        let mut update = session.take_update();
+        update.inventory =
+            self.lobby.with_registry(|registry| registry.inventory_snapshot(session.entity_id()));
+        update.inventory_full = true;
+        self.apply_player_update(update).await?;
+        self.resync_blocks(cells).await
+    }
     pub async fn send_abilities(&mut self) -> Result<(), Error> {
         self.send(&mc_protocol::packets::client::PlayerAbilities {
             flags: self.game_mode.ability_flags(),
@@ -125,10 +138,6 @@ impl Client {
         if !update.used_blocks.is_empty() {
             self.resync_blocks(update.used_blocks).await?;
         }
-        if let Some(sequence_id) = update.block_ack {
-            self.send(&mc_protocol::packets::client::AcknowledgeBlockChange { sequence_id })
-                .await?;
-        }
         if let Some(health) = update.health {
             self.send(&SetHealth { health, food: 20, saturation: 5.0 }).await?;
         }
@@ -179,6 +188,10 @@ impl Client {
                 .await?;
                 self.selected_slot = inventory.selected;
             }
+        }
+        if let Some(sequence_id) = update.block_ack {
+            self.send(&mc_protocol::packets::client::AcknowledgeBlockChange { sequence_id })
+                .await?;
         }
         // The camera precedes its teleport, as in vanilla.
         if let Some(camera) = update.camera {

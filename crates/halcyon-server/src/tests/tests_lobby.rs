@@ -30,6 +30,108 @@ fn command_player(registry: &mut Registry, uuid: u128, name: &str) -> Session {
 }
 
 #[test]
+fn block_overflow_cancels_active_mining_even_with_full_actions_and_pending_output() {
+    use crate::interaction::BlockBreak;
+    use crate::player::MAX_USED_BLOCKS;
+    let world = gameplay_benchmarks::terrain(false, false);
+    let mut registry = Registry::default();
+    let session = command_player(&mut registry, 1, "Player");
+    registry.players.get_mut(&session.entity_id()).unwrap().state.life.rules.block_edits.survival =
+        true;
+    let target = [10, 63, 8];
+    assert!(session.break_block(BlockBreak { action: 0, sequence: 1, pos: target }));
+    registry.simulate(&world, Instant::now(), &mut Vec::new());
+    assert!(registry.players[&session.entity_id()].state.mining.is_some());
+    assert!(registry.arena.cracks.contains_key(&session.entity_id()));
+    for sequence in 2..=9 {
+        assert!(session.break_block(BlockBreak { action: 2, sequence, pos: target }));
+    }
+    assert!(!session.break_block(BlockBreak { action: 2, sequence: 10, pos: target }));
+    while session.submit(PlayerAction::Heal(0.0)) {}
+    // Cancellation must also run when self-state delivery has reached its bound.
+    session.input.update.borrow_mut().used_blocks = vec![target; MAX_USED_BLOCKS];
+    session.cancel_block_actions();
+    registry.simulate(&world, Instant::now(), &mut Vec::new());
+    assert!(registry.players[&session.entity_id()].state.mining.is_none());
+    assert!(!registry.arena.cracks.contains_key(&session.entity_id()));
+    session.take_update();
+    assert!(session.break_block(BlockBreak { action: 0, sequence: 11, pos: target }));
+    for _ in 0..8 {
+        registry.simulate(&world, Instant::now(), &mut Vec::new());
+    }
+    assert!(registry.players[&session.entity_id()].state.mining.is_some());
+}
+
+#[test]
+fn block_actions_preserve_held_selection_order_and_creative_give_is_owner_checked() {
+    use crate::interaction::BlockUse;
+    use crate::inventory::HotbarSlot;
+    use halcyon_world::BlockView;
+    use mc_protocol::types::{GameMode, ItemStack};
+    let world = gameplay_benchmarks::terrain(false, false);
+    let mut registry = Registry::default();
+    let session = command_player(&mut registry, 1, "Player");
+    let player = registry.players.get_mut(&session.entity_id()).unwrap();
+    player.state.game_mode.current = GameMode::Creative;
+    player
+        .state
+        .inventory
+        .set_slot(
+            HotbarSlot::try_from(1usize).unwrap().inventory_slot(),
+            ItemStack::plain(1, 2).unwrap(),
+        )
+        .unwrap();
+    assert!(session.use_block(BlockUse {
+        face: 1,
+        sequence: 1,
+        pos: [10, 63, 8],
+        cursor: [0.5; 3],
+        main_hand: true
+    }));
+    session.inventory(InventoryAction::Select { slot: HotbarSlot::try_from(1usize).unwrap() });
+    assert!(session.use_block(BlockUse {
+        face: 1,
+        sequence: 2,
+        pos: [11, 63, 8],
+        cursor: [0.5; 3],
+        main_hand: true
+    }));
+    registry.simulate(&world, Instant::now(), &mut Vec::new());
+    assert_eq!(registry.arena.view(&world).block_at(10, 64, 8), Some(0));
+    assert_eq!(registry.arena.view(&world).block_at(11, 64, 8), Some(0));
+    session.take_update();
+    registry.simulate(&world, Instant::now(), &mut Vec::new());
+    assert_eq!(registry.arena.view(&world).block_at(11, 64, 8), Some(1));
+    // An empty jukebox passes an ordinary block item through to placement.
+    registry
+        .arena
+        .edit(
+            &world,
+            [10, 64, 8],
+            halcyon_world::blocks::named("minecraft:jukebox").unwrap().default,
+        )
+        .unwrap();
+    assert!(session.use_block(BlockUse {
+        face: 1,
+        sequence: 3,
+        pos: [10, 64, 8],
+        cursor: [0.5; 3],
+        main_hand: true
+    }));
+    registry.simulate(&world, Instant::now(), &mut Vec::new());
+    assert_eq!(registry.arena.view(&world).block_at(10, 65, 8), Some(1));
+    registry.players.get_mut(&session.entity_id()).unwrap().state.game_mode.current =
+        GameMode::Survival;
+    let response =
+        registry.request_give(session.entity_id(), ItemStack::plain(1, 1).unwrap()).unwrap();
+    registry.simulate(&world, Instant::now(), &mut Vec::new());
+    assert_eq!(
+        futures_lite::future::block_on(response).unwrap(),
+        Err(crate::player::PlayerActionError::CreativeRequired)
+    );
+}
+
+#[test]
 fn teleport_commands_resolve_current_players_and_executor_relative_coordinates() {
     use crate::player::PlayerActionError;
     use halcyon_commands::{CommandArgument, Position};
@@ -147,9 +249,9 @@ fn creative_breaks_share_bounded_block_work_and_resynchronize_stale_predictions(
     registry.players.get_mut(&player.entity_id()).unwrap().state.game_mode.current =
         GameMode::Creative;
     for i in 0..8 {
-        assert!(player.break_block(BlockBreak { sequence: i + 1, pos: [5 + i, 63, 8] }));
+        assert!(player.break_block(BlockBreak { action: 0, sequence: i + 1, pos: [5 + i, 63, 8] }));
     }
-    assert!(!player.break_block(BlockBreak { sequence: 9, pos: [13, 63, 8] }));
+    assert!(!player.break_block(BlockBreak { action: 0, sequence: 9, pos: [13, 63, 8] }));
     registry.simulate(&world, Instant::now(), &mut Vec::new());
     let update = player.take_update();
     assert_eq!(update.block_ack, Some(4));

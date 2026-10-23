@@ -119,6 +119,8 @@ pub struct EntitySoundEffect<'p> {
 
 /// `minecraft:particle_type` IDs of data-less particles, from 26.3 registration order.
 pub mod particle {
+    /// Verified against the official 26.3 PARTICLE_TYPE registry.
+    pub const NOTE: i32 = 68;
     pub const CRIT: i32 = 13;
     pub const DAMAGE_INDICATOR: i32 = 14;
     pub const ENCHANTED_HIT: i32 = 25;
