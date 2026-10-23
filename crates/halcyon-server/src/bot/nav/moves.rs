@@ -17,6 +17,9 @@ const WALK_RISE: f64 = 1.0;
 /// Highest a jump can raise the feet (0.42 jump impulse peaks near 1.25).
 const MAX_RISE: f64 = 1.3;
 const MAX_DROP: f64 = 3.6;
+/// Deepest walk-off onto a landing that softens falls, such as hay: a
+/// player survives about 13 blocks onto hay for one heart.
+const SOFT_DROP: i32 = 14;
 /// Courses drop players onto lower stages; accept losing up to one heart.
 const MAX_FALL_DAMAGE: f32 = 2.0;
 const MAX_REACH: i32 = 5;
@@ -265,13 +268,16 @@ impl NavGraph {
                 });
             }
         } else {
-            // Drops: walk off onto the first floor below a neighbour.
+            // Drops: walk off onto the first floor below a neighbour. Deep
+            // ones only onto landings that soften the fall; simulation then
+            // checks the damage actually taken.
             for [dx, dz] in NEIGHBOURS {
-                for dy in (-4..=-1).rev() {
+                for dy in (-SOFT_DROP..=-1).rev() {
                     let to = [from[0] + dx, from[1] + dy, from[2] + dz];
                     let Some(there) = self.stand(view, to) else { continue };
                     let fall = here.feet_y - there.feet_y;
-                    if fall > STEP && fall <= MAX_DROP && !found.iter().any(|c| c.to == to) {
+                    let reach = fall <= MAX_DROP || soft_landing(view, to, there);
+                    if fall > STEP && reach && !found.iter().any(|c| c.to == to) {
                         found.push(Candidate {
                             to,
                             to_feet: there.feet_y,
@@ -417,6 +423,24 @@ impl NavGraph {
                 a.is_some_and(|s| s.feet_y == here.feet_y)
                     && b.is_some_and(|s| s.feet_y == here.feet_y)
             })
+            && self.clear_crossing(view, from, to, here.feet_y)
+    }
+
+    /// Whether a player fits all along the straight line between two cell
+    /// centres: thin blocks such as closed iron doors stand on cell borders,
+    /// leaving both cells standable but the crossing blocked.
+    fn clear_crossing(&mut self, view: &impl BlockView, from: Cell, to: Cell, feet: f64) -> bool {
+        let [ax, az] = centre(from);
+        let [bx, bz] = centre(to);
+        [0.25, 0.5, 0.75].into_iter().all(|t| {
+            let at = Transform {
+                x: ax + (bx - ax) * t,
+                y: feet,
+                z: az + (bz - az) * t,
+                ..Transform::default()
+            };
+            self.probe.supports_destination(view, at)
+        })
     }
 
     fn jump_candidates(
@@ -466,7 +490,10 @@ impl NavGraph {
                 }
             }
         }
-        found.sort_by(|a, b| a.estimate.total_cmp(&b.estimate));
+        // Keep level and upward jumps first: from a pillar, the floor below
+        // offers dozens of short hops down that would crowd out the course.
+        let down = |c: &Candidate| c.to_feet < here.feet_y - STEP;
+        found.sort_by(|a, b| down(a).cmp(&down(b)).then(a.estimate.total_cmp(&b.estimate)));
         found.truncate(MAX_JUMP_CANDIDATES);
         found
     }
@@ -706,4 +733,21 @@ impl NavGraph {
             .count();
         passed as f32 / count as f32
     }
+}
+
+/// Whether landing in `cell` softens a fall: hay and honey take most of the
+/// damage, beds part of the height. Slime is left to bounces.
+fn soft_landing(view: &impl BlockView, cell: Cell, stand: Stand) -> bool {
+    use halcyon_world::{Surface, motion_info};
+    // The block whose top the feet rest on: the cell's own for partial
+    // blocks, otherwise the one below.
+    let y = if stand.feet_y > f64::from(cell[1]) + 1e-6 {
+        cell[1]
+    } else {
+        cell[1] - 1
+    };
+    view.block_at(cell[0], y, cell[2]).is_some_and(|id| {
+        let info = motion_info(id);
+        matches!(info.surface, Surface::Hay | Surface::Honey) || info.fall_reduction > 0.0
+    })
 }

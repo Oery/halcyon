@@ -140,6 +140,8 @@ pub struct Brain {
     reset_requested: bool,
     /// Consecutive plans that found no way on.
     stranded: u8,
+    /// Where the last partial route ended, to notice the same dead end.
+    dead_end: Option<Cell>,
     /// A door to use this tick.
     pending_use: Option<Cell>,
     /// Ticks before trying a door again.
@@ -169,6 +171,7 @@ impl Brain {
             checkpoint: 0,
             reset_requested: false,
             stranded: 0,
+            dead_end: None,
             pending_use: None,
             door_wait: 0,
             ticks: 0,
@@ -390,9 +393,25 @@ impl Brain {
             risk * (1.0 - edge.robustness)
                 + failures.get(&(from, edge.to)).map_or(0.0, |&n| f32::from(n) * FAILURE_COST)
         };
-        match self.search.step(nav, view, EXPANSIONS_PER_TICK, &cost) {
+        let status = self.search.step(nav, view, EXPANSIONS_PER_TICK, &cost);
+        let partial = matches!(status, SearchStatus::Partial(_));
+        match status {
             SearchStatus::Running => {}
             SearchStatus::Found(path) | SearchStatus::Partial(path) if !path.is_empty() => {
+                // The same dead end again: as stranded as having no route.
+                let end = path.last().map(|step| step.edge.to);
+                let again = partial && end == self.dead_end;
+                self.dead_end = if partial { end } else { None };
+                if again {
+                    self.stranded = self.stranded.saturating_add(1);
+                    if self.stranded >= STRANDED_RESET {
+                        self.stranded = 0;
+                        self.dead_end = None;
+                        self.reset_requested = true;
+                        self.state = State::Stuck(self.rng.ticks(20, 60));
+                        return self.idle(position);
+                    }
+                }
                 if let Some(name) = &self.traced {
                     eprintln!(
                         "trace {name}: route of {} steps to {:?} explored={:?}",

@@ -811,6 +811,10 @@ fn survey_inventory() {
                     .next()
                     .unwrap()
                     .trim_start_matches("minecraft:");
+                // HALCYON_SURVEY_LIST: every block of a kind, by position.
+                if std::env::var("HALCYON_SURVEY_LIST").is_ok_and(|kind| kind == base) {
+                    eprintln!("  {base} at [{x}, {y}, {z}]");
+                }
                 let unsupported =
                     halcyon_world::motion_info(id).surface == halcyon_world::Surface::Unsupported;
                 let contextual = halcyon_world::contextual_geometry(id);
@@ -1116,6 +1120,11 @@ fn jump_grid() {
         .candidates(&view, from)
         .and_then(|found| found.iter().find(|c| c.to == to).copied());
     eprintln!("candidate {candidate:?}");
+    if let Some(all) = nav.graph.candidates(&view, from) {
+        let jumps: Vec<_> =
+            all.iter().filter(|c| c.kind == EdgeKind::Jump).map(|c| (c.to, c.estimate)).collect();
+        eprintln!("{} candidates, {} jumps: {jumps:?}", all.len(), jumps.len());
+    }
     eprintln!("validated {:?}", candidate.and_then(|c| nav.graph.validate(&view, from, &c)));
     let hop = std::env::var("HALCYON_TRACE_HOP").is_ok();
     for runup in (0..=60).map(|k| k as f32 * 0.05).filter(|&r| r <= runway + 0.01) {

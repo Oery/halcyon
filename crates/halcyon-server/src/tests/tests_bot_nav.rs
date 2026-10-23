@@ -324,3 +324,21 @@ fn the_goal_is_the_highest_standable_cell_nearby() {
     let mut nav = nav();
     assert_eq!(nav.detect_goal(&view, [0, 11, 0], 8), Some([2, 21, 2]));
 }
+
+#[test]
+fn closed_iron_doors_block_the_walk_across_their_cell() {
+    let door = |half: &str| {
+        id(&format!(
+            "minecraft:iron_door[facing=west,half={half},hinge=left,open=false,powered=false]"
+        ))
+    };
+    let mut view = MapView::default();
+    view.floor([-2, 4], 10, [-2, 2]);
+    // The closed panel sits on the east side of its cell: the cell itself
+    // stands fine, but crossing into the next one hits the panel.
+    view.set([1, 11, 0], door("lower")).set([1, 12, 0], door("upper"));
+    let mut nav = nav();
+    assert!(nav.stand(&view, [1, 11, 0]).is_some());
+    assert!(edge(&mut nav, &view, [0, 11, 0], [1, 11, 0]).is_some());
+    assert!(edge(&mut nav, &view, [1, 11, 0], [2, 11, 0]).is_none());
+}
