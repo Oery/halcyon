@@ -90,7 +90,7 @@ pub struct MotionState {
 
 /// One shared lookup table matches Java Mth's quantized trigonometry. It is
 /// initialized once, not retained or recomputed separately for every player.
-fn sin_cos(yaw: f32) -> [f64; 2] {
+pub fn sin_cos(yaw: f32) -> [f64; 2] {
     let table = SIN.get_or_init(|| {
         (0..65_536)
             .map(|i| (f64::from(i) * std::f64::consts::PI * 2.0 / 65_536.0).sin() as f32)

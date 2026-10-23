@@ -44,8 +44,6 @@ pub struct Sound {
     pub category: i32,
 }
 
-// Melee and item actions will play these presets as they arrive.
-#[allow(dead_code)]
 impl Sound {
     pub const ATTACK_STRONG: Self = Self::player("minecraft:entity.player.attack.strong");
     pub const ATTACK_WEAK: Self = Self::player("minecraft:entity.player.attack.weak");
@@ -63,9 +61,11 @@ impl Sound {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Particle(i32);
 
-#[allow(dead_code)]
 impl Particle {
+    #[allow(dead_code)]
     pub const CRIT: Self = Self(particle::CRIT);
+    /// Enchantment damage feedback, once enchantments are supported.
+    #[allow(dead_code)]
     pub const ENCHANTED_HIT: Self = Self(particle::ENCHANTED_HIT);
     pub const DAMAGE_INDICATOR: Self = Self(particle::DAMAGE_INDICATOR);
     pub const SWEEP_ATTACK: Self = Self(particle::SWEEP_ATTACK);
@@ -121,12 +121,10 @@ impl EffectLog {
     }
 
     /// Critical-hit particles around an entity (`animation::CRITICAL_HIT`).
-    #[allow(dead_code)]
     pub fn animation(&mut self, entity_id: i32, animation: u8) {
         self.push(Audience::Entity(entity_id), None, &EntityAnimation { entity_id, animation });
     }
 
-    #[allow(dead_code)]
     pub fn sound(
         &mut self,
         sound: Sound,
@@ -150,7 +148,6 @@ impl EffectLog {
         self.push(Audience::Column(column(pos)), except, &packet);
     }
 
-    #[allow(dead_code)]
     pub fn particles(&mut self, particles: Particles, except: Option<i32>) {
         let Particles { particle, pos: [x, y, z], offset, speed, count } = particles;
         let packet = LevelParticles {

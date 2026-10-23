@@ -82,9 +82,10 @@ impl Client {
         use crate::lifecycle::{DamageKind, TELEPORT_TIMEOUT};
         use mc_protocol::packets::client::{
             CombatKill, GameEvent, Respawn, SetContainerContent, SetContainerSlot, SetCursorItem,
-            SetHealth, SetHeldItemResponse, SyncPlayerPosition,
+            SetEntityVelocity, SetHealth, SetHeldItemResponse, SyncPlayerPosition,
         };
-        use mc_protocol::types::Nbt;
+        use mc_protocol::types::{LpVec3, Nbt};
+        use std::borrow::Cow;
         let mode_changed =
             update.game_mode.is_some_and(|mode| mode.current != self.game_mode.current);
         if let Some(mode) = update.game_mode {
@@ -135,13 +136,17 @@ impl Client {
             self.send(&damage.event(self.entity_id()?)).await?;
         }
         if let Some(damage) = update.death {
-            let message = match damage.kind {
-                DamageKind::Fall => "You fell from a high place",
-                DamageKind::Void => "You fell out of the world",
-                DamageKind::Suffocation => "You suffocated in a wall",
-                DamageKind::Game => "You died",
+            let message: Cow<str> = match damage.kind {
+                DamageKind::Fall => "You fell from a high place".into(),
+                DamageKind::Void => "You fell out of the world".into(),
+                DamageKind::Suffocation => "You suffocated in a wall".into(),
+                DamageKind::PlayerAttack => match &update.killer {
+                    Some(killer) => format!("You were slain by {killer}").into(),
+                    None => "You were slain".into(),
+                },
+                DamageKind::Game => "You died".into(),
             };
-            self.send(&CombatKill { player_id: self.entity_id()?, message: Nbt::Str(message) })
+            self.send(&CombatKill { player_id: self.entity_id()?, message: Nbt::Str(&message) })
                 .await?;
         }
         if let Some(inventory) = update.inventory {
@@ -203,6 +208,13 @@ impl Client {
             .await?;
             self.pending_teleport = Some(teleport.id);
             self.teleport_deadline = Some(Instant::now() + TELEPORT_TIMEOUT);
+        } else if let Some(velocity) = update.velocity {
+            // A teleport already stops the client's motion.
+            self.send(&SetEntityVelocity {
+                entity_id: self.entity_id()?,
+                velocity: LpVec3(velocity),
+            })
+            .await?;
         }
         Ok(())
     }

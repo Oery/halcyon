@@ -194,6 +194,11 @@ impl Session {
         self.input.respawn_requested.set(true);
     }
 
+    /// Attack another player; the owner checks reach, rules and the target.
+    pub fn attack(&self, target: i32) -> bool {
+        self.ready() && self.submit(PlayerAction::Attack(target))
+    }
+
     /// Show a hand swing to observers. Swings coalesce per simulation step, so
     /// repeated clicks never compete with actions for queue space.
     pub fn swing(&self, hand: InteractionHand) {

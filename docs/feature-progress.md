@@ -1,6 +1,6 @@
 # Halcyon feature progress
 
-Last reviewed: 2026-10-22. Target: Java Edition 26.3.
+Last reviewed: 2026-10-23. Target: Java Edition 26.3.
 
 All 335 features from the [feature assessment](halcyon-server-features.md), in the same order. This tracks available behavior; the assessment records scope and rationale.
 
@@ -59,20 +59,20 @@ Update this tracker when feature support changes. Packet definitions, static cli
 
 | Feature | Progress |
 | --- | --- |
-| Melee targeting | Not started |
-| Attack cooldowns | Not started |
-| Critical hits | Not started |
-| Sweeping attacks | Not started |
+| Melee targeting | Done — players attack other players with vanilla reach, and bots can be hit and knocked back; other entity types are not attackable yet. |
+| Attack cooldowns | Done — 26.3 weapon attack speed and damage, charge reset by attacks, swings and switching items. Maces and spears cannot attack. |
+| Critical hits | Done — falling, airborne, not climbing, out of water and not sprinting; status effects that block them are unavailable. |
+| Sweeping attacks | Partial — grounded, slow sword attacks sweep nearby players; no Sweeping Edge. |
 | Mace smashes | Conditional |
 | Spear attacks | Conditional |
-| Knockback | Not started |
+| Knockback | Partial — hurt, sprint and sweep knockback with armor knockback resistance; no Knockback enchantment. |
 | Shields and blocking | Not started |
 | Ranged weapon use | Not started |
 | Projectile motion and hits | Not started |
 | Projectile ownership | Not started |
-| Damage types and attribution | Partial — fall, void and game damage with optional source. |
+| Damage types and attribution | Partial — fall, void, player-attack and game damage with optional source. |
 | Damage cooldowns | Done — shared damage immunity window. |
-| Armor and protection | Not started |
+| Armor and protection | Partial — worn armor points and toughness reduce player attacks; no enchantments or armor wear. |
 | Health and absorption | Partial — health; no absorption. |
 | Healing and regeneration | Partial — explicit healing; no regeneration. |
 | Hunger, saturation, and exhaustion | Not started |
@@ -83,7 +83,7 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Air and exposure state | Not started |
 | Death prevention | Not started |
 | Enchantment effects | Conditional |
-| Player-versus-player rules | Not started |
+| Player-versus-player rules | Partial — per-player PvP rule, off in the protected lobby (`HALCYON_PVP=1` opens it); no team rules. |
 
 ## 4. Items and inventory
 
@@ -92,7 +92,7 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Item stacks | Done |
 | Item components | Partial — defaults plus damage, unbreakable, name, lore, dye and glint overrides. |
 | Player inventory | Done — storage, hotbar, armor, offhand and cursor. |
-| Equipment changes | Partial — held items, armor and offhand synchronized; no attribute effects. |
+| Equipment changes | Partial — held items, armor and offhand synchronized; weapon and armor values apply to melee, other attribute effects do not. |
 | Inventory clicks | Done — ordinary rearrangement; crafting and dropping disabled. |
 | Inventory reconciliation | Done |
 | Container sessions | Not started |
@@ -233,7 +233,7 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Regional climate behavior | Conditional |
 | Environment attributes | Not started |
 | Dimension-specific hazards | Conditional |
-| Game-rule state | Partial — player protection and fall/void damage rules. |
+| Game-rule state | Partial — player protection, PvP and fall/void damage rules. |
 
 ## 11. Entities and mobs
 
@@ -298,8 +298,8 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Titles and action bar | Not started |
 | Player HUD state | Partial — health and hotbar; food stays fixed. |
 | Locator bar and waypoints | Not started |
-| Sounds | Partial — positioned and entity sounds for nearby players, with combat presets; observers hear player hurt sounds. |
-| Particles | Partial — option-free particles for nearby players, with crit, hit, damage-indicator and sweep presets. |
+| Sounds | Partial — positioned and entity sounds for nearby players, including melee attack sounds; observers hear player hurt sounds. |
+| Particles | Partial — option-free particles for nearby players, including melee damage-indicator and sweep particles. |
 | World and entity events | Partial — player damage, death, swings and critical-hit animations, shown to other players. |
 | Maps and markers | Conditional |
 | Camera targets | Not started |

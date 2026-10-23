@@ -164,6 +164,8 @@ impl Lobby {
         diagnostics: bool,
     ) -> Result<Self, crate::arena::EditError> {
         let mut state = Registry::default();
+        // Temporary until matches own their rules: HALCYON_PVP=1 opens the lobby to combat.
+        state.open_pvp = std::env::var("HALCYON_PVP").is_ok_and(|value| value == "1");
         state.arena.initialize(&world)?;
         // Build the shared openings catalog before the first use reaches a tick.
         halcyon_world::opening(0);

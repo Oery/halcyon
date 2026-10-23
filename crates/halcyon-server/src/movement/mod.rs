@@ -27,7 +27,7 @@ use collision::{
 use media::{InsideEffects, inside_effects};
 #[cfg(test)]
 pub use physics::shared_motion_bytes;
-pub use physics::{MotionState, MovementInput};
+pub use physics::{MotionState, MovementInput, sin_cos};
 use terrain::{
     ShapeContext, Terrain, TerrainCell, climbing, collect_colliders, ground_contact, honey_slide,
     landing_damage,
@@ -117,6 +117,8 @@ pub struct MovementState {
     swimming: bool,
     sprinting: bool,
     fall_distance: f64,
+    /// Displacement of the last accepted move, like vanilla's last known client movement.
+    known_movement: [f64; 3],
     powder_walk: bool,
     flying: bool,
     /// Spectators pass through terrain and fluids without collision or contact.
@@ -192,6 +194,7 @@ impl MovementState {
             swimming: false,
             sprinting: false,
             fall_distance: 0.0,
+            known_movement: [0.0; 3],
             powder_walk: false,
             flying: false,
             spectator: false,
@@ -219,6 +222,37 @@ impl MovementState {
 
     pub fn sprinting(&self) -> bool {
         self.sprinting
+    }
+
+    pub fn known_movement(&self) -> [f64; 3] {
+        self.known_movement
+    }
+
+    /// Vanilla's eye position for reach checks.
+    pub fn eye_y(&self) -> f64 {
+        self.transform.y + eye_height(self.pose)
+    }
+
+    pub fn bounds(&self) -> Aabb {
+        player_box_with_height(self.transform, pose_height(self.pose))
+    }
+
+    /// Player.canCriticalAttack movement conditions: falling, airborne, not
+    /// climbing, out of water and not sprinting. Mobility effects and riding
+    /// are unavailable.
+    pub fn can_critical(&self, world: &impl BlockView) -> bool {
+        let mut cells = 0;
+        self.fall_distance > 0.0
+            && !self.transform.on_ground
+            && !self.sprinting
+            && !climbing(world, self.transform)
+            && fluid_contact(world, self.transform, self.pose, false, &mut cells)
+                .is_some_and(|fluids| !fluids.water.touching())
+    }
+
+    /// A sprint-knockback attack ends the attacker's sprint.
+    pub fn stop_sprinting(&mut self) {
+        self.sprinting = false;
     }
 
     pub fn set_powder_snow_walk(&mut self, enabled: bool) {
@@ -306,6 +340,7 @@ impl MovementState {
         self.swimming = false;
         self.sprinting = false;
         self.fall_distance = 0.0;
+        self.known_movement = [0.0; 3];
         self.motion = MotionState::default();
         self.colliders.clear();
         self.step_heights.clear();
@@ -545,6 +580,11 @@ impl MovementState {
                 self.fall_distance = 0.0;
             }
             self.motion.effects = effects;
+            self.known_movement = [
+                accepted.x - self.transform.x,
+                accepted.y - self.transform.y,
+                accepted.z - self.transform.z,
+            ];
             self.transform = accepted;
             self.sneaking = proposal.sneaking;
             self.pose = select_pose(

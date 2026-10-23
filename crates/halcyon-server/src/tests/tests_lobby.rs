@@ -450,3 +450,89 @@ fn a_full_registration_queue_cannot_block_disconnect_cleanup() {
     assert!(registry.players.is_empty());
     assert!(sender.is_full());
 }
+
+#[test]
+fn melee_attacks_check_reach_rules_and_charge_then_knock_back_and_sweep() {
+    use crate::lifecycle::DamageKind;
+    use std::time::Duration;
+    let world = gameplay_benchmarks::terrain(false, false);
+    let mut registry = Registry::default();
+    registry.open_pvp = true;
+    let attacker = command_player(&mut registry, 1, "Attacker");
+    let victim = command_player(&mut registry, 2, "Victim");
+    let bystander = command_player(&mut registry, 3, "Bystander");
+    let far = command_player(&mut registry, 4, "Far");
+    let ground =
+        Transform { x: 8.5, y: 64.0, z: 8.5, yaw: -90.0, on_ground: true, ..Default::default() };
+    for (session, x, z) in
+        [(&attacker, 8.5, 8.5), (&victim, 10.5, 8.5), (&bystander, 11.0, 9.5), (&far, 20.5, 8.5)]
+    {
+        let state = &mut registry.players.get_mut(&session.entity_id()).unwrap().state;
+        state.movement.place(Transform { x, z, ..ground });
+    }
+    registry.publish();
+    let health = |registry: &Registry, session: &Session| {
+        registry.players[&session.entity_id()].state.life.health()
+    };
+    let start = Instant::now();
+    let mut tick = 0;
+    let mut step = |registry: &mut Registry, steps: u64| {
+        for _ in 0..steps {
+            tick += 1;
+            registry.simulate(&world, start + Duration::from_millis(50 * tick), &mut Vec::new());
+        }
+    };
+    step(&mut registry, 6);
+
+    // Out of reach: nothing happens.
+    attacker.attack(far.entity_id());
+    step(&mut registry, 1);
+    assert_eq!(health(&registry, &far), 20.0);
+
+    // A charged fist deals one point and pushes the victim away from the attacker.
+    victim.take_update();
+    attacker.attack(victim.entity_id());
+    step(&mut registry, 1);
+    assert_eq!(health(&registry, &victim), 19.0);
+    let update = victim.take_update();
+    let damage = update.damage.unwrap();
+    assert_eq!(
+        (damage.kind, damage.source),
+        (DamageKind::PlayerAttack, Some(attacker.entity_id()))
+    );
+    let [x, y, z] = update.velocity.unwrap();
+    assert!((x - 0.4).abs() < 1e-6 && (y - 0.4).abs() < 1e-6 && z.abs() < 1e-6);
+    assert_eq!(health(&registry, &bystander), 20.0);
+
+    // An uncharged follow-up is weaker than the last hit inside the damage window.
+    attacker.attack(victim.entity_id());
+    step(&mut registry, 1);
+    assert_eq!(health(&registry, &victim), 19.0);
+
+    // A charged, grounded sword sweeps nearby players for one point.
+    let sword = mc_protocol::data::items::ITEMS
+        .iter()
+        .position(|(name, ..)| *name == "minecraft:diamond_sword")
+        .unwrap();
+    let sword = ItemStack::plain(sword as i32, 1).unwrap();
+    let state = &mut registry.players.get_mut(&attacker.entity_id()).unwrap().state;
+    state.equipment =
+        Rc::new(std::array::from_fn(
+            |slot| {
+                if slot == 0 { sword.clone() } else { ItemStack::default() }
+            },
+        ));
+    step(&mut registry, 14);
+    attacker.attack(victim.entity_id());
+    step(&mut registry, 1);
+    assert_eq!(health(&registry, &victim), 12.0);
+    assert_eq!(health(&registry, &bystander), 19.0);
+    assert_eq!(health(&registry, &far), 20.0);
+
+    // Either player opting out of PvP makes attacks harmless.
+    registry.players.get_mut(&victim.entity_id()).unwrap().state.life.rules.pvp = false;
+    step(&mut registry, 14);
+    attacker.attack(victim.entity_id());
+    step(&mut registry, 1);
+    assert_eq!(health(&registry, &victim), 12.0);
+}

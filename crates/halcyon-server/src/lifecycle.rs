@@ -16,6 +16,8 @@ pub enum DamageKind {
     Fall,
     Void,
     Suffocation,
+    /// Melee hits; the source is the attacking player.
+    PlayerAttack,
     /// Used by arena damage APIs before a concrete game exists.
     #[allow(dead_code)]
     Game,
@@ -28,6 +30,7 @@ impl DamageKind {
             Self::Fall => 10,
             Self::Void => 32,
             Self::Suffocation => 22,
+            Self::PlayerAttack => 34,
             Self::Game => 18,
         }
     }
@@ -66,12 +69,19 @@ pub struct PlayerRules {
     pub protected: bool,
     pub fall_damage: bool,
     pub void_damage: bool,
+    /// Whether this player may attack and be attacked by other players.
+    pub pvp: bool,
     pub respawn: Transform,
 }
 
 impl PlayerRules {
     pub fn lobby(spawn: Transform) -> Self {
-        Self { protected: true, fall_damage: false, void_damage: false, respawn: spawn }
+        Self { protected: true, fall_damage: false, void_damage: false, pvp: false, respawn: spawn }
+    }
+
+    /// Combat-ready rules: damage, fall/void deaths and PvP all enabled.
+    pub fn open(spawn: Transform) -> Self {
+        Self { protected: false, fall_damage: true, void_damage: true, pvp: true, respawn: spawn }
     }
 }
 
@@ -145,7 +155,24 @@ impl PlayerLife {
         }
     }
 
+    /// Whether a new hit only deals its excess over the last one, without
+    /// knockback or a hurt animation.
+    pub fn damage_window(&self, now: Instant) -> bool {
+        self.damage_until.is_some_and(|until| now < until)
+    }
+
     pub fn damage(&mut self, damage: Damage, now: Instant) -> DamageResult {
+        self.damage_absorbed(damage, now, |amount| amount)
+    }
+
+    /// Like `damage`, but `absorb` mitigates the dealt amount after the
+    /// damage window compared raw amounts, as vanilla's armor does.
+    pub fn damage_absorbed(
+        &mut self,
+        damage: Damage,
+        now: Instant,
+        absorb: impl FnOnce(f32) -> f32,
+    ) -> DamageResult {
         if !self.alive()
             || self.rules.protected
             || !damage.amount.is_finite()
@@ -153,7 +180,7 @@ impl PlayerLife {
         {
             return DamageResult::Ignored;
         }
-        let amount = if self.damage_until.is_some_and(|until| now < until) {
+        let amount = if self.damage_window(now) {
             if damage.amount <= self.last_damage {
                 return DamageResult::Ignored;
             }
@@ -165,7 +192,7 @@ impl PlayerLife {
             self.last_damage = damage.amount;
             damage.amount
         };
-        self.health = (self.health - amount).max(0.0);
+        self.health = (self.health - absorb(amount)).max(0.0);
         if self.health == 0.0 {
             self.dead_at = Some(now);
         }

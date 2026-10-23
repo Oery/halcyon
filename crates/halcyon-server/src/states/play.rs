@@ -233,11 +233,13 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
             }
         }
         Packets::Attack(p) => {
-            // Combat is unavailable; a spectator's attack views through its target.
-            if client.game_mode.current == GameMode::Spectator
-                && let Some(session) = &client.session
-            {
-                session.submit(PlayerAction::Spectate(CameraRequest::Follow(p.entity_id)));
+            // A spectator's attack views through its target instead of hitting it.
+            if let Some(session) = &client.session {
+                if client.game_mode.current == GameMode::Spectator {
+                    session.submit(PlayerAction::Spectate(CameraRequest::Follow(p.entity_id)));
+                } else {
+                    session.attack(p.entity_id);
+                }
             }
         }
         Packets::TeleportToEntity(p) => {

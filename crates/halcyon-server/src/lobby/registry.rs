@@ -10,11 +10,14 @@ use uuid::Uuid;
 
 use super::session::Input;
 use super::{AdmissionError, PlayerSnapshot, Profile, StepMetrics, Transform, WorldAction};
+use crate::combat::{self, Armor};
+use crate::effects::{Particle, Particles, Sound};
 use crate::interaction::{
     BLOCK_ACTIONS_PER_STEP, BlockInteraction, break_block, break_cells, use_block,
 };
 use crate::inventory::InventoryAction;
-use crate::player::{PlayerAction, PlayerState, PlayerUpdate};
+use crate::lifecycle::{Damage, DamageKind, DamageResult, PlayerRules};
+use crate::player::{PendingAttack, PlayerAction, PlayerState, PlayerUpdate};
 
 pub(super) struct Player {
     pub(super) snapshot: PlayerSnapshot,
@@ -49,6 +52,33 @@ pub struct Registry {
     closed_scratch: Vec<i32>,
     moved_scratch: Vec<ColumnMove>,
     camera_scratch: Vec<i32>,
+    /// Attackers this step, and whether their movement allows a critical hit.
+    attack_scratch: Vec<(i32, bool)>,
+    sweep_scratch: Vec<i32>,
+    /// Sound seeds and degenerate knockback directions.
+    rng: crate::bot::rng::Rng,
+    /// New players start with combat, fall and void damage enabled.
+    pub(super) open_pvp: bool,
+}
+
+/// A validated melee attack, computed from the attacker's and target's authority.
+#[derive(Clone, Copy)]
+struct Hit {
+    attacker: i32,
+    target: i32,
+    damage: f32,
+    strength: f32,
+    strong: bool,
+    crit: bool,
+    sprint_knockback: bool,
+    sweep: bool,
+    pvp: bool,
+    origin: Transform,
+    /// The attacker's yaw as a knockback direction, `(sin, -cos)`.
+    facing: [f64; 2],
+    /// The attacker's body height, for its sweep particle.
+    height: f64,
+    target_bounds: halcyon_world::Aabb,
 }
 
 impl Registry {
@@ -334,7 +364,13 @@ impl Registry {
                 },
                 active: false,
                 input,
-                state: PlayerState::new(transform),
+                state: {
+                    let mut state = PlayerState::new(transform);
+                    if self.open_pvp {
+                        state.life.rules = PlayerRules::open(state.life.rules.respawn);
+                    }
+                    state
+                },
             },
         );
         Ok(entity_id)
@@ -459,6 +495,10 @@ impl Registry {
                     self.effects.hurt(id, damage);
                 }
                 let swings = input.swings.replace(0);
+                if swings & (1 << InteractionHand::Main as u8) != 0 {
+                    // Swinging restarts the charge after this step's attack used it.
+                    player.state.reset_attack_strength();
+                }
                 if player.state.life.alive() && !player.state.spectator() {
                     for hand in [InteractionHand::Main, InteractionHand::Off] {
                         if swings & (1 << hand as u8) != 0 {
@@ -472,6 +512,9 @@ impl Registry {
             }
             if player.state.camera_pending() {
                 self.camera_scratch.push(id);
+            }
+            if player.state.attack_pending() {
+                self.attack_scratch.push((id, player.state.movement.can_critical(&world)));
             }
             let accepted = player.state.movement.transform();
             let old = input.accepted.replace(accepted);
@@ -497,8 +540,275 @@ impl Registry {
                 notices.push(input.clone());
             }
         }
+        self.resolve_attacks(now, notices);
         self.resolve_cameras(notices);
         metrics
+    }
+
+    /// Melee attacks read other players' authority after every player advanced.
+    fn resolve_attacks(&mut self, now: Instant, notices: &mut Vec<Rc<Input>>) {
+        // Resolve in entity order, independent of map iteration.
+        self.attack_scratch.sort_unstable_by_key(|&(id, _)| id);
+        let mut attacks = std::mem::take(&mut self.attack_scratch);
+        for (id, crit) in attacks.drain(..) {
+            let Some(attack) = self.players.get_mut(&id).and_then(|p| p.state.take_attack()) else {
+                continue;
+            };
+            if let Some(hit) = self.plan_hit(id, attack, crit) {
+                self.strike(hit, now, notices);
+            }
+        }
+        // Keep the scratch capacity for the next step.
+        self.attack_scratch = attacks;
+    }
+
+    /// Player.attack's checks and damage, before anything changes. Invalid,
+    /// out-of-reach or unsupported attacks do nothing, as in vanilla.
+    fn plan_hit(&self, id: i32, attack: PendingAttack, crit: bool) -> Option<Hit> {
+        let attacker = self.players.get(&id).filter(|p| p.active && !p.input.closed.get())?;
+        let state = &attacker.state;
+        if !state.life.alive() || state.spectator() || state.life.pending_teleport().is_some() {
+            return None;
+        }
+        let target = self.players.get(&attack.target).filter(|target| {
+            attack.target != id
+                && target.active
+                && !target.input.closed.get()
+                && target.state.life.alive()
+                && !target.state.spectator()
+        })?;
+        let origin = state.movement.transform();
+        let eye = [origin.x, state.movement.eye_y(), origin.z];
+        let target_bounds = target.state.movement.bounds();
+        let creative = state.game_mode.current == mc_protocol::types::GameMode::Creative;
+        if !combat::in_reach(eye, target_bounds, creative) {
+            return None;
+        }
+        let weapon = combat::weapon(&state.equipment[0])?;
+        let strength = weapon.strength(attack.ticks);
+        let strong = combat::strong(strength);
+        let crit = strong && crit;
+        let sprint_knockback = strong && state.movement.sprinting();
+        let sweep = strong
+            && !crit
+            && !sprint_knockback
+            && combat::sweeps(weapon, origin.on_ground, state.movement.known_movement());
+        let damage = combat::scaled_damage(weapon, strength) * if crit { 1.5 } else { 1.0 };
+        let bounds = state.movement.bounds();
+        let [sin, cos] = crate::movement::sin_cos(origin.yaw);
+        Some(Hit {
+            attacker: id,
+            target: attack.target,
+            damage,
+            strength,
+            strong,
+            crit,
+            sprint_knockback,
+            sweep,
+            pvp: state.life.rules.pvp,
+            origin,
+            facing: [sin, -cos],
+            height: bounds.max[1] - bounds.min[1],
+            target_bounds,
+        })
+    }
+
+    fn strike(&mut self, hit: Hit, now: Instant, notices: &mut Vec<Rc<Input>>) {
+        let id = hit.attacker;
+        let origin = hit.origin;
+        let pos = [origin.x, origin.y, origin.z];
+        if let Some(attacker) = self.players.get_mut(&id) {
+            attacker.state.reset_attack_strength();
+        }
+        if hit.sprint_knockback {
+            self.attack_sound(Sound::ATTACK_KNOCKBACK, pos);
+        }
+        let extra = hit.sprint_knockback.then_some(combat::SPRINT_KNOCKBACK);
+        let Some(dealt) = self.melee_damage(hit, hit.target, hit.damage, extra, now, notices)
+        else {
+            self.attack_sound(Sound::ATTACK_NODAMAGE, pos);
+            return;
+        };
+        if hit.sprint_knockback
+            && let Some(attacker) = self.players.get_mut(&id)
+        {
+            attacker.state.movement.stop_sprinting();
+            if attacker.state.driven() {
+                let velocity = &mut attacker.state.movement.motion.velocity;
+                velocity[0] *= 0.6;
+                velocity[2] *= 0.6;
+            }
+        }
+        if hit.sweep {
+            self.sweep(hit, now, notices);
+        }
+        if hit.crit {
+            self.attack_sound(Sound::ATTACK_CRIT, pos);
+            self.effects
+                .animation(hit.target, mc_protocol::packets::client::animation::CRITICAL_HIT);
+        } else if !hit.sweep {
+            let sound = if hit.strong {
+                Sound::ATTACK_STRONG
+            } else {
+                Sound::ATTACK_WEAK
+            };
+            self.attack_sound(sound, pos);
+        }
+        if dealt > 2.0 {
+            let bounds = hit.target_bounds;
+            let center = [
+                (bounds.min[0] + bounds.max[0]) / 2.0,
+                (bounds.min[1] + bounds.max[1]) / 2.0,
+                (bounds.min[2] + bounds.max[2]) / 2.0,
+            ];
+            self.effects.particles(
+                Particles {
+                    particle: Particle::DAMAGE_INDICATOR,
+                    pos: center,
+                    offset: [0.1, 0.0, 0.1],
+                    speed: 0.2,
+                    count: (f64::from(dealt) * 0.5) as i32,
+                },
+                None,
+            );
+        }
+    }
+
+    /// `doSweepAttack`: other players around the target take a weak hit.
+    fn sweep(&mut self, hit: Hit, now: Instant, notices: &mut Vec<Rc<Input>>) {
+        let (id, origin) = (hit.attacker, hit.origin);
+        self.attack_sound(Sound::ATTACK_SWEEP, [origin.x, origin.y, origin.z]);
+        let mut area = hit.target_bounds;
+        for (axis, amount) in [1.0, 0.25, 1.0].into_iter().enumerate() {
+            area.min[axis] -= amount;
+            area.max[axis] += amount;
+        }
+        let low = Transform { x: area.min[0], z: area.min[2], ..origin }.chunk();
+        let high = Transform { x: area.max[0], z: area.max[2], ..origin }.chunk();
+        self.sweep_scratch.clear();
+        // Columns are refreshed at publication; a chunk of margin covers this step's moves.
+        for x in low.0 - 1..=high.0 + 1 {
+            for z in low.1 - 1..=high.1 + 1 {
+                let Some(members) = self.columns.get(&(x, z)) else {
+                    continue;
+                };
+                for &other in members {
+                    let Some(player) = self.players.get(&other) else {
+                        continue;
+                    };
+                    let transform = player.state.movement.transform();
+                    let [dx, dy, dz] =
+                        [transform.x - origin.x, transform.y - origin.y, transform.z - origin.z];
+                    if other != id
+                        && other != hit.target
+                        && player.active
+                        && !player.input.closed.get()
+                        && player.state.life.alive()
+                        && !player.state.spectator()
+                        && dx * dx + dy * dy + dz * dz < combat::SWEEP_RANGE_SQR
+                        && combat::intersects(area, player.state.movement.bounds())
+                    {
+                        self.sweep_scratch.push(other);
+                    }
+                }
+            }
+        }
+        self.sweep_scratch.sort_unstable();
+        // Without Sweeping Edge, each swept player takes the charge-scaled minimum.
+        for index in 0..self.sweep_scratch.len() {
+            let target = self.sweep_scratch[index];
+            let extra = Some(combat::SWEEP_KNOCKBACK);
+            self.melee_damage(hit, target, hit.strength, extra, now, notices);
+        }
+        let [dx, dz] = [-hit.facing[0], -hit.facing[1]];
+        self.effects.particles(
+            Particles {
+                particle: Particle::SWEEP_ATTACK,
+                pos: [origin.x + dx, origin.y + hit.height * 0.5, origin.z + dz],
+                offset: [dx as f32, 0.0, dz as f32],
+                speed: 0.0,
+                count: 0,
+            },
+            None,
+        );
+    }
+
+    /// Damage one player through its rules and armor, then knock it back:
+    /// away from the attacker on a fresh hit, plus `extra` strength along the
+    /// attacker's facing. Returns the health lost, or None when ignored.
+    fn melee_damage(
+        &mut self,
+        hit: Hit,
+        target: i32,
+        amount: f32,
+        extra: Option<f64>,
+        now: Instant,
+        notices: &mut Vec<Rc<Input>>,
+    ) -> Option<f32> {
+        let damage = Damage { kind: DamageKind::PlayerAttack, amount, source: Some(hit.attacker) };
+        let victim = self.players.get_mut(&target)?;
+        let before = victim.state.life.health();
+        let fresh = !victim.state.life.damage_window(now);
+        let mut update = PlayerUpdate::default();
+        let result = if hit.pvp && victim.state.life.rules.pvp {
+            victim.state.attacked(damage, now, &mut update)
+        } else {
+            DamageResult::Ignored
+        };
+        let DamageResult::Hurt { died, .. } = result else {
+            return None;
+        };
+        if victim.active {
+            self.effects.hurt(target, damage);
+        }
+        let transform = victim.state.movement.transform();
+        let resistance = Armor::worn(&victim.state.equipment).knockback_resistance;
+        let rng = &mut self.rng;
+        let mut velocity = None;
+        if fresh {
+            let away = [hit.origin.x - transform.x, hit.origin.z - transform.z];
+            velocity = combat::knockback(
+                victim.state.knockback_base(),
+                transform.on_ground,
+                combat::HURT_KNOCKBACK,
+                resistance,
+                away,
+                || rng.unit(),
+            );
+        }
+        if let Some(strength) = extra {
+            let base = velocity.unwrap_or_else(|| victim.state.knockback_base());
+            velocity = combat::knockback(
+                base,
+                transform.on_ground,
+                strength,
+                resistance,
+                hit.facing,
+                || rng.unit(),
+            )
+            .or(velocity);
+        }
+        if let Some(velocity) = velocity {
+            victim.state.push(velocity, &mut update);
+        }
+        let dealt = before - victim.state.life.health();
+        let input = victim.input.clone();
+        if died {
+            // Only a kill names its attacker.
+            update.killer = self
+                .players
+                .get(&hit.attacker)
+                .map(|killer| Rc::from(killer.snapshot.profile.username.as_str()));
+        }
+        if update.changed() {
+            input.update.borrow_mut().merge(update);
+            notices.push(input);
+        }
+        Some(dealt)
+    }
+
+    fn attack_sound(&mut self, sound: Sound, pos: [f64; 3]) {
+        self.effects.sound(sound, pos, 1.0, 1.0, self.rng.next() as i64, None);
     }
 
     /// Spectator cameras read other players' authority after every player advanced.

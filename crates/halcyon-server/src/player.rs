@@ -48,6 +48,8 @@ pub enum PlayerAction {
     UseItem(Option<InteractionHand>),
     /// Spectator camera and spectator-menu teleports, resolved against other players.
     Spectate(CameraRequest),
+    /// Melee attack on another entity, resolved against other players.
+    Attack(i32),
     EditInventory {
         edit: InventoryEdit,
         reply: glommio::channels::oneshot::Sender<Result<ItemStack, InventoryEditError>>,
@@ -84,6 +86,14 @@ pub enum CameraRequest {
     Follow(i32),
     Stop,
     TeleportTo(i32),
+}
+
+/// A melee attack awaiting resolution, with the attack strength it was made at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PendingAttack {
+    pub target: i32,
+    /// Ticks since the attack strength was last reset.
+    pub ticks: u32,
 }
 
 /// Another player's current authority, read by the owner for camera resolution.
@@ -183,6 +193,10 @@ pub struct PlayerUpdate {
     pub health: Option<f32>,
     pub damage: Option<Damage>,
     pub death: Option<Damage>,
+    /// The attacking player's name when `death` was a melee kill.
+    pub killer: Option<Rc<str>>,
+    /// Knockback for the player's own client, in blocks per tick.
+    pub velocity: Option<[f64; 3]>,
     pub respawn: bool,
     pub inventory: Option<InventorySnapshot>,
     pub inventory_slots: u64,
@@ -194,6 +208,8 @@ impl PlayerUpdate {
         self.block_resync = None;
         self.damage = None;
         self.death = None;
+        self.killer = None;
+        self.velocity = None;
         self.teleport = None;
     }
 
@@ -228,6 +244,10 @@ impl PlayerUpdate {
         }
         if newer.death.is_some() {
             self.death = newer.death;
+            self.killer = newer.killer;
+        }
+        if newer.velocity.is_some() {
+            self.velocity = newer.velocity;
         }
         self.respawn |= newer.respawn;
         if newer.inventory.is_some() {
@@ -246,6 +266,7 @@ impl PlayerUpdate {
             || self.health.is_some()
             || self.damage.is_some()
             || self.death.is_some()
+            || self.velocity.is_some()
             || self.respawn
             || self.inventory.is_some()
     }
@@ -263,6 +284,10 @@ pub struct PlayerState {
     resync_after: Option<Instant>,
     camera: Option<i32>,
     camera_request: Option<CameraRequest>,
+    /// Vanilla's attackStrengthTicker, in simulation steps. Assumes 20 Hz
+    /// steps; a faster simulation rate must scale it to real time.
+    attack_ticks: u32,
+    attack: Option<PendingAttack>,
 }
 
 impl PlayerState {
@@ -278,6 +303,8 @@ impl PlayerState {
             resync_after: None,
             camera: None,
             camera_request: None,
+            attack_ticks: 0,
+            attack: None,
         }
     }
 
@@ -305,6 +332,55 @@ impl PlayerState {
 
     pub fn camera_request(&self) -> Option<CameraRequest> {
         self.camera_request
+    }
+
+    pub fn attack_pending(&self) -> bool {
+        self.attack.is_some()
+    }
+
+    pub fn take_attack(&mut self) -> Option<PendingAttack> {
+        self.attack.take()
+    }
+
+    /// Attacks, swings and switching to a different item restart the charge.
+    pub fn reset_attack_strength(&mut self) {
+        self.attack_ticks = 0;
+    }
+
+    /// Owner-driven bodies keep real velocity; human clients own theirs.
+    pub fn driven(&self) -> bool {
+        self.movement_input.is_some()
+    }
+
+    /// The motion knockback starts from. The server does not track a human
+    /// client's velocity, which vanilla also leaves at rest between pushes.
+    pub fn knockback_base(&self) -> [f64; 3] {
+        if self.driven() {
+            self.movement.motion.velocity
+        } else {
+            [0.0; 3]
+        }
+    }
+
+    /// Apply knockback to a driven body, or send it to the player's client.
+    pub fn push(&mut self, velocity: [f64; 3], update: &mut PlayerUpdate) {
+        if self.driven() {
+            self.movement.motion.velocity = velocity;
+        } else {
+            update.velocity = Some(velocity);
+        }
+    }
+
+    /// Damage dealt by another player's attack, after its rules allowed it.
+    pub fn attacked(
+        &mut self,
+        damage: Damage,
+        now: Instant,
+        update: &mut PlayerUpdate,
+    ) -> DamageResult {
+        let result = self.apply_damage(damage, now);
+        self.damaged(damage, result, update);
+        result
     }
 
     pub fn camera_pending(&self) -> bool {
@@ -424,6 +500,8 @@ impl PlayerState {
             }
             update.clear_life_events();
             self.using = None;
+            self.attack = None;
+            self.attack_ticks = 0;
             self.inventory.begin_life();
             update.health = Some(self.life.health());
             update.respawn = true;
@@ -454,8 +532,12 @@ impl PlayerState {
     }
 
     fn apply_damage(&mut self, damage: Damage, now: Instant) -> DamageResult {
-        if self.game_mode.invulnerable() && damage.kind != crate::lifecycle::DamageKind::Void {
+        if self.game_mode.invulnerable() && damage.kind != DamageKind::Void {
             DamageResult::Ignored
+        } else if damage.kind == DamageKind::PlayerAttack {
+            // Fall, void and suffocation bypass armor in vanilla.
+            let armor = crate::combat::Armor::worn(&self.equipment);
+            self.life.damage_absorbed(damage, now, |amount| armor.absorb(amount))
         } else {
             self.life.damage(damage, now)
         }
@@ -467,10 +549,16 @@ impl PlayerState {
             .then(|| std::mem::replace(&mut self.equipment, Rc::new(self.inventory.equipment())));
         // Vanilla stops a use when the hand's item or the held selection changes.
         if let Some((hand, selected)) = self.using
-            && (previous.is_some_and(|old| old[hand as usize] != self.equipment[hand as usize])
+            && (previous
+                .as_ref()
+                .is_some_and(|old| old[hand as usize] != self.equipment[hand as usize])
                 || (hand == InteractionHand::Main && selected != self.inventory.selected()))
         {
             self.using = None;
+        }
+        let kind = |stack: &ItemStack| if stack.is_empty() { 0 } else { stack.item_id() };
+        if previous.is_some_and(|old| kind(&old[0]) != kind(&self.equipment[0])) {
+            self.reset_attack_strength();
         }
         if changed.has_changes() {
             update.inventory_slots |= changed.changed_slots;
@@ -519,6 +607,12 @@ impl PlayerState {
             let Some(queued) = actions.pending.pop_front() else {
                 break;
             };
+            if matches!(queued.action, PlayerAction::Attack(_)) && self.attack.is_some() {
+                // One attack resolves per step. Vanilla would land later ones
+                // uncharged inside the damage window, so they are dropped
+                // rather than queued behind other actions.
+                continue;
+            }
             if queued.generation != self.life.generation {
                 match queued.action {
                     PlayerAction::EditInventory { reply, .. } => {
@@ -642,6 +736,14 @@ impl PlayerState {
                         self.camera_request = Some(request);
                     }
                 }
+                PlayerAction::Attack(target) => {
+                    if self.life.alive()
+                        && !self.spectator()
+                        && self.life.pending_teleport().is_none()
+                    {
+                        self.attack = Some(PendingAttack { target, ticks: self.attack_ticks });
+                    }
+                }
             }
         }
         if update.teleport.is_some() {
@@ -651,6 +753,7 @@ impl PlayerState {
         }
         self.movement.set_flying(self.game_mode.flying);
         self.movement.set_spectator(self.spectator());
+        self.attack_ticks = self.attack_ticks.saturating_add(1);
         if !self.life.alive() || self.life.pending_teleport().is_some() {
             if self.movement.suffocating(world) {
                 let damage = Damage { kind: DamageKind::Suffocation, amount: 1.0, source: None };

@@ -1,5 +1,6 @@
 //! SplitMix64: tiny, seedable and reproducible across runs.
 
+#[derive(Default)]
 pub struct Rng(u64);
 
 impl Rng {
