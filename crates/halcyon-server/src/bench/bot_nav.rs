@@ -566,7 +566,8 @@ fn trace_edge() {
         .candidates(&view, from)
         .and_then(|found| found.iter().find(|c| c.to == to).copied());
     eprintln!("candidate {candidate:?}");
-    let (kind, via) = candidate.map_or((EdgeKind::Jump, None), |c| (c.kind, c.via));
+    let (kind, via, then) =
+        candidate.map_or((EdgeKind::Jump, None, None), |c| (c.kind, c.via, c.then));
     let runup: f32 = std::env::var("HALCYON_TRACE_RUNUP").map_or(0.3, |r| r.parse().unwrap());
     let takeoff: f32 = std::env::var("HALCYON_TRACE_TAKEOFF").map_or(0.6, |r| r.parse().unwrap());
     let sprint = std::env::var("HALCYON_TRACE_WALK").is_err();
@@ -579,6 +580,7 @@ fn trace_edge() {
             ticks: 0,
             robustness: 0.0,
             via,
+            then,
             damage: 0.0,
             onto_ladder: match there.kind {
                 StandKind::Ladder(facing) => Some(facing),
@@ -1168,6 +1170,7 @@ fn jump_grid() {
                 ticks: 0,
                 robustness: 0.0,
                 via: None,
+                then: None,
                 damage: 0.0,
                 onto_ladder: match there.kind {
                     StandKind::Ladder(facing) => Some(facing),

@@ -255,7 +255,8 @@ Code: `crates/halcyon-server/src/bot/`. Tests: `src/tests/tests_bot_*.rs`. Real-
   - walks and step-ups to its 8 neighbours;
   - drops of up to 3.6 blocks that cost no health (health does not regenerate), or up to 14 onto hay, honey or beds for at most one heart;
   - ladder and vine climbs;
-  - jumps of up to 5 blocks horizontally and +1.3 up, onto floors or onto the top cell of a ladder, which is grabbed.
+  - jumps of up to 5 blocks horizontally and +1.3 up, onto floors or onto a ladder, which is grabbed;
+  - bounces off one slime pad, or two in a row, onto floors the rebound reaches. Bots hold jump coming down onto a pad and face where the rebound goes next, so the sprint jump's boost carries them on.
 
   Cheap filters remove jumps through solid blocks and jumps over continuous floor.
 - **Validation:** a candidate becomes an edge only after a simulation succeeds. The simulation runs the real player physics (`MovementState::step`) under the **same closed-loop controller** live bots use (`nav/follow.rs`), from rest, with ideal hands. It must then settle on the target.

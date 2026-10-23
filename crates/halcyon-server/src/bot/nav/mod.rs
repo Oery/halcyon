@@ -81,6 +81,8 @@ pub struct Edge {
     pub robustness: f32,
     /// For bounces: the slime cell landed on first, and its feet height.
     pub via: Option<(Cell, f64)>,
+    /// For double bounces: a second slime cell the first rebound lands on.
+    pub then: Option<(Cell, f64)>,
     /// Fall damage taken on landing, in half hearts.
     pub damage: f32,
     /// A jump that ends by grabbing a ladder rather than landing on a floor:

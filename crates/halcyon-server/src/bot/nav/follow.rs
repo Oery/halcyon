@@ -68,6 +68,8 @@ const EYE_HEIGHT: f64 = 1.62;
 const LANDING_MARGIN: f64 = 0.29;
 /// Arrival radius when stepping onto the current cell's centre.
 pub const CENTRED: f64 = 0.3;
+/// How far from a slime pad's centre a landing still counts as on it.
+const PAD_CATCH: f64 = 1.5 + LANDING_MARGIN;
 /// How far past a slime pad's centre a bounce aims, toward its target.
 const PAD_LEAD: f64 = 0.3;
 /// Ground covered by a sprint jump at running speed.
@@ -103,6 +105,8 @@ pub struct EdgeRun {
     aim_feet: f64,
     /// When a bounce touched its slime block.
     bounced_at: Option<u16>,
+    /// Slime pads bounced on so far.
+    bounces: u8,
     /// Closest horizontal approach to the target centre, for diagnostics.
     pub closest: f64,
     /// Furthest progress along the line from the source towards the target.
@@ -138,15 +142,8 @@ impl EdgeRun {
         let (aim, aim_feet) = edge.via.unwrap_or((edge.to, edge.to_feet));
         let mut target = centre(aim);
         if edge.via.is_some() {
-            // Land on the pad's far side: the rebound starts closer to the goal.
-            let beyond = sub(centre(edge.to), target);
-            let length = beyond[0].hypot(beyond[1]);
-            if length > 1e-6 {
-                target = [
-                    target[0] + beyond[0] / length * PAD_LEAD,
-                    target[1] + beyond[1] / length * PAD_LEAD,
-                ];
-            }
+            let next = edge.then.map_or(edge.to, |(pad, _)| pad);
+            target = pad_target(aim, next);
         }
         let [lx, lz] = edge.plan.lean;
         target = [target[0] + f64::from(lx), target[1] + f64::from(lz)];
@@ -182,6 +179,7 @@ impl EdgeRun {
             airborne: false,
             aim_feet,
             bounced_at: None,
+            bounces: 0,
             closest: f64::INFINITY,
             furthest: 0.0,
         }
@@ -270,7 +268,8 @@ impl EdgeRun {
         self.furthest = self.furthest.max(dot(sub(here, self.origin), self.dir));
         self.ticks = self.ticks.saturating_add(1);
         let idle = self.look(position, position.yaw);
-        let rebounded = self.edge.via.is_none() || self.bounced_at.is_some();
+        let pads = u8::from(self.edge.via.is_some()) + u8::from(self.edge.then.is_some());
+        let rebounded = self.bounces == pads;
         // A ladder is held once the grab's drift has died down.
         let held = self.edge.onto_ladder.is_none()
             || obs.velocity[0].hypot(obs.velocity[2]) < LADDER_STILL;
@@ -282,7 +281,8 @@ impl EdgeRun {
             return (idle, Status::Done);
         }
         let pad = self.edge.via.map_or(f64::INFINITY, |(_, feet)| feet);
-        let lowest = self.from_feet.min(self.edge.to_feet).min(pad);
+        let second = self.edge.then.map_or(f64::INFINITY, |(_, feet)| feet);
+        let lowest = self.from_feet.min(self.edge.to_feet).min(pad).min(second);
         if position.y < lowest - 1.5 {
             return (idle, Status::Failed(Failure::Fell));
         }
@@ -425,19 +425,38 @@ impl EdgeRun {
                     self.airborne = true;
                 }
                 if position.on_ground && self.airborne {
-                    let on_pad = self.edge.via.is_some_and(|(pad, feet)| {
+                    // The pad due now: the first, then any second one.
+                    let due = match self.bounces {
+                        0 => self.edge.via,
+                        1 => self.edge.then,
+                        _ => None,
+                    };
+                    // Pads are often several blocks wide: a neighbouring block
+                    // bounces just the same. A plain floor instead fails the
+                    // weak-bounce check below.
+                    let on_pad = due.is_some_and(|(pad, feet)| {
                         (position.y - feet).abs() < 0.3
-                            && (position.x - (f64::from(pad[0]) + 0.5)).abs() < 0.5 + LANDING_MARGIN
-                            && (position.z - (f64::from(pad[2]) + 0.5)).abs() < 0.5 + LANDING_MARGIN
+                            && (position.x - (f64::from(pad[0]) + 0.5)).abs() < PAD_CATCH
+                            && (position.z - (f64::from(pad[2]) + 0.5)).abs() < PAD_CATCH
                     });
-                    if !on_pad || self.bounced_at.is_some() {
+                    if !on_pad {
                         return (intent, Status::Failed(Failure::Missed));
                     }
-                    // The slime threw us back up: now steer for the real target.
+                    // The slime threw us back up: steer for the next pad, or
+                    // the real target.
+                    self.bounces += 1;
                     self.bounced_at = Some(self.ticks);
                     self.airborne = false;
-                    self.target = centre(self.edge.to);
-                    self.aim_feet = self.edge.to_feet;
+                    match self.edge.then.filter(|_| self.bounces == 1) {
+                        Some((pad, feet)) => {
+                            self.target = pad_target(pad, self.edge.to);
+                            self.aim_feet = feet;
+                        }
+                        None => {
+                            self.target = centre(self.edge.to);
+                            self.aim_feet = self.edge.to_feet;
+                        }
+                    }
                 }
                 if !self.airborne && self.bounced_at.is_some_and(|at| self.ticks > at + 3) {
                     // Too weak a bounce to leave the pad.
@@ -483,11 +502,35 @@ impl EdgeRun {
                 } else {
                     intent.forward = true;
                 }
-                if self.bounced_at == Some(self.ticks) {
-                    // Sprint-jump off the slime: keeps the rebound and adds
-                    // the jump's horizontal boost.
+                // Hold jump coming down onto a pad, as players do: a jump on
+                // slime keeps the rebound and adds the sprint jump's boost,
+                // and held early it cannot miss the landing tick.
+                let pad_ahead = match self.bounces {
+                    0 => self.edge.via,
+                    1 => self.edge.then,
+                    _ => None,
+                };
+                let landing = pad_ahead.is_some_and(|(_, feet)| {
+                    self.airborne && obs.velocity[1] < 0.0 && position.y - feet < 1.5
+                });
+                if landing || self.bounced_at == Some(self.ticks) {
                     intent.jump = true;
                     intent.sprint = true;
+                }
+                if landing {
+                    // The landing spot is set by now: face where the rebound
+                    // goes next, so the jump's boost carries towards it.
+                    let next = match self.bounces {
+                        0 => self.edge.then.map_or_else(
+                            || centre(self.edge.to),
+                            |(pad, _)| pad_target(pad, self.edge.to),
+                        ),
+                        _ => centre(self.edge.to),
+                    };
+                    let to = sub(next, [position.x, position.z]);
+                    if to[0].hypot(to[1]) > 1e-3 {
+                        intent.yaw = wrap_degrees(yaw_of(to) + self.exec.yaw_offset);
+                    }
                 }
                 (intent, Status::Running)
             }
@@ -546,4 +589,17 @@ fn airtime(mut y: f64, vy: f64, floor: f64) -> u32 {
         }
     }
     80
+}
+
+/// Where to land on slime pad `pad`: its far side towards `next`, so the
+/// rebound starts closer to it.
+fn pad_target(pad: Cell, next: Cell) -> [f64; 2] {
+    let target = centre(pad);
+    let beyond = sub(centre(next), target);
+    let length = beyond[0].hypot(beyond[1]);
+    if length > 1e-6 {
+        [target[0] + beyond[0] / length * PAD_LEAD, target[1] + beyond[1] / length * PAD_LEAD]
+    } else {
+        target
+    }
 }

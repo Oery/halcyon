@@ -122,6 +122,8 @@ pub struct Candidate {
     pub estimate: f32,
     /// For bounces: the slime cell to land on first, and its feet height.
     pub via: Option<(Cell, f64)>,
+    /// For double bounces: the second slime cell, landed on from the first.
+    pub then: Option<(Cell, f64)>,
 }
 
 /// Result of one simulated execution.
@@ -266,6 +268,7 @@ impl NavGraph {
                     kind: EdgeKind::Walk,
                     estimate: length / WALK_SPEED,
                     via: None,
+                    then: None,
                 });
             }
         }
@@ -281,6 +284,7 @@ impl NavGraph {
                     kind: EdgeKind::Climb,
                     estimate: 1.0 / CLIMB_SPEED,
                     via: None,
+                    then: None,
                 });
             }
         } else {
@@ -300,6 +304,7 @@ impl NavGraph {
                             kind: EdgeKind::Drop,
                             estimate: 1.0 / WALK_SPEED,
                             via: None,
+                            then: None,
                         });
                     }
                     break;
@@ -316,6 +321,52 @@ impl NavGraph {
         found
     }
 
+    /// Floors around the last pad of a bounce that its rebound reaches.
+    /// `first` is the source and the ground covered before the last pad.
+    #[allow(clippy::too_many_arguments)]
+    fn bounce_targets(
+        &mut self,
+        view: &impl BlockView,
+        first: (Cell, f64),
+        via: (Cell, f64),
+        then: Option<(Cell, f64)>,
+        rebound: f64,
+        existing: &[Candidate],
+        found: &mut Vec<Candidate>,
+    ) {
+        let (from, covered) = first;
+        let (slime, pad_feet) = then.unwrap_or(via);
+        if rebound <= MAX_RISE {
+            return;
+        }
+        for tx in -BOUNCE_REACH..=BOUNCE_REACH {
+            for tz in -BOUNCE_REACH..=BOUNCE_REACH {
+                for ty in 1..=rebound.ceil() as i32 {
+                    let to = [slime[0] + tx, slime[1] + ty, slime[2] + tz];
+                    let Some(there) = self.stand(view, to) else { continue };
+                    let rise = there.feet_y - pad_feet;
+                    if there.kind != StandKind::Ground
+                        || rise <= MAX_RISE
+                        || rise > rebound
+                        || to == from
+                        || existing.iter().chain(found.iter()).any(|c| c.to == to)
+                    {
+                        continue;
+                    }
+                    let span = f64::from(tx).hypot(f64::from(tz));
+                    found.push(Candidate {
+                        to,
+                        to_feet: there.feet_y,
+                        kind: EdgeKind::Bounce,
+                        estimate: (covered + span) as f32 / JUMP_SPEED,
+                        via: Some(via),
+                        then,
+                    });
+                }
+            }
+        }
+    }
+
     /// Floors reachable by landing on a nearby slime block and rebounding.
     fn bounce_candidates(
         &mut self,
@@ -325,8 +376,14 @@ impl NavGraph {
         existing: &[Candidate],
     ) -> Vec<Candidate> {
         let mut found: Vec<Candidate> = Vec::new();
-        for dx in -BOUNCE_SEARCH..=BOUNCE_SEARCH {
-            for dz in -BOUNCE_SEARCH..=BOUNCE_SEARCH {
+        // Nearest pads first: a target keeps the first way found to it, and
+        // chains start from the pad next to the ledge.
+        let mut offsets: Vec<[i32; 2]> = (-BOUNCE_SEARCH..=BOUNCE_SEARCH)
+            .flat_map(|dx| (-BOUNCE_SEARCH..=BOUNCE_SEARCH).map(move |dz| [dx, dz]))
+            .collect();
+        offsets.sort_by_key(|[dx, dz]| dx * dx + dz * dz);
+        for [dx, dz] in offsets {
+            {
                 let distance = f64::from(dx).hypot(f64::from(dz));
                 for dy in -BOUNCE_DROP..=1 {
                     // A longer drop onto the pad means longer airtime to cover ground.
@@ -334,41 +391,45 @@ impl NavGraph {
                         continue;
                     }
                     let slime = [from[0] + dx, from[1] + dy, from[2] + dz];
-                    let below = view.block_at(slime[0], slime[1] - 1, slime[2]);
-                    if !below.is_some_and(|id| {
-                        halcyon_world::motion_info(id).surface == halcyon_world::Surface::Slime
-                    }) {
+                    if !is_slime(view, slime) {
                         continue;
                     }
                     let Some(pad) = self.stand(view, slime) else { continue };
                     // Jump apex above the pad, mostly returned by the bounce.
                     let fall = here.feet_y + JUMP_APEX - pad.feet_y;
                     let rebound = fall * BOUNCE_RETURN;
-                    if rebound <= MAX_RISE {
-                        continue;
-                    }
+                    let via = (slime, pad.feet_y);
+                    let first = (from, distance);
+                    self.bounce_targets(view, first, via, None, rebound, existing, &mut found);
+                    // Chained: the rebound lands on another pad and bounces
+                    // on, higher still, as on double-slime courses.
                     for tx in -BOUNCE_REACH..=BOUNCE_REACH {
                         for tz in -BOUNCE_REACH..=BOUNCE_REACH {
-                            for ty in 1..=rebound.ceil() as i32 {
-                                let to = [slime[0] + tx, slime[1] + ty, slime[2] + tz];
-                                let Some(there) = self.stand(view, to) else { continue };
-                                let rise = there.feet_y - pad.feet_y;
-                                if there.kind != StandKind::Ground
-                                    || rise <= MAX_RISE
-                                    || rise > rebound
-                                    || to == from
-                                    || existing.iter().chain(&found).any(|c| c.to == to)
-                                {
+                            if tx.abs() <= 1 && tz.abs() <= 1 {
+                                continue; // The same pad.
+                            }
+                            for ty in -BOUNCE_DROP..=rebound.floor() as i32 {
+                                let next = [slime[0] + tx, slime[1] + ty, slime[2] + tz];
+                                if !is_slime(view, next) {
                                     continue;
                                 }
-                                let span = f64::from(tx).hypot(f64::from(tz));
-                                found.push(Candidate {
-                                    to,
-                                    to_feet: there.feet_y,
-                                    kind: EdgeKind::Bounce,
-                                    estimate: (distance + span) as f32 / JUMP_SPEED,
-                                    via: Some((slime, pad.feet_y)),
-                                });
+                                let Some(second) = self.stand(view, next) else { continue };
+                                let fall = pad.feet_y + rebound - second.feet_y;
+                                let higher = fall * BOUNCE_RETURN;
+                                if higher <= rebound {
+                                    continue;
+                                }
+                                let span = distance + f64::from(tx).hypot(f64::from(tz));
+                                let then = Some((next, second.feet_y));
+                                self.bounce_targets(
+                                    view,
+                                    (from, span),
+                                    via,
+                                    then,
+                                    higher,
+                                    existing,
+                                    &mut found,
+                                );
                             }
                         }
                     }
@@ -398,12 +459,13 @@ impl NavGraph {
             ticks: 1,
             robustness: 1.0,
             via: None,
+            then: None,
             damage: 0.0,
             onto_ladder: None,
         };
         match candidate.kind {
             EdgeKind::Jump | EdgeKind::Bounce => {
-                self.validate_jump(view, from, here, to, there, candidate.via)
+                self.validate_jump(view, from, here, there, candidate)
             }
             EdgeKind::Walk if self.trivial_walk(view, from, here, to, there) => {
                 edge.ticks = if from[0] != to[0] && from[2] != to[2] { 7 } else { 5 };
@@ -512,6 +574,7 @@ impl NavGraph {
                             kind: EdgeKind::Jump,
                             estimate: distance as f32 / JUMP_SPEED,
                             via: None,
+                            then: None,
                         });
                     }
                 }
@@ -560,10 +623,10 @@ impl NavGraph {
         view: &impl BlockView,
         from: Cell,
         here: Stand,
-        to: Cell,
         there: Stand,
-        via: Option<(Cell, f64)>,
+        candidate: &Candidate,
     ) -> Option<Edge> {
+        let Candidate { to, via, then, .. } = *candidate;
         let [ax, az] = centre(from);
         // A bounce is lined up on its slime block, not on the final floor.
         let [bx, bz] = centre(via.map_or(to, |(slime, _)| slime));
@@ -590,6 +653,7 @@ impl NavGraph {
             ticks: 0,
             robustness: 0.0,
             via,
+            then,
             damage: 0.0,
             onto_ladder: ladder_facing(there),
         };
@@ -786,4 +850,10 @@ fn ladder_facing(stand: Stand) -> Option<u8> {
         StandKind::Ladder(facing) => Some(facing),
         _ => None,
     }
+}
+
+/// Whether the floor of `cell` is a slime block.
+fn is_slime(view: &impl BlockView, cell: Cell) -> bool {
+    view.block_at(cell[0], cell[1] - 1, cell[2])
+        .is_some_and(|id| halcyon_world::motion_info(id).surface == halcyon_world::Surface::Slime)
 }

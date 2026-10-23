@@ -607,6 +607,7 @@ impl Brain {
                             ticks: 10,
                             robustness: 1.0,
                             via: None,
+                            then: None,
                             damage: 0.0,
                             onto_ladder: None,
                         },
