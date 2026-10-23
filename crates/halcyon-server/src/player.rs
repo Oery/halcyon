@@ -223,6 +223,10 @@ pub struct PlayerUpdate {
     pub inventory: Option<InventorySnapshot>,
     pub inventory_slots: u64,
     pub inventory_full: bool,
+    /// Game chat lines, oldest first and bounded.
+    pub messages: Vec<Rc<str>>,
+    /// The game sends this connection to another instance.
+    pub destination: Option<crate::game::Destination>,
 }
 
 impl PlayerUpdate {
@@ -277,6 +281,12 @@ impl PlayerUpdate {
         }
         self.inventory_slots |= newer.inventory_slots;
         self.inventory_full |= newer.inventory_full;
+        self.messages.extend(newer.messages);
+        let excess = self.messages.len().saturating_sub(crate::instance::MAX_MESSAGES);
+        self.messages.drain(..excess);
+        if newer.destination.is_some() {
+            self.destination = newer.destination;
+        }
     }
 
     pub fn changed(&self) -> bool {
@@ -292,6 +302,8 @@ impl PlayerUpdate {
             || self.velocity.is_some()
             || self.respawn
             || self.inventory.is_some()
+            || !self.messages.is_empty()
+            || self.destination.is_some()
     }
 }
 

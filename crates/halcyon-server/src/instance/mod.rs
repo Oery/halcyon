@@ -5,16 +5,21 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::map::Map;
 use uuid::Uuid;
 
+use crate::game::{Game, Phase};
+use crate::map::Map;
 use mc_protocol::types::ItemStack;
 
+mod game;
+mod manager;
 mod owner;
 mod registry;
 mod session;
 
-use owner::run_owner;
+pub use game::{GameCtx, MAX_MESSAGES};
+pub use manager::InstanceManager;
+use owner::{Driver, run_owner};
 pub use registry::Registry;
 pub use session::Session;
 use session::{Input, Signal};
@@ -139,6 +144,8 @@ struct StepMetrics {
 }
 
 struct Registration {
+    /// The ID a moving player already holds; new players draw a fresh one.
+    entity_id: Option<i32>,
     profile: Rc<Profile>,
     transform: Transform,
     skin_parts: u8,
@@ -158,20 +165,79 @@ enum WorldEdit {
     Opening { pos: crate::arena::BlockPos, yaw: f32 },
 }
 
+/// Entity IDs unique across every instance, so a player keeps the ID its
+/// client learned in Play Login when it moves between instances.
+#[derive(Clone, Default, Debug)]
+pub struct EntityIds {
+    last: Arc<std::sync::atomic::AtomicI32>,
+}
+
+impl EntityIds {
+    #[cfg(test)]
+    pub fn starting_after(last: i32) -> Self {
+        Self { last: Arc::new(last.into()) }
+    }
+
+    pub fn next(&self) -> Option<i32> {
+        use std::sync::atomic::Ordering;
+        let previous = self
+            .last
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |last| last.checked_add(1))
+            .ok()?;
+        Some(previous + 1)
+    }
+
+    pub fn exhausted(&self) -> bool {
+        self.last() == i32::MAX
+    }
+
+    pub fn last(&self) -> i32 {
+        self.last.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// Unique per process. The shard names the executor that owns the instance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct InstanceId {
+    pub shard: u16,
+    pub local: u32,
+}
+
+impl std::fmt::Display for InstanceId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}-{}", self.shard, self.local)
+    }
+}
+
+/// What matchmaking reads about an instance without borrowing its registry.
+struct Status {
+    id: InstanceId,
+    kind: &'static str,
+    capacity: Cell<usize>,
+    phase: Cell<Phase>,
+    closed: Cell<bool>,
+}
+
 #[derive(Clone)]
 pub struct Instance {
     registry: Rc<RefCell<Registry>>,
     registrations: Rc<local_channel::LocalSender<Registration>>,
     owner: Rc<Signal>,
     metrics: Rc<Metrics>,
+    status: Rc<Status>,
     map: Arc<Map>,
 }
 
 impl Instance {
-    pub fn spawn(map: Arc<Map>, diagnostics: bool) -> Result<Self, crate::arena::EditError> {
+    pub fn spawn(
+        id: InstanceId,
+        map: Arc<Map>,
+        game: Box<dyn Game>,
+        ids: EntityIds,
+        diagnostics: bool,
+    ) -> Result<Self, crate::arena::EditError> {
         let mut state = Registry::default();
-        // Temporary until matches own their rules: HALCYON_PVP=1 opens the lobby to combat.
-        state.open_pvp = std::env::var("HALCYON_PVP").is_ok_and(|value| value == "1");
+        state.ids = ids;
         state.arena.initialize(&map.world)?;
         // Build the shared openings catalog before the first use reaches a tick.
         halcyon_world::opening(0);
@@ -180,16 +246,47 @@ impl Instance {
         let (sender, receiver) = local_channel::new_bounded(REGISTRATION_CAPACITY);
         let owner = Rc::new(Signal::default());
         let metrics = Rc::new(Metrics::default());
+        let status = Rc::new(Status {
+            id,
+            kind: game.kind(),
+            capacity: Cell::new(game.capacity()),
+            phase: Cell::new(game.phase()),
+            closed: Cell::new(false),
+        });
         glommio::spawn_local(run_owner(
             registry.clone(),
             receiver,
             owner.clone(),
             metrics.clone(),
+            Driver::new(game, status.clone(), map.clone()),
             diagnostics,
-            map.clone(),
         ))
         .detach();
-        Ok(Self { registry, registrations: Rc::new(sender), owner, metrics, map })
+        Ok(Self { registry, registrations: Rc::new(sender), owner, metrics, status, map })
+    }
+
+    pub fn id(&self) -> InstanceId {
+        self.status.id
+    }
+
+    pub fn kind(&self) -> &'static str {
+        self.status.kind
+    }
+
+    pub fn phase(&self) -> Phase {
+        self.status.phase.get()
+    }
+
+    /// The owner has stopped; registrations fail and the handle can be dropped.
+    pub fn closed(&self) -> bool {
+        self.status.closed.get()
+    }
+
+    /// Whether matchmaking may place one more player here.
+    pub fn has_room(&self) -> bool {
+        !self.closed()
+            && self.phase() == Phase::Open
+            && self.registry.borrow().players.len() < self.status.capacity.get()
     }
 
     /// The immutable template under this instance's terrain overlay.
@@ -312,18 +409,23 @@ impl Instance {
         self.metrics.slow_clients.set(self.metrics.slow_clients.get().saturating_add(1));
     }
 
+    /// `entity_id` keeps the ID a player held in its previous instance.
     pub async fn register(
         &self,
+        entity_id: Option<i32>,
         profile: Rc<Profile>,
         transform: Transform,
         skin_parts: u8,
     ) -> Result<Session, AdmissionError> {
+        if self.closed() {
+            return Err(AdmissionError::Closed);
+        }
         let input = Rc::new(Input::new(self.owner.clone()));
         // The guard exists across registration cancellation, even before an ID arrives.
         let mut session = Session { entity_id: 0, input: input.clone() };
         let (reply, response) = oneshot::oneshot();
         self.registrations
-            .try_send(Registration { profile, transform, skin_parts, input, reply })
+            .try_send(Registration { entity_id, profile, transform, skin_parts, input, reply })
             .map_err(|_| AdmissionError::QueueFull)?;
         let queued = self.metrics.pending_registrations.get() + 1;
         self.metrics.pending_registrations.set(queued);

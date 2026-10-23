@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use crate::{
     chunks::{self, ChunkTracker},
     error::Error,
-    instance::{Instance, Session, Transform},
+    instance::{Instance, InstanceManager, Session, Transform},
     inventory::HotbarSlot,
     lifecycle::{Keepalive, LOGIN_TIMEOUT, LoginProgress},
     packet::read_packet,
@@ -24,10 +24,13 @@ use crate::{
 
 mod gameplay;
 mod publication;
+mod transfer;
 mod writer;
 
 const INITIAL_BUFFER: usize = 1_024;
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+/// The level a connection starts in, named by Play Login.
+pub const OVERWORLD: &str = "minecraft:overworld";
 
 pub struct Client {
     pub game_mode: crate::player::GameModeState,
@@ -43,7 +46,12 @@ pub struct Client {
     /// The followed player while this spectator views through its camera.
     pub camera: Option<i32>,
     pub instance: Instance,
+    pub instances: InstanceManager,
+    /// The client's current level name; a new name makes it discard the old world.
+    pub dimension: String,
     pub session: Option<Session>,
+    /// Keeps a second connection on this account out of every instance.
+    account: Option<crate::server::Account>,
     pub profile_info: Option<Rc<[u8]>>,
     observer: Observer,
     world_observer: crate::world_sync::WorldObserver,
@@ -71,7 +79,12 @@ pub async fn with_deadline<T>(
 }
 
 impl Client {
-    pub fn new(stream: TcpStream, server: Arc<Server>, instance: Instance) -> Self {
+    pub fn new(
+        stream: TcpStream,
+        server: Arc<Server>,
+        instances: InstanceManager,
+        instance: Instance,
+    ) -> Self {
         let now = Instant::now();
         Self {
             game_mode: Default::default(),
@@ -86,7 +99,10 @@ impl Client {
             sprinting: false,
             camera: None,
             instance,
+            instances,
+            dimension: OVERWORLD.to_owned(),
             session: None,
+            account: None,
             profile_info: None,
             observer: Observer::default(),
             world_observer: crate::world_sync::WorldObserver::default(),

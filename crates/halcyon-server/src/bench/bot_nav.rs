@@ -17,9 +17,9 @@ use serde_json::{Value, json};
 fn settled(world: &halcyon_world::World) -> crate::arena::Arena {
     let mut arena = crate::arena::Arena::default();
     arena.initialize(world).expect("arena");
-    let mut id = 0;
+    let ids = crate::instance::EntityIds::default();
     for _ in 0..400 {
-        arena.step(world, &mut id);
+        arena.step(world, &ids);
     }
     arena
 }

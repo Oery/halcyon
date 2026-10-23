@@ -52,6 +52,18 @@ impl ChunkTracker {
         }
     }
 
+    /// A new level discards every column on the client. Rate feedback and any
+    /// outstanding batch acknowledgement carry over.
+    pub fn clear_residency(&mut self) {
+        self.sent.clear();
+        self.terrain.clear();
+        self.wanted.clear();
+        self.pending.clear();
+        self.gone.clear();
+        self.center = None;
+        self.center_dirty = false;
+    }
+
     /// Terrain successfully written on this connection; empty padding is excluded.
     pub fn terrain(&self) -> &HashSet<Position> {
         &self.terrain

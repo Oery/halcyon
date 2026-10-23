@@ -38,7 +38,7 @@ impl Client {
     }
 
     /// Reserve an authenticated human before its entity ID is sent in Play Login.
-    pub async fn reserve_player(&mut self) -> Result<(), Error> {
+    pub async fn reserve_player(&mut self, entity_id: Option<i32>) -> Result<(), Error> {
         use mc_protocol::packets::client::PlayerInfoUpdate;
         use mc_protocol::types::ProfileProperty;
 
@@ -46,22 +46,32 @@ impl Client {
             return Err(Error::UnexpectedResponse);
         }
         let uuid = self.ctx.player_uuid.ok_or(Error::UnexpectedResponse)?;
+        if self.account.is_none() {
+            let account = self.server.claim_account(uuid);
+            self.account = Some(account.ok_or(crate::instance::AdmissionError::DuplicateUuid)?);
+        }
         let username = self.ctx.username.as_deref().ok_or(Error::UnexpectedResponse)?;
-        let properties = self
-            .ctx
-            .profile_properties
-            .iter()
-            .map(|p| ProfileProperty {
-                name: &p.name,
-                value: &p.value,
-                signature: p.signature.as_deref(),
-            })
-            .collect();
-        self.packet_buffer.clear();
-        PlayerInfoUpdate { uuid, username, properties }
-            .write_packet(&mut self.packet_buffer)
-            .await?;
-        let info: Rc<[u8]> = Rc::from(self.packet_buffer.as_slice());
+        // Later instances reuse the profile encoded for the first one.
+        let info = match &self.profile_info {
+            Some(info) => info.clone(),
+            None => {
+                let properties = self
+                    .ctx
+                    .profile_properties
+                    .iter()
+                    .map(|p| ProfileProperty {
+                        name: &p.name,
+                        value: &p.value,
+                        signature: p.signature.as_deref(),
+                    })
+                    .collect();
+                self.packet_buffer.clear();
+                PlayerInfoUpdate { uuid, username, properties }
+                    .write_packet(&mut self.packet_buffer)
+                    .await?;
+                Rc::from(self.packet_buffer.as_slice())
+            }
+        };
         let profile = Rc::new(Profile { uuid, username: username.to_owned(), info: info.clone() });
         self.pos = self.instance.map().spawn();
         self.pos = self
@@ -73,8 +83,12 @@ impl Client {
                 )
             })
             .ok_or(Error::UnsupportedSpawn)?;
+        let session =
+            self.instance.register(entity_id, profile, self.pos, self.ctx.skin_parts).await?;
+        // The game may have placed the player elsewhere while admitting it.
+        self.pos = session.accepted_transform();
         self.proposed = self.pos;
-        self.session = Some(self.instance.register(profile, self.pos, self.ctx.skin_parts).await?);
+        self.session = Some(session);
         self.profile_info = Some(info);
         // The shared encoded profile is sufficient for subsequent player-info sends.
         self.ctx.profile_properties.clear();
@@ -108,9 +122,10 @@ impl Client {
             self.game_mode = mode;
         }
         if update.respawn {
+            let dimension = self.dimension.clone();
             self.send(&Respawn {
                 dimension_type: 0,
-                dimension_name: "minecraft:overworld",
+                dimension_name: &dimension,
                 hashed_seed: 0,
                 game_mode: self.game_mode.current as i32,
                 previous_game_mode: self.game_mode.previous.map_or(0, |mode| mode as i32 + 1),
@@ -231,6 +246,17 @@ impl Client {
                 velocity: LpVec3(velocity),
             })
             .await?;
+        }
+        for message in &update.messages {
+            self.send(&mc_protocol::packets::client::SystemChatMessage {
+                content: Nbt::Str(message),
+                overlay: false,
+            })
+            .await?;
+        }
+        // Leaving last lets this instance's final updates reach the client.
+        if let Some(destination) = update.destination {
+            self.move_to(destination).await?;
         }
         Ok(())
     }

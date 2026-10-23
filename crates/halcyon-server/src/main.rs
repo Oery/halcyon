@@ -16,6 +16,7 @@ mod commands;
 mod effects;
 mod encryption;
 mod error;
+mod game;
 mod instance;
 mod interaction;
 mod inventory;
@@ -35,24 +36,21 @@ mod world_sync;
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 static ADDR: &str = "127.0.0.1:25565";
 static WORLDS: &str = "worlds";
-static HUB_MAP: &str = "Parkour Spiral";
 
 #[glommio::main(placement = Fixed(0))]
 async fn main() -> std::io::Result<()> {
     let maps =
         map::MapCatalog::load(std::path::Path::new(WORLDS)).await.map_err(std::io::Error::other)?;
     let server = Arc::new(Server::new(maps).await.map_err(std::io::Error::other)?);
-    let hub = std::env::var("HALCYON_HUB_MAP").unwrap_or_else(|_| HUB_MAP.to_owned());
-    let hub = server
-        .maps
-        .get(&hub)
-        .ok_or_else(|| std::io::Error::other(format!("hub map {hub:?} not found in {WORLDS}")))?;
-    let players = instance::Instance::spawn(hub.clone(), server.diagnostics)
-        .map_err(std::io::Error::other)?;
+    // Phase one runs every instance on this single executor, shard 0.
+    let instances = instance::InstanceManager::new(server.clone(), 0);
+    let hub = instances.hub().ok_or_else(|| {
+        std::io::Error::other(format!("the hub map is missing from {WORLDS}; set HALCYON_HUB_MAP"))
+    })?;
 
     // Temporary until matches own bot populations: HALCYON_BOTS=<count>.
     let bots = std::env::var("HALCYON_BOTS").ok().and_then(|n| n.parse().ok()).unwrap_or(0);
-    bot::spawn(server.clone(), players.clone(), bots, 0x0068_616c_6379_6f6e);
+    bot::spawn(server.clone(), hub, bots, 0x0068_616c_6379_6f6e);
 
     let listener = TcpListener::bind(ADDR)?;
     let mut incoming = listener.incoming();
@@ -62,10 +60,14 @@ async fn main() -> std::io::Result<()> {
     while let Some(conn) = incoming.next().await {
         match conn {
             Ok(conn) => {
+                let Some(hub) = instances.hub() else {
+                    eprintln!("hub unavailable; dropping connection");
+                    continue;
+                };
                 let handle = Arc::clone(&server);
-                let players = players.clone();
+                let instances = instances.clone();
                 glommio::spawn_local(async move {
-                    Client::new(conn, handle, players).run().await;
+                    Client::new(conn, handle, instances, hub).run().await;
                 })
                 .detach();
             }

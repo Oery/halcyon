@@ -48,6 +48,9 @@ fn gamemode_parses_names_numeric_aliases_and_optional_targets() {
         ));
     }
     assert!(matches!(Command::parse("unknown 1"), Err(ParseError::UnknownCommand)));
+    assert!(matches!(Command::parse("play ffa").unwrap(), Command::Play(_)));
+    assert!(matches!(Command::parse("hub").unwrap(), Command::Hub(_)));
+    assert!(Command::parse("play chess").is_err());
 }
 
 #[test]
@@ -55,7 +58,7 @@ fn advertised_tree_matches_execution_syntax() {
     let tree = tree();
     let root = &tree.nodes[tree.root_index as usize];
     assert_eq!(root.kind, CommandNodeKind::Root);
-    assert_eq!(root.children.len(), 3);
+    assert_eq!(root.children.len(), 5);
     let command = &tree.nodes[root.children[0].0 as usize];
     assert_eq!(command.kind, CommandNodeKind::Literal("gamemode"));
     assert_eq!(command.children.len(), 8);

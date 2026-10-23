@@ -225,7 +225,7 @@ async fn run(lobby: Instance, bot: Bot) -> Result<(), crate::error::Error> {
     // Bots join in bursts; wait out a full registration queue like a
     // reconnecting client rather than giving up.
     let session = loop {
-        match lobby.register(profile.clone(), spawn, 0x7f).await {
+        match lobby.register(None, profile.clone(), spawn, 0x7f).await {
             Err(crate::instance::AdmissionError::QueueFull) => {
                 Timer::new(TICK).await;
             }

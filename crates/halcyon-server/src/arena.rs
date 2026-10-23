@@ -300,7 +300,7 @@ impl Arena {
         col.revision = self.revision;
     }
 
-    pub fn step(&mut self, base: &World, last_id: &mut i32) {
+    pub fn step(&mut self, base: &World, ids: &crate::instance::EntityIds) {
         self.tick += 1;
         self.block_entities.step(self.tick);
         self.landings.clear();
@@ -328,10 +328,10 @@ impl Arena {
             if !fall_path_supported(&view, pos, None) {
                 continue;
             }
-            let Some(id) = last_id.checked_add(1) else {
+            if ids.exhausted() {
                 let _ = self.schedule(pos, self.tick + 1);
                 break;
-            };
+            }
             if self.falling.len() == MAX_FALLING || !self.room(pos, 2) {
                 let _ = self.schedule(pos, self.tick + 1);
                 break;
@@ -340,7 +340,8 @@ impl Arena {
                 let _ = self.schedule(pos, self.tick + 1);
                 continue;
             }
-            *last_id = id;
+            // Another instance can only take the last ID between the check and here.
+            let Some(id) = ids.next() else { break };
             let above = [pos[0], pos[1] + 1, pos[2]];
             if self
                 .view(base)

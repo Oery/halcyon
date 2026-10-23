@@ -16,7 +16,7 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
                 return Err(Error::UnexpectedResponse);
             }
             // Reserve a unique entity ID before the client creates its local player.
-            client.reserve_player().await?;
+            client.reserve_player(None).await?;
             let entity_id = client.entity_id()?;
             client
                 .send(&PlayLogin {

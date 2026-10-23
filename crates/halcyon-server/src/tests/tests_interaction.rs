@@ -148,7 +148,7 @@ fn mining_waits_for_authority_and_cancels_after_tool_changes() {
     assert_eq!(arena.view(&base).block_at(8, 64, 8), Some(1));
     let mut ticks = 1;
     while player.mining.is_some() && ticks < 40 {
-        arena.step(&base, &mut 100);
+        arena.step(&base, &crate::instance::EntityIds::starting_after(100));
         advance_mining(&mut arena, &base, &mut player, 7);
         ticks += 1;
     }

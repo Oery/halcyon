@@ -22,12 +22,12 @@ fn block_entities_and_cracks_reconcile_reliably_and_replay_after_reload() {
     assert_eq!(observer.patch_block_entities(&arena, (0, 0)).unwrap().unwrap(), entity);
     observer.sent();
     arena.cracks.insert(9, crate::interaction::Crack { pos: [8, 64, 8], stage: 3 });
-    arena.step(&base, &mut 0);
+    arena.step(&base, &Default::default());
     observer.reconcile(&arena, &HashSet::from([(0, 0)]));
     assert_eq!(ids(&observer.next_frame(&arena).unwrap().unwrap()), [5]);
     observer.sent();
     arena.cracks.clear();
-    arena.step(&base, &mut 0);
+    arena.step(&base, &Default::default());
     observer.reconcile(&arena, &HashSet::from([(0, 0)]));
     assert_eq!(ids(&observer.next_frame(&arena).unwrap().unwrap()), [5]);
     observer.sent();
@@ -54,7 +54,7 @@ fn crack_delivery_coalesces_ticks_and_clears_obsolete_pending_and_moved_targets(
     let pending = observer.next_frame(&arena).unwrap().unwrap();
     assert!(observer.cracks.is_empty());
     arena.cracks.clear();
-    arena.step(&base, &mut 0);
+    arena.step(&base, &Default::default());
     observer.reconcile(&arena, &resident);
     assert_eq!(observer.next_frame(&arena).unwrap().unwrap(), pending);
     observer.sent();
@@ -62,13 +62,13 @@ fn crack_delivery_coalesces_ticks_and_clears_obsolete_pending_and_moved_targets(
     observer.sent();
     assert!(observer.next_frame(&arena).unwrap().is_none());
     arena.cracks.insert(9, Crack { pos: old, stage: 2 });
-    arena.step(&base, &mut 0);
+    arena.step(&base, &Default::default());
     observer.reconcile(&arena, &resident);
     assert_eq!(crack(&observer.next_frame(&arena).unwrap().unwrap()), (9, old, 2));
     observer.sent();
     let new = [9, 64, 8];
     arena.cracks.insert(9, Crack { pos: new, stage: 4 });
-    arena.step(&base, &mut 0);
+    arena.step(&base, &Default::default());
     observer.reconcile(&arena, &resident);
     assert_eq!(crack(&observer.next_frame(&arena).unwrap().unwrap()), (9, old, 255));
     observer.sent();
@@ -108,10 +108,10 @@ fn ids(bytes: &[u8]) -> Vec<i32> {
 fn patches_precede_spawns_and_delivered_baselines_survive_retry_and_chunk_resend() {
     let base = test_world();
     let mut arena = Arena::default();
-    let mut id = 0;
+    let entity_ids = crate::instance::EntityIds::default();
     arena.edit(&base, [8, 70, 8], 127).unwrap();
-    arena.step(&base, &mut id);
-    arena.step(&base, &mut id);
+    arena.step(&base, &entity_ids);
+    arena.step(&base, &entity_ids);
     let mut observer = WorldObserver::default();
     let resident = HashSet::from([(0, 0)]);
     observer.reconcile(&arena, &resident);
@@ -124,7 +124,7 @@ fn patches_precede_spawns_and_delivered_baselines_survive_retry_and_chunk_resend
     assert_eq!(ids(&spawn), [1]);
     observer.sent();
     assert_eq!(observer.rendered.len(), 1);
-    arena.step(&base, &mut id);
+    arena.step(&base, &entity_ids);
     observer.reconcile(&arena, &resident);
     let motion = observer.next_frame(&arena).unwrap().unwrap();
     assert_eq!(ids(&motion), [0x23, 0x67]);
@@ -133,7 +133,7 @@ fn patches_precede_spawns_and_delivered_baselines_survive_retry_and_chunk_resend
     assert!(observer.patch_column(&arena, (0, 0)).unwrap().is_some());
     observer.sent();
     for _ in 0..80 {
-        arena.step(&base, &mut id);
+        arena.step(&base, &entity_ids);
     }
     observer.reconcile(&arena, &resident);
     let patch = observer.next_frame(&arena).unwrap().unwrap();

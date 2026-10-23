@@ -350,14 +350,21 @@ async fn send_skin(client: &mut Client) -> Result<(), Error> {
 pub async fn enter_play(client: &mut Client) -> Result<(), Error> {
     let server = client.server.clone();
     client.send_encoded(&server.packets.commands).await?;
+    enter_instance(client).await
+}
+
+/// Everything a client needs once it has a session in its current instance,
+/// both after login and after moving between instances.
+pub async fn enter_instance(client: &mut Client) -> Result<(), Error> {
     send_skin(client).await?;
     let crate::instance::Transform { x: sx, y: sy, z: sz, yaw, pitch, .. } = client.pos;
     let scx = (sx.floor() as i32) >> 4;
     let scz = (sz.floor() as i32) >> 4;
+    let dimension = client.dimension.clone();
     client.send(&GameEvent { event: 13, value: 0.0 }).await?;
     client
         .send(&SetDefaultSpawnPosition {
-            dimension_name: "minecraft:overworld",
+            dimension_name: &dimension,
             location: pack_block_pos(sx.floor() as i32, sy.floor() as i32, sz.floor() as i32),
             yaw,
             pitch,

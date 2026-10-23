@@ -414,6 +414,11 @@ impl Observer {
         self.rendered.len()
     }
 
+    /// Players in the client's tab list, as delivered so far.
+    pub fn roster_uuids(&self) -> Vec<Uuid> {
+        self.roster.values().copied().collect()
+    }
+
     pub fn roster_count(&self) -> usize {
         self.roster.len()
     }

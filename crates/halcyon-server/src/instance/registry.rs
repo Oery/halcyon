@@ -13,10 +13,11 @@ use super::session::Input;
 use super::{AdmissionError, PlayerSnapshot, Profile, StepMetrics, Transform, WorldAction};
 use crate::combat::{self, Armor};
 use crate::effects::{Particle, Particles, Sound};
+use crate::game::GameEvent;
 use crate::interaction::{
     BLOCK_ACTIONS_PER_STEP, BlockInteraction, advance_mining, break_cells, execute,
 };
-use crate::lifecycle::{Damage, DamageKind, DamageResult, PlayerRules};
+use crate::lifecycle::{Damage, DamageKind, DamageResult};
 use crate::player::{PendingAttack, PlayerAction, PlayerState, PlayerUpdate};
 
 pub(super) struct Player {
@@ -42,7 +43,8 @@ pub struct Registry {
     pub(super) players: HashMap<i32, Player>,
     uuids: HashSet<Uuid>,
     pub(super) columns: HashMap<(i32, i32), HashSet<i32>>,
-    pub(super) last_entity_id: i32,
+    /// Shared by every instance; see `EntityIds`.
+    pub(super) ids: super::EntityIds,
     active_count: usize,
     pub(super) revision: u64,
     roster_revision: u64,
@@ -57,8 +59,8 @@ pub struct Registry {
     sweep_scratch: Vec<i32>,
     /// Sound seeds and degenerate knockback directions.
     rng: crate::bot::rng::Rng,
-    /// New players start with combat, fall and void damage enabled.
-    pub(super) open_pvp: bool,
+    /// Membership and life changes for the game, drained after each step.
+    pub(super) events: Vec<crate::game::GameEvent>,
 }
 
 /// A validated melee attack, computed from the attacker's and target's authority.
@@ -214,10 +216,12 @@ impl Registry {
             roster_revision: publication,
             spatial_revision: publication,
             publication,
+            ids: super::EntityIds::starting_after(
+                players.iter().map(|snapshot| snapshot.entity_id).max().unwrap_or(0),
+            ),
             ..Self::default()
         };
         for snapshot in players {
-            registry.last_entity_id = registry.last_entity_id.max(snapshot.entity_id);
             registry.uuids.insert(snapshot.profile.uuid);
             registry
                 .columns
@@ -345,6 +349,19 @@ impl Registry {
         skin_parts: u8,
         input: Rc<Input>,
     ) -> Result<i32, AdmissionError> {
+        let entity_id = self.ids.next().ok_or(AdmissionError::IdExhausted)?;
+        self.reserve_as(entity_id, profile, transform, skin_parts, input)
+    }
+
+    /// Admits a player under an ID it already holds from an earlier instance.
+    pub(super) fn reserve_as(
+        &mut self,
+        entity_id: i32,
+        profile: Rc<Profile>,
+        transform: Transform,
+        skin_parts: u8,
+        input: Rc<Input>,
+    ) -> Result<i32, AdmissionError> {
         if input.closed.get() {
             return Err(AdmissionError::Closed);
         }
@@ -357,11 +374,10 @@ impl Registry {
         {
             return Err(AdmissionError::InvalidProfile);
         }
-        if self.uuids.contains(&profile.uuid) {
+        // IDs follow their account, so a taken ID is the same player again.
+        if self.uuids.contains(&profile.uuid) || self.players.contains_key(&entity_id) {
             return Err(AdmissionError::DuplicateUuid);
         }
-        let entity_id = self.last_entity_id.checked_add(1).ok_or(AdmissionError::IdExhausted)?;
-        self.last_entity_id = entity_id;
         self.uuids.insert(profile.uuid);
         input.accepted.set(transform);
         self.players.insert(
@@ -387,13 +403,7 @@ impl Registry {
                 },
                 active: false,
                 input,
-                state: {
-                    let mut state = PlayerState::new(transform);
-                    if self.open_pvp {
-                        state.life.rules = PlayerRules::open(state.life.rules.respawn);
-                    }
-                    state
-                },
+                state: PlayerState::new(transform),
             },
         );
         Ok(entity_id)
@@ -403,6 +413,7 @@ impl Registry {
         let Some(player) = self.players.remove(&entity_id) else {
             return false;
         };
+        self.events.push(GameEvent::Left(entity_id));
         self.arena.cracks.remove(&entity_id);
         self.uuids.remove(&player.snapshot.profile.uuid);
         if player.active {
@@ -469,7 +480,7 @@ impl Registry {
             player.input.actions.borrow_mut().barrier =
                 player.input.block_actions.borrow().barrier();
         }
-        self.arena.step(world, &mut self.last_entity_id);
+        self.arena.step(world, &self.ids);
         if self.arena.tick().is_multiple_of(20) {
             for pos in self.arena.block_entities.playing.keys() {
                 self.effects.particles(
@@ -502,6 +513,12 @@ impl Registry {
                 now,
                 input.respawn_requested.replace(false),
             );
+            if let Some(death) = update.death {
+                self.events.push(GameEvent::Died { player: id, killer: death.source });
+            }
+            if update.respawn {
+                self.events.push(GameEvent::Respawned(id));
+            }
             if player.active {
                 if let Some(damage) = update.damage {
                     self.effects.hurt(id, damage);
@@ -891,6 +908,9 @@ impl Registry {
         }
         let dealt = before - victim.state.life.health();
         let input = victim.input.clone();
+        if died {
+            self.events.push(GameEvent::Died { player: target, killer: Some(hit.attacker) });
+        }
         if died {
             // Only a kill names its attacker.
             update.killer = self

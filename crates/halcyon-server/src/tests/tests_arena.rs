@@ -21,30 +21,30 @@ use std::time::{Duration, Instant};
 fn delayed_stack_falls_settles_and_preserves_authoritative_states() {
     let base = test_world();
     let mut arena = Arena::default();
-    let mut id = 100;
+    let ids = crate::instance::EntityIds::starting_after(100);
     arena.edit(&base, [8, 70, 8], 121).unwrap();
     arena.edit(&base, [8, 71, 8], 127).unwrap();
-    arena.step(&base, &mut id);
+    arena.step(&base, &ids);
     assert!(arena.falling.is_empty());
-    arena.step(&base, &mut id);
+    arena.step(&base, &ids);
     assert_eq!(arena.falling.len(), 2);
     assert_eq!(arena.falling[0].position[1], 69.96);
     assert!((arena.falling[0].velocity - (-0.04 * 0.98f32 as f64)).abs() < 1e-12);
     assert_eq!(arena.view(&base).block_at(8, 70, 8), Some(0));
     for _ in 0..80 {
-        arena.step(&base, &mut id);
+        arena.step(&base, &ids);
     }
     assert!(arena.falling.is_empty());
     assert_eq!(arena.view(&base).block_at(8, 64, 8), Some(121));
     assert_eq!(arena.view(&base).block_at(8, 65, 8), Some(127));
     assert_eq!(base.block_at(8, 64, 8), Some(0));
-    assert_eq!(id, 102);
+    assert_eq!(ids.last(), 102);
     arena.edit(&base, [8, 64, 8], 0).unwrap();
-    arena.step(&base, &mut id);
-    arena.step(&base, &mut id);
+    arena.step(&base, &ids);
+    arena.step(&base, &ids);
     assert!(!arena.falling.is_empty());
     for _ in 0..30 {
-        arena.step(&base, &mut id);
+        arena.step(&base, &ids);
     }
     assert_eq!(arena.view(&base).block_at(8, 64, 8), Some(127));
     for pos in [[-30_000_000, -64, 30_000_000], [8, 319, -8], [0, -1, 0]] {
@@ -58,11 +58,11 @@ fn falling_trajectory_matches_official_gravity_and_move_methods() {
     // Entity.move and getAirDrag, using an actual FallingBlockEntity.
     let base = test_world();
     let mut arena = Arena::default();
-    let mut id = 0;
+    let ids = crate::instance::EntityIds::starting_after(0);
     arena.edit(&base, [8, 79, 8], 127).unwrap();
-    arena.step(&base, &mut id);
+    arena.step(&base, &ids);
     for tick in 1..=30 {
-        arena.step(&base, &mut id);
+        arena.step(&base, &ids);
         let expected = match tick {
             1 => Some((15.96, -0.039200000762939)),
             5 => Some((15.415761898793507, -0.188315249119328)),
@@ -129,11 +129,11 @@ fn settled_blocks_suffocate_without_trapping_escape_or_bypassing_protection() {
 fn partial_landings_break_with_drops_disabled_and_capacity_failures_are_atomic() {
     let base = test_world();
     let mut arena = Arena::default();
-    let mut id = 0;
+    let ids = crate::instance::EntityIds::starting_after(0);
     arena.edit(&base, [8, 64, 8], 15252).unwrap(); // bottom slab
     arena.edit(&base, [8, 70, 8], 127).unwrap();
     for _ in 0..80 {
-        arena.step(&base, &mut id);
+        arena.step(&base, &ids);
     }
     assert!(arena.falling.is_empty());
     assert_eq!(arena.view(&base).block_at(8, 65, 8), Some(0));

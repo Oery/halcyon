@@ -12,7 +12,21 @@ use crate::instance::{Instance, Registry};
 
 mod gamemode;
 mod give;
+mod hub;
+mod play;
 mod tp;
+
+/// Feedback for the sender, and where its connection goes next, if anywhere.
+struct Reply {
+    message: String,
+    destination: Option<crate::game::Destination>,
+}
+
+impl From<String> for Reply {
+    fn from(message: String) -> Self {
+        Self { message, destination: None }
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 enum CommandError {
@@ -34,14 +48,20 @@ enum Command<'p> {
     Teleport(tp::TpCommand<'p>),
     #[command(name = "give")]
     Give(give::GiveCommand<'p>),
+    #[command(name = "play")]
+    Play(play::PlayCommand),
+    #[command(name = "hub")]
+    Hub(hub::HubCommand),
 }
 
 impl Command<'_> {
-    async fn execute(self, instance: &Instance, sender: i32) -> Result<String, CommandError> {
+    async fn execute(self, instance: &Instance, sender: i32) -> Result<Reply, CommandError> {
         match self {
-            Self::GameMode(command) => command.execute(instance, sender).await,
-            Self::Teleport(command) => command.execute(instance, sender).await,
-            Self::Give(command) => command.execute(instance, sender).await,
+            Self::GameMode(command) => command.execute(instance, sender).await.map(Reply::from),
+            Self::Teleport(command) => command.execute(instance, sender).await.map(Reply::from),
+            Self::Give(command) => command.execute(instance, sender).await.map(Reply::from),
+            Self::Play(command) => Ok(command.execute()),
+            Self::Hub(command) => Ok(command.execute()),
         }
     }
 }
@@ -57,16 +77,20 @@ pub async fn execute(text: &str, client: &mut Client) -> Result<(), Error> {
     }
     .await;
     let failed = result.is_err();
-    let message = result.unwrap_or_else(|error| error.to_string());
+    let reply = result.unwrap_or_else(|error| Reply::from(error.to_string()));
     client
         .send(&SystemChatMessage {
             content: Nbt::Compound(vec![
-                ("text", Nbt::Str(&message)),
+                ("text", Nbt::Str(&reply.message)),
                 ("color", Nbt::Str(if failed { "red" } else { "white" })),
             ]),
             overlay: false,
         })
-        .await
+        .await?;
+    match reply.destination {
+        Some(destination) => client.move_to(destination).await,
+        None => Ok(()),
+    }
 }
 
 /// Adapt the derived, transport-neutral schema once into cached Minecraft frames.

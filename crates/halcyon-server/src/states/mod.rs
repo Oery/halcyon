@@ -1,7 +1,7 @@
 mod config;
 mod handshake;
 mod login;
-mod play;
+pub mod play;
 mod status;
 
 use mc_protocol::packets::Packets;

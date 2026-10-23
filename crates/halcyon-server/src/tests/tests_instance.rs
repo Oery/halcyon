@@ -500,15 +500,17 @@ fn admission_bounds_include_invisible_reservations_and_abandoned_replies() {
     register(
         &mut registry,
         Registration {
+            entity_id: None,
             profile: profile(1),
             transform: Transform::default(),
             skin_parts: 0,
             input: Rc::new(Input::new(Rc::default())),
             reply,
         },
+        |_, _| {},
     );
     assert!(registry.players.is_empty());
-    registry.last_entity_id = i32::MAX;
+    registry.ids = super::EntityIds::starting_after(i32::MAX);
     assert_eq!(
         registry.reserve(profile(1), Transform::default(), 0, Rc::new(Input::new(Rc::default()))),
         Err(AdmissionError::IdExhausted)
@@ -537,6 +539,7 @@ fn a_full_registration_queue_cannot_block_disconnect_cleanup() {
     for id in 0..REGISTRATION_CAPACITY {
         let (reply, _response) = oneshot::oneshot();
         let request = Registration {
+            entity_id: None,
             profile: profile(id as u128 + 2),
             transform: Transform::default(),
             skin_parts: 0,
@@ -559,11 +562,14 @@ fn melee_attacks_check_reach_rules_and_charge_then_knock_back_and_sweep() {
     use std::time::Duration;
     let world = gameplay_benchmarks::terrain(false, false);
     let mut registry = Registry::default();
-    registry.open_pvp = true;
     let attacker = command_player(&mut registry, 1, "Attacker");
     let victim = command_player(&mut registry, 2, "Victim");
     let bystander = command_player(&mut registry, 3, "Bystander");
     let far = command_player(&mut registry, 4, "Far");
+    for player in registry.players.values_mut() {
+        let rules = &mut player.state.life.rules;
+        *rules = crate::lifecycle::PlayerRules::open(rules.respawn);
+    }
     let ground =
         Transform { x: 8.5, y: 64.0, z: 8.5, yaw: -90.0, on_ground: true, ..Default::default() };
     for (session, x, z) in
@@ -637,4 +643,27 @@ fn melee_attacks_check_reach_rules_and_charge_then_knock_back_and_sweep() {
     attacker.attack(victim.entity_id());
     step(&mut registry, 1);
     assert_eq!(health(&registry, &victim), 12.0);
+}
+
+#[test]
+fn deaths_respawns_and_departures_reach_the_game() {
+    use crate::game::GameEvent;
+    use crate::lifecycle::{Damage, DamageKind, PlayerRules};
+    let world = gameplay_benchmarks::terrain(false, false);
+    let mut registry = Registry::default();
+    let victim = command_player(&mut registry, 1, "Victim");
+    let id = victim.entity_id();
+    let rules = &mut registry.players.get_mut(&id).unwrap().state.life.rules;
+    *rules = PlayerRules::open(rules.respawn);
+    assert!(victim.damage(Damage { kind: DamageKind::Game, amount: 100.0, source: Some(7) }));
+    registry.simulate(&world, Instant::now(), &mut Vec::new());
+    assert_eq!(registry.events, [GameEvent::Died { player: id, killer: Some(7) }]);
+    registry.events.clear();
+    victim.respawn();
+    registry.simulate(&world, Instant::now(), &mut Vec::new());
+    assert_eq!(registry.events, [GameEvent::Respawned(id)]);
+    registry.events.clear();
+    drop(victim);
+    assert!(registry.cleanup());
+    assert_eq!(registry.events, [GameEvent::Left(id)]);
 }

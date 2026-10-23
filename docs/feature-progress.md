@@ -25,7 +25,7 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Client preferences | Partial — view distance and skin settings. |
 | Resource-pack delivery | Not started |
 | Keepalives and inactivity | Partial — liveness timeouts; no AFK policy. |
-| Disconnect handling | Partial — session cleanup; no match handling. |
+| Disconnect handling | Partial — session cleanup; games see departures; no rejoin. |
 | Incoming server transfers | Conditional |
 
 ## 2. Players, movement, and lifecycle
@@ -392,9 +392,9 @@ Update this tracker when feature support changes. Packet definitions, static cli
 
 | Feature | Progress |
 | --- | --- |
-| Game definitions and native hooks | Not started |
-| Match state machine | Not started |
-| Player queues and match assignment | Not started |
+| Game definitions and native hooks | Partial — games attach to an instance with join, death, respawn, departure and per-step hooks; built-in hub and free-for-all. |
+| Match state machine | Partial — free-for-all waits for two players, counts down, fights to the last player and returns everyone to the hub. |
+| Player queues and match assignment | Partial — `/play <game>` joins an open instance of that game or starts one; `/hub` returns. No queues or parties. |
 | Bot-filled starts and replacement policy | Not started |
 | Native team membership and objectives | Not started |
 | Loadouts and spawn assignments | Partial — loadouts, item grants and player respawn points; no matches. |
@@ -407,9 +407,9 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Feature | Progress |
 | --- | --- |
 | Arena templates and map metadata | Partial — terrain import; no arena templates or objective metadata. |
-| Independent mutable match worlds | Not started |
-| Reset and teardown | Not started |
-| Arena audience isolation | Not started |
+| Independent mutable match worlds | Partial — every instance has its own terrain overlay on a shared map; any map in `worlds/` can host a game. |
+| Reset and teardown | Partial — finished or abandoned game instances stop once empty; no reset in place. |
+| Arena audience isolation | Partial — players see only their instance's players, terrain and effects. |
 | Supported-content validation | Partial — unknown states, unsupported movement contacts and invalid destinations rejected; no complete arena-content validation. |
 | Map preparation and navigation anchors | Not started |
 | Live creative arena editor | Conditional |
@@ -439,7 +439,7 @@ Design expectations and layered architecture: [bots.md](bots.md).
 | --- | --- |
 | Durable player identity and preferences | Not started |
 | Match results and progression records | Not started |
-| Game selection and lobby flow | Not started |
+| Game selection and lobby flow | Partial — players start in the hub and pick a game with `/play`. |
 | Spectator and results flow | Not started |
 | Rankings, economy, and unlock systems | Conditional |
 
@@ -447,7 +447,7 @@ Design expectations and layered architecture: [bots.md](bots.md).
 
 | Feature | Progress |
 | --- | --- |
-| Authoritative simulation ownership | Partial — shared lobby; no independent matches. |
+| Authoritative simulation ownership | Partial — one owner per instance, all on one executor. |
 | Multi-core execution | Not started |
 | Separate decision and simulation scheduling | Not started |
 | Bounded queues and admission | Done |

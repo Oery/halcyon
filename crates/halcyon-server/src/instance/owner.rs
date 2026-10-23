@@ -9,13 +9,80 @@ use glommio::channels::local_channel;
 use glommio::timer::Timer;
 
 use super::session::{Input, Signal};
-use super::{Metrics, ObserverMetrics, REGISTRATIONS_PER_SLICE, Registration, Registry};
+use super::{
+    GameCtx, Metrics, ObserverMetrics, REGISTRATIONS_PER_SLICE, Registration, Registry, Status,
+};
+use crate::game::Game;
 use crate::simulation::SimulationClock;
 
-pub(super) fn register(registry: &mut Registry, request: Registration) {
-    let result =
-        registry.reserve(request.profile, request.transform, request.skin_parts, request.input);
+/// The instance's game, driven by its owner task.
+pub(super) struct Driver {
+    game: Box<dyn Game>,
+    status: Rc<Status>,
+    map: Arc<crate::map::Map>,
+    close: bool,
+}
+
+impl Driver {
+    pub(super) fn new(game: Box<dyn Game>, status: Rc<Status>, map: Arc<crate::map::Map>) -> Self {
+        Self { game, status, map, close: false }
+    }
+
+    fn join(&mut self, registry: &mut Registry, id: i32, notices: &mut Vec<Rc<Input>>) {
+        let mut ctx = GameCtx {
+            id: self.status.id,
+            registry,
+            world: &self.map.world,
+            notices,
+            close: &mut self.close,
+        };
+        self.game.on_join(&mut ctx, id);
+    }
+
+    /// Events, then the game's own step; returns whether the instance is done.
+    fn step(&mut self, registry: &mut Registry, notices: &mut Vec<Rc<Input>>) -> bool {
+        let mut events = std::mem::take(&mut registry.events);
+        let mut ctx = GameCtx {
+            id: self.status.id,
+            registry,
+            world: &self.map.world,
+            notices,
+            close: &mut self.close,
+        };
+        for event in events.drain(..) {
+            self.game.on_event(&mut ctx, event);
+        }
+        self.game.tick(&mut ctx);
+        // Keep the event capacity for the next step.
+        registry.events = events;
+        self.status.phase.set(self.game.phase());
+        self.status.capacity.set(self.game.capacity());
+        self.close && registry.players.is_empty()
+    }
+}
+
+/// `join` places a reserved player before its client learns the entity ID.
+pub(super) fn register(
+    registry: &mut Registry,
+    request: Registration,
+    join: impl FnOnce(&mut Registry, i32),
+) {
+    let result = match request.entity_id {
+        Some(id) => registry.reserve_as(
+            id,
+            request.profile,
+            request.transform,
+            request.skin_parts,
+            request.input,
+        ),
+        None => {
+            registry.reserve(request.profile, request.transform, request.skin_parts, request.input)
+        }
+    };
     let reserved = result.as_ref().ok().copied();
+    if let Some(id) = reserved {
+        join(registry, id);
+    }
     if request.reply.send(result).is_err()
         && let Some(id) = reserved
     {
@@ -48,9 +115,11 @@ pub(super) async fn run_owner(
     receiver: local_channel::LocalReceiver<Registration>,
     owner: Rc<Signal>,
     metrics: Rc<Metrics>,
+    mut driver: Driver,
     diagnostics: bool,
-    map: Arc<crate::map::Map>,
 ) {
+    let status = driver.status.clone();
+    let map = driver.map.clone();
     let mut clock = SimulationClock::new(Instant::now());
     let mut report_at = Instant::now() + Duration::from_secs(5);
     let mut ticks = 0u64;
@@ -94,7 +163,9 @@ pub(super) async fn run_owner(
             Wake::Registration(Some(request)) => {
                 metrics.pending_registrations.set(metrics.pending_registrations.get() - 1);
                 registration_peak = registration_peak.max(1);
-                register(&mut registry.borrow_mut(), request);
+                register(&mut registry.borrow_mut(), request, |registry, id| {
+                    driver.join(registry, id, &mut self_notices);
+                });
                 for count in 1..REGISTRATIONS_PER_SLICE {
                     match futures_lite::future::poll_once(receiver.recv()).await {
                         Some(Some(request)) => {
@@ -102,10 +173,15 @@ pub(super) async fn run_owner(
                                 .pending_registrations
                                 .set(metrics.pending_registrations.get() - 1);
                             registration_peak = registration_peak.max(count + 1);
-                            register(&mut registry.borrow_mut(), request);
+                            register(&mut registry.borrow_mut(), request, |registry, id| {
+                                driver.join(registry, id, &mut self_notices);
+                            });
                         }
                         _ => break,
                     }
+                }
+                for notice in self_notices.drain(..) {
+                    notice.changed.notify();
                 }
                 glommio::executor().yield_now().await;
             }
@@ -115,9 +191,11 @@ pub(super) async fn run_owner(
                 let due = clock.poll(Instant::now());
                 skipped_steps += due.skipped_steps;
                 late_samples.record(due.lateness);
+                let mut finished = false;
                 for _ in 0..due.steps {
                     let start = Instant::now();
                     let step = registry.borrow_mut().simulate(&map.world, start, &mut self_notices);
+                    finished |= driver.step(&mut registry.borrow_mut(), &mut self_notices);
                     for notice in self_notices.drain(..) {
                         notice.changed.notify();
                     }
@@ -140,6 +218,9 @@ pub(super) async fn run_owner(
                     // above wake the affected connection without global fanout.
                     notify(&registry, changed, &mut observer_scratch);
                 }
+                if finished {
+                    break;
+                }
                 if diagnostics && Instant::now() >= report_at {
                     let registry = registry.borrow();
                     let (cpu_p95, cpu_p99) = cpu_samples.percentiles();
@@ -149,7 +230,9 @@ pub(super) async fn run_owner(
                         observers.accumulate(player.input.observer_metrics.get());
                     }
                     eprintln!(
-                        "instance: players={} reserved={} ticks={} max_tick_us={} cpu_p95_us={} cpu_p99_us={} lateness_p95_us={} lateness_p99_us={} overruns={} skipped_steps={} proposals={} collision_cells={} corrections={} registration_slice_peak={} registration_queue={} registration_queue_peak={} coalesced={} sent_bytes={} slow_clients={} visible_edges={} roster_entries={} queued_bytes={} queued_frames={} observer_high_water_bytes={} observer_coalesced={} observer_sent_bytes={}",
+                        "instance {} {}: players={} reserved={} ticks={} max_tick_us={} cpu_p95_us={} cpu_p99_us={} lateness_p95_us={} lateness_p99_us={} overruns={} skipped_steps={} proposals={} collision_cells={} corrections={} registration_slice_peak={} registration_queue={} registration_queue_peak={} coalesced={} sent_bytes={} slow_clients={} visible_edges={} roster_entries={} queued_bytes={} queued_frames={} observer_high_water_bytes={} observer_coalesced={} observer_sent_bytes={}",
+                        status.id,
+                        status.kind,
                         registry.active_count(),
                         registry.players.len(),
                         ticks,
@@ -193,6 +276,7 @@ pub(super) async fn run_owner(
             }
         }
     }
+    status.closed.set(true);
 }
 
 struct TimingSamples {

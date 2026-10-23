@@ -29,7 +29,7 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
             client.send(&PingResponse { time }).await?;
         }
         Packets::StatusRequest(_) => {
-            let online = client.instance.active_count();
+            let online = client.instances.online();
             client.send(&status(online)).await?;
         }
         _ => eprintln!("unhandled packet: {pkt:?}"),
