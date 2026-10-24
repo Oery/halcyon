@@ -23,7 +23,7 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Configuration phase | Done |
 | Reconfiguration | Conditional |
 | Client preferences | Partial — view distance and skin settings. |
-| Resource-pack delivery | Not started |
+| Resource-pack delivery | Excluded |
 | Keepalives and inactivity | Partial — liveness timeouts; no AFK policy. |
 | Disconnect handling | Partial — session cleanup; games see departures; no rejoin. |
 | Incoming server transfers | Conditional |
