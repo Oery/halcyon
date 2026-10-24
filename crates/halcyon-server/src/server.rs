@@ -17,6 +17,8 @@ pub struct Server {
     pub directory: Directory,
     pub packets: crate::cache::PacketCache,
     pub diagnostics: bool,
+    /// Status description, naming the checkout the server was built from.
+    pub motd: String,
 }
 
 impl Server {
@@ -29,12 +31,38 @@ impl Server {
             directory: Directory::new(shards),
             packets: crate::cache::PacketCache::new().await?,
             diagnostics: std::env::var_os("HALCYON_DIAGNOSTICS").is_some(),
+            motd: motd(),
         })
     }
 
     /// None while another connection already plays on this account.
     pub fn claim_account(self: &Arc<Self>, uuid: Uuid) -> Option<Account> {
         accounts(&self.accounts).insert(uuid).then(|| Account { server: self.clone(), uuid })
+    }
+}
+
+/// "Halcyon", then the branch and worktree of the source tree when git knows it.
+fn motd() -> String {
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(env!("CARGO_MANIFEST_DIR"))
+            .args(args)
+            .output()
+            .ok()
+            .filter(|output| output.status.success())?;
+        let text = String::from_utf8(output.stdout).ok()?;
+        Some(text.trim().to_owned()).filter(|text| !text.is_empty())
+    };
+    let branch = git(&["symbolic-ref", "--short", "HEAD"])
+        .or_else(|| git(&["rev-parse", "--short", "HEAD"]));
+    let worktree = git(&["rev-parse", "--show-toplevel"]).and_then(|path| {
+        std::path::Path::new(&path).file_name().map(|name| name.to_string_lossy().into_owned())
+    });
+    match (branch, worktree) {
+        (Some(branch), Some(worktree)) => format!("Halcyon\n§7{branch} §8@ {worktree}"),
+        (Some(name), None) | (None, Some(name)) => format!("Halcyon\n§7{name}"),
+        (None, None) => "Halcyon".to_owned(),
     }
 }
 

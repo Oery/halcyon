@@ -6,11 +6,11 @@ use mc_protocol::packets::server::*;
 use crate::Client;
 use crate::error::Error;
 
-fn status(online: usize) -> StatusPacket<'static> {
+fn status(motd: &str, online: usize) -> StatusPacket<'_> {
     StatusPacket {
         json: Status {
             version: Version { name: "halcyon-server", protocol: 777 },
-            description: Description { text: "hello world!" },
+            description: Description { text: motd },
             players: Players {
                 // The lobby has no player cap; always advertise room for one more.
                 max: online.saturating_add(1) as i32,
@@ -30,7 +30,8 @@ pub async fn handle_packet(pkt: Packets<'_>, client: &mut Client) -> Result<(), 
         }
         Packets::StatusRequest(_) => {
             let online = client.server.directory.online();
-            client.send(&status(online)).await?;
+            let server = client.server.clone();
+            client.send(&status(&server.motd, online)).await?;
         }
         _ => eprintln!("unhandled packet: {pkt:?}"),
     };
