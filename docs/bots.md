@@ -1,6 +1,6 @@
 # Halcyon bots: expectations and architecture
 
-Status: embodiment, motor, profiles and navigation are implemented (§8); perception, traits, matches and combat are not. See `feature-progress.md` §20.
+Status: embodiment, motor, profiles and navigation are implemented (§8), and a melee brain with a combat bench plays box duels (§9); a general perception model, traits outside combat and team play are not. See `feature-progress.md` §20.
 
 ## 1. Goals and non-goals
 
@@ -230,7 +230,7 @@ Level and trait profiles are data, not code: declarative, tunable and comparable
 3. **Parkour skills and route graph:** navigation done (§8). On Parkour Spiral, bots climb through checkpoint 22 of 35 (§8, "Parkour Spiral status").
 4. **Level, trait and state profiles:** several distinct bots racing together.
 5. **Match director and queue/fill policy** (depends on §18 matches).
-6. **Combat and team-game layers.**
+6. **Combat and team-game layers:** melee brain, combat bench and tuner done (§9); team play not started.
 
 ## 7. Decisions and open questions
 
@@ -329,3 +329,123 @@ Leg 22 → 23 and several later legs remain partial. Extending the climb further
 - A game rule returning fallen humans to checkpoints (bots have a stand-in).
 - Validation runs without the one-tick observation latency live bots have, so a few edges validate better than they execute.
 - Perception: bots know the terrain but not other players.
+
+## 9. Combat
+
+Code: `bot/fighter.rs` (brain), `bot/motor.rs` (hands), `bot/profile.rs` (level knobs). Bench: `src/bench/bot_combat.rs`. Tests: `src/tests/tests_bot_fighter.rs`, and a duel smoke test in `tests_instance.rs`. The techniques follow [minecraft-combat.md](minecraft-combat.md).
+
+### Playing games
+
+- **Games:** bots follow a game's `Destination` like a client does. They leave the instance and register in the new one on shard 0 under the same entity ID. In the home hub they climb the course; elsewhere the fighter brain runs.
+- **Queueing:** with `HALCYON_BOT_GAME=<kind>` (e.g. `boxes`), each bot waits 3–15 s in a hub, matchmakes into that game and returns to the hub after the round, over and over, so games run with no human online.
+- **Engagement:** a fighter starts fighting when the round announces `Fight!` in chat, and stops when it dies.
+
+### Perception
+
+A fighter (`Senses`) knows only what a client shows:
+
+- other visible, living players, with their latest **hurt flash** and **arm swing** (`Registry::cues`);
+- its own health;
+- whether it was just hurt.
+
+Opponents' health is never visible to it.
+
+- **Targeting:** the target is the current one while reachable, else the nearest within 24 blocks with no solid block on the line between them. Glass walls therefore separate boxes.
+- **Reaction:** positions are seen through a reaction delay of 6 − 3 × skill ticks, drawn per decision between the neighbouring whole ticks. A level-100 bot reacts in about 150 ms, a level-0 one in 300 ms.
+
+### Aim and clicks
+
+- **Aim:** the bot predicts the target from what it saw a reaction ago to the frame the client shows now, one tick old. It extrapolates the target's 3D motion by `lead` × (lag − 1).
+- **Smooth pursuit:** the motor adds a feed-forward of the aim point's sweep to its eased, rate-limited turn. Vertical turns are limited to 60% of horizontal ones. Without this, a camera chasing a strafing target trails it by 30–40° and never clicks.
+- **Clicks:** a click answers what the crosshair showed `click_lag` ticks earlier (0.7 at level 100, 3.2 at level 0, drawn per decision). It hits whatever is under the crosshair now: the target as rendered, within 3 blocks with nothing solid in between. If the crosshair has slid off, the click is a whiff: an empty swing that still resets the charge.
+
+### Techniques
+
+`Tactics` is fixed at creation from the level and two per-bot traits, aggression and patience. `MASTER` holds a strong player's values, found with the tuner; lower levels scale down from it.
+
+| Technique | What the fighter does |
+| --- | --- |
+| Charge timing (half-swing) | Plans the click for the first tick the server counts as strong (charge > 0.9: tick 12 of a sword's 12.5), with a per-swing spread of 0.5 ticks at level 100 and 2.5 at level 0. The server counts the charge from the tick after the click. |
+| Damage windows (i-frames) | Holds a swing while the target's hurt flash is under 10 ticks old, unless the swing would be a falling critical. |
+| Sprint resets | After a sprint-knockback hit, the adaptive reset s-taps (backs off 1–3 ticks) when the target stays inside 2.2 blocks, keeps sprinting when chasing, and otherwise w-taps. |
+| Criticals | Jumps about 8 ticks before the planned click, when the run-in will close to reach by then. Releases sprint on the way down and holds the swing until falling, unless a charged opponent is about to hit first. A jump reset whose descent covers the planned click doubles as a critical jump. |
+| Jump reset | Jumps on the tick it is hit while grounded, so the sprint-jump boost toward the attacker cancels part of the knockback: about 1.5 blocks taken instead of 1.8 at level 75. |
+| Combos | Chases a target its hit knocked away (receding faster than 0.08 blocks per tick). |
+| Evasion | Dodges sideways for 3–6 ticks when a charged opponent swings while its own charge is not back. |
+| Spacing and retreats | Patient bots hover just outside reach while recharging, wait at the edge when they will be charged first, and back off after taking two hits in a row or below 6 health. |
+| Strafing | Changes direction every 8–30 ticks, away from walls, sometimes holding still. With a wall close behind, it never backs up further and slips out diagonally toward the side with room. |
+| Hit-selecting | Waits for a charged opponent to swing first. Bots doing it lose 73% of duels against the same tactics without it, so `MASTER` leaves it off. |
+
+### Bench
+
+`cargo test -p halcyon-server --release combat_duel_benchmark -- --ignored --nocapture` runs duels under the real owner rules:
+
+- two fighters in a `boxes` box, with the game's kit;
+- publication, then decisions that land on the next step, as for live bots;
+- simulated time, and a draw after 90 s.
+
+Every matchup runs half its duels with the entity IDs swapped. `HALCYON_COMBAT_SCENARIO` picks one scenario, `HALCYON_COMBAT_DUELS` sets duels per matchup (default 200), `HALCYON_COMBAT_KIT=long` fights in the `boxes_long` kit, `HALCYON_COMBAT_COUNTERS=1` prints how often each technique was tried, and `HALCYON_BENCH_REPORT` writes JSON. 2,000 duels take about 4 s.
+
+| Scenario | Question |
+| --- | --- |
+| `baseline` | The fighter against the first version (`Tactics::basic`), both level 75. |
+| `mirror`, `bias` | Same level or identical bots: expect about 50% after side swaps. |
+| `ladder` | Levels 0, 25, 50, 75 and 100, round robin. |
+| `ablation` | Level-75 tactics against the same with one technique changed. |
+| `probe` | Level-100 tactics with one knob at its level-50 value. |
+| `isolate` | Strong hands with middling tactics, and the reverse, against a plain level 50. |
+
+Each side reports:
+
+- clicks per second, accuracy, mean strength, sprint-knockback and critical shares;
+- hit distance, combo lengths, knockback taken and jump-reset share;
+- mean gap, wall time, aim error at click, turn speeds and click-interval spread.
+
+It prints any **tell** as `TELL:`:
+
+| Tell | Threshold |
+| --- | --- |
+| Camera snap | a turn faster than 2400°/s |
+| Frozen aim | over 20% of engaged ticks without any rotation |
+| Metronome clicks | a click-interval spread under 0.5 ticks |
+| Jitter | over 3 strafe reversals per second |
+| Wall hugging | over 35% of engaged ticks against a wall |
+| Standing still | over 25% of engaged ticks with no movement key |
+| Pixel aim | a mean aim error at click under 0.5° |
+| Never misses | over 98% of swings landing |
+
+Tools:
+
+- `trace_duel` (`HALCYON_DUEL=<levelA>,<levelB>,<seed>`, optionally `HALCYON_DUEL_TACTICS=<level>` or `HALCYON_DUEL_CRITS=<p>`) prints one duel tick by tick.
+- `tune_tactics` runs a coordinate search over `MASTER`'s knobs. A step is kept when it beats the current and recent best tactics significantly, without tells (`HALCYON_TUNE_DUELS`, `HALCYON_TUNE_ROUNDS`).
+
+### Results
+
+300 duels per matchup:
+
+| Matchup | Higher level wins |
+| --- | --- |
+| 25 vs 0 | 83% |
+| 50 vs 25 | 82% |
+| 75 vs 50 | 86% |
+| 100 vs 75 | 63–72% |
+| 100 vs 50 | 90% |
+| Level 75 vs the first version at level 75 | 89% |
+| Mirrors and swapped identical bots | 47–52% |
+
+No tells fire. At level 100, 94–97% of swings land against strong opponents, crits are 7–20% of hits depending on the opponent, and duels between strong bots last 5–6 s in the `boxes` kit and 13–15 s in the `boxes_long` kit.
+
+### What matters, measured
+
+- **Hands decide most fights.** Prediction and pursuit are worth 80% and 68% against bots without them. Reaction time and click timing make up the rest of what separates levels (`isolate`: level-100 hands alone win 88% against level 50, and level-100 tactics alone 89%).
+- **Equal bots trade.** Both swing on charge and the server resolves attacks against positions up to 6 blocks away, so a hit is almost always answered. Hits are lost to re-approach time, and about a third of the possible swings never happen.
+- **Individual techniques move results by only a few percent between equal bots.** Jump resets, crits, sprint resets and evasion each fall within a few percent in ablations. They remain because they read as human and punish weaker players; criticals, for example, are 20% of a level-100 bot's hits against beginners.
+- **Crits and jump resets compete for airtime.** With a sword, a jump reset right after a trade lands before the charge is strong, so it cannot become a critical. Criticals need the jump about 8 ticks before the click.
+
+### Known gaps
+
+- No field-of-view or memory model.
+- No blocking, rods, bows or item use.
+- No team awareness.
+- Fighters do not route around obstacles; box duels do not need it.
+- The bench measures bots against bots; strength against humans still needs live play.

@@ -69,7 +69,7 @@ pub async fn run(server: Arc<Server>, mesh: Mesh, address: &'static str) {
     let id = senders.peer_id() as u16;
     let shard = Rc::new(Shard { id, senders });
     let instances = InstanceManager::new(server.clone(), id);
-    let Some(hub) = instances.home() else {
+    let Some(_) = instances.home() else {
         eprintln!("shard {id}: the hub map is missing; set HALCYON_HUB_MAP");
         return;
     };
@@ -77,7 +77,7 @@ pub async fn run(server: Arc<Server>, mesh: Mesh, address: &'static str) {
     if id == 0 {
         // Temporary until matches own bot populations: HALCYON_BOTS=<count>.
         let bots = std::env::var("HALCYON_BOTS").ok().and_then(|n| n.parse().ok()).unwrap_or(0);
-        crate::bot::spawn(server.clone(), hub, bots, 0x0068_616c_6379_6f6e);
+        crate::bot::spawn(server.clone(), instances.clone(), bots, 0x0068_616c_6379_6f6e);
     }
 
     for (_, receiver) in receivers.streams() {

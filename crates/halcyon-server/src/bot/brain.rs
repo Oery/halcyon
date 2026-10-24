@@ -98,6 +98,8 @@ pub enum Mode {
     Moving,
     Finished,
     Swimming,
+    /// In a game, under the fighter brain instead.
+    Fighting,
 }
 
 #[derive(Clone, Copy, Debug)]

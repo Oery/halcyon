@@ -58,6 +58,38 @@ impl BotProfile {
         15.0 + 90.0 * (1.0 - self.skill())
     }
 
+    /// Ticks between seeing an opponent move and reacting to it.
+    pub fn reaction_ticks(self) -> u32 {
+        6 - (3.0 * self.skill()).round() as u32
+    }
+
+    /// Mean ticks between an opponent's move and the reaction to it; each
+    /// decision draws the whole ticks around it.
+    pub fn reaction(self) -> f32 {
+        6.0 - 3.0 * self.skill()
+    }
+
+    /// Attack charge to wait for before the next swing, drawn per swing.
+    pub fn click_threshold(self, rng: &mut Rng) -> f32 {
+        let mean = 0.8 + 0.18 * self.skill();
+        (mean + rng.normal() as f32 * (0.08 - 0.06 * self.skill())).clamp(0.5, 1.05)
+    }
+
+    /// Per-tick chance of clicking early, before the swing has recharged.
+    pub fn spam_chance(self) -> f64 {
+        f64::from(0.12 * (1.0 - self.skill()))
+    }
+
+    /// Chance of releasing forward after a sprinting hit, to sprint-hit again.
+    pub fn wtap_chance(self) -> f64 {
+        f64::from(0.15 + 0.75 * self.skill())
+    }
+
+    /// Chance of jumping in to land a critical hit.
+    pub fn crit_jump_chance(self) -> f64 {
+        f64::from(0.1 + 0.5 * self.skill())
+    }
+
     /// Pause before a jump: longer for hard jumps and weaker players.
     pub fn hesitation(self, robustness: f32, rng: &mut Rng) -> u16 {
         let difficulty = (1.0 - robustness.clamp(0.0, 1.0)) * 25.0 * (1.0 - 0.6 * self.skill());

@@ -24,6 +24,7 @@ changes; [feature-progress.md](feature-progress.md) keeps the server-wide view.
 /play <kind> ─► route: fullest open instance of <kind> on any shard,
                 else a new one on the least-loaded shard (game::create)
                 │
+start ────────► on_create(ctx)         once, before anyone can join: build terrain
 admission ────► on_join(ctx, player)   before the client learns its entity ID:
                                        place the player, set its rules
 each 50 ms ───► simulation (movement, combat, blocks…)
@@ -114,10 +115,12 @@ directly and manages `phase()`, `send_to` and `close()` itself.
 | `reset(player)` | Queued full heal and fresh life at the rules' respawn point. |
 | `message(player, text)`, `broadcast(text)` | System chat, at most 16 lines buffered per player. |
 | `scoreboards()` | Reliable shared and personal sidebar, below-name and Tab score displays; see below. |
+| `set_loadout(player, slots, selected)` | Queued inventory replacement. Queue it before a `reset` in the same step: a fresh life drops older queued actions. |
+| `set_blocks(cells)` | Trusted terrain edits through the instance's overlay, applied immediately in bounded batches. Shares the overlay's limits (16,384 changed cells, 1,024 per column). |
 | `send_to(player, destination)` | Moves the connection to `Hub`, `Matchmake(kind)` or `Instance(id)`, on any shard. |
 | `close()` | Stops the instance once it is empty. |
 
-Queued calls (`reset`, `teleport` after spawning) share the player's 32-entry
+Queued calls (`reset`, `set_loadout`, `teleport` after spawning) share the player's 32-entry
 action queue and apply on the next step.
 
 ## Scoreboards
@@ -278,8 +281,12 @@ commands and persistence are not provided by this API.
 | --- | --- |
 | `hub` | Protected lobby (PvP with `HALCYON_PVP=1`). Holds `HALCYON_HUB_CAPACITY` players (default 100, bots included); players fill the fullest hub with room across shards. Each shard keeps one permanent hub; overflow hubs stop after 60 s empty. Map: `HALCYON_HUB_MAP`. |
 | `ffa` | `Match` for 2–8 players: 5 s countdown, PvP until one player is left, back to the hub after 5 s. Personal sidebar shows waiting status, then remaining players and alive/eliminated status. Map: `HALCYON_FFA_MAP`. |
+| `boxes` | `Match` for 2–8 players: four 17×17 glass boxes built in the sky over the map, plus a gallery. After a 5 s countdown, fighters are paired into boxes in entity order (an odd one joins the last pair) with an iron sword and iron armor; a box is decided when one fighter is left, and the round ends when every box is. Eliminated players watch from the gallery. Map: `HALCYON_BOXES_MAP`. |
+| `boxes_long` | `boxes` with a stone sword against full diamond armor: about sixteen hits to win instead of seven, so duels last two to three times longer. |
+| `ladder` | One player against a sparring bot in a `boxes` box with the `boxes_long` kit. The bot starts at level 50 (`HALCYON_LADDER_LEVEL`); beating it makes the next bot 10 levels stronger, losing makes it 10 weaker, and the next fight starts the moment one ends. The game starts its own bot (`Game::sparring`), which leaves with the player. |
 
-Both default to the `Parkour Spiral` map.
+All default to the `Parkour Spiral` map. Every finished round prints one
+line to stdout (`instance <id> (<kind>): <result> (<seconds>s)`).
 
 ## Queue lobbies
 
@@ -321,9 +328,9 @@ Design constraints this places on today's code:
 | Player rules | Partial — protection, fall/void damage, PvP and block editing per player; no hunger, natural regeneration or item drop rules. |
 | Chat messages | Done — per-player and broadcast system chat. |
 | Round timers | Partial — countdown and end delay come from `MatchRules`; in-round timers count steps (`SIMULATION_HZ` per second). |
-| Loadouts and item grants | Not started in `GameCtx` — the owner's inventory-edit path exists but is not exposed to games. |
+| Loadouts and item grants | Partial — `set_loadout` replaces a player's inventory; no single-item grants. |
 | Game mode changes | Not started in `GameCtx` — e.g. spectator for eliminated players. |
-| Terrain edits from games | Not started in `GameCtx` — `set_block`, signs, jukeboxes and openings exist on `Instance` only. |
+| Terrain edits from games | Partial — `set_blocks` and the `on_create` hook build terrain; signs, jukeboxes and openings exist on `Instance` only. |
 | Titles, action bar and sounds | Not started |
 | Scoreboards and sidebars | Done — shared and personal sidebar, below-name and Tab scores; static sidebar layouts with shared immutable bases, explicit event updates, stack formatting and custom number formats. Game-supplied values; no vanilla criteria or scoreboard commands. |
 | Boss bars | Not started |
@@ -334,6 +341,6 @@ Design constraints this places on today's code:
 | Rejoin after disconnect | Not started — a disconnect is a `Left` event. |
 | Parties | Not started — `/play` places one player at a time. |
 | Results and records | Not started |
-| Bot backfill | Not started — bots spawn only in shard 0's home hub and cannot fight. |
+| Bot backfill | Partial — with `HALCYON_BOT_GAME=<kind>` bots queue from shard 0's hub like players and play `boxes` with a melee brain; no filling of human games after a timeout. |
 | Running-game rebalancing across cores | Not started — instances stay on the core they started on. |
 | Cross-server transfer | Not started — designed: `StoreCookie` ticket plus `Transfer`. |

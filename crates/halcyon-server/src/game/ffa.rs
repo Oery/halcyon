@@ -89,7 +89,7 @@ impl Match for Ffa {
             STATUS,
             format_args!("Status: Alive"),
         );
-        ctx.broadcast("Fight!");
+        ctx.broadcast(super::FIGHT);
     }
 
     fn on_event(&mut self, ctx: &mut GameCtx<'_>, event: GameEvent) {

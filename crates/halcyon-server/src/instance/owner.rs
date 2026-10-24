@@ -28,6 +28,19 @@ impl Driver {
         Self { game, status, map, close: false }
     }
 
+    /// Runs the game's `on_create` before any player can be admitted.
+    pub(super) fn create(&mut self, registry: &mut Registry) {
+        let mut notices = Vec::new();
+        let mut ctx = GameCtx {
+            id: self.status.id,
+            registry,
+            world: &self.map.world,
+            notices: &mut notices,
+            close: &mut self.close,
+        };
+        self.game.on_create(&mut ctx);
+    }
+
     fn join(&mut self, registry: &mut Registry, id: i32, notices: &mut Vec<Rc<Input>>) {
         let mut ctx = GameCtx {
             id: self.status.id,

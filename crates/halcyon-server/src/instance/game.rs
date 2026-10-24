@@ -4,13 +4,16 @@ use std::rc::Rc;
 
 use super::session::Input;
 use super::{InstanceId, Registry, Transform};
+use crate::arena::{BlockPos, EditError};
 use crate::game::Destination;
+use crate::inventory::{HotbarSlot, InventorySlot};
 use crate::lifecycle::PlayerRules;
-use crate::player::{PlayerAction, PlayerUpdate};
+use crate::player::{InventoryEdit, PlayerAction, PlayerUpdate};
 use crate::scoreboard::{
     DisplayOverride, DisplaySlot, LineId, ObjectiveId, ObjectiveSpec, Score, ScoreHolder,
     ScoreboardError, SidebarLayout,
 };
+use mc_protocol::types::ItemStack;
 
 /// Chat lines a single update holds; older lines are dropped first.
 pub const MAX_MESSAGES: usize = 16;
@@ -29,8 +32,6 @@ impl GameCtx<'_> {
         self.registry.scoreboards.bind(self.id);
         Scoreboards { registry: self.registry }
     }
-    // Game APIs are intentionally available before a concrete game consumes them.
-    #[allow(dead_code)]
     pub fn instance(&self) -> InstanceId {
         self.id
     }
@@ -105,11 +106,55 @@ impl GameCtx<'_> {
         true
     }
 
+    /// Queued healing, up to full health.
+    pub fn heal(&mut self, player: i32, amount: f32) -> bool {
+        self.registry.players.get(&player).is_some_and(|entry| {
+            entry
+                .input
+                .actions
+                .borrow_mut()
+                .push(entry.state.life.generation, PlayerAction::Heal(amount))
+        })
+    }
+
     /// Full health, a fresh life and the rules' respawn point.
     pub fn reset(&mut self, player: i32) -> bool {
         self.registry.players.get(&player).is_some_and(|entry| {
             entry.input.actions.borrow_mut().push(entry.state.life.generation, PlayerAction::Reset)
         })
+    }
+
+    /// Replaces the player's inventory. Queued like `reset`; queue it before
+    /// a `reset` in the same step, since a fresh life drops older actions.
+    pub fn set_loadout(
+        &mut self,
+        player: i32,
+        slots: [ItemStack; InventorySlot::COUNT],
+        selected: HotbarSlot,
+    ) -> bool {
+        let Some(entry) = self.registry.players.get(&player) else {
+            return false;
+        };
+        // Nobody waits for the result; a failed edit leaves the inventory as it was.
+        let (reply, _) = glommio::channels::oneshot::oneshot();
+        let edit = InventoryEdit::Loadout { slots: Box::new(slots), selected };
+        entry
+            .input
+            .actions
+            .borrow_mut()
+            .push(entry.state.life.generation, PlayerAction::EditInventory { edit, reply })
+    }
+
+    /// Trusted terrain edits through the instance's overlay, in bounded
+    /// transactions. Stops at the first rejected batch.
+    pub fn set_blocks(
+        &mut self,
+        cells: &[(BlockPos, halcyon_world::BlockStateId)],
+    ) -> Result<(), EditError> {
+        for batch in cells.chunks(halcyon_world::blocks::MAX_EDIT_CELLS) {
+            self.registry.arena.edit_all(self.world, batch)?;
+        }
+        Ok(())
     }
 
     #[allow(dead_code)]
