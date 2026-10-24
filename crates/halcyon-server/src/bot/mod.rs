@@ -593,7 +593,7 @@ impl Body {
             destination: update.destination,
             died: update.death.is_some(),
             hurt: update.damage.is_some() || update.death.is_some(),
-            fight: update.messages.iter().any(|line| &**line == FIGHT),
+            fight: update.messages.iter().any(|line| line.to_string() == FIGHT),
         }
     }
 

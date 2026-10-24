@@ -8,11 +8,12 @@ use crate::arena::{BlockPos, EditError};
 use crate::game::Destination;
 use crate::inventory::{HotbarSlot, InventorySlot};
 use crate::lifecycle::PlayerRules;
-use crate::player::{InventoryEdit, PlayerAction, PlayerUpdate};
+use crate::player::{InventoryEdit, PlayerAction, PlayerUpdate, TitleUpdate};
 use crate::scoreboard::{
     DisplayOverride, DisplaySlot, LineId, ObjectiveId, ObjectiveSpec, Score, ScoreHolder,
     ScoreboardError, SidebarLayout,
 };
+use crate::text::{Text, Title};
 use mc_protocol::types::ItemStack;
 
 /// Chat lines a single update holds; older lines are dropped first.
@@ -157,20 +158,65 @@ impl GameCtx<'_> {
         Ok(())
     }
 
+    /// A system chat line for one player.
     #[allow(dead_code)]
-    pub fn message(&mut self, player: i32, text: &str) {
-        let text: Rc<str> = Rc::from(text);
+    pub fn message(&mut self, player: i32, text: impl Into<Text>) {
+        let Some(text) = checked(text.into()) else { return };
         self.update(player, PlayerUpdate { messages: vec![text], ..Default::default() });
     }
 
-    pub fn broadcast(&mut self, text: &str) {
-        let text: Rc<str> = Rc::from(text);
+    /// A system chat line for every connected player.
+    pub fn broadcast(&mut self, text: impl Into<Text>) {
+        let Some(text) = checked(text.into()) else { return };
+        self.update_connected(|| PlayerUpdate {
+            messages: vec![text.clone()],
+            ..Default::default()
+        });
+    }
+
+    /// Replaces the line above the player's hotbar.
+    #[allow(dead_code)]
+    pub fn action_bar(&mut self, player: i32, text: impl Into<Text>) {
+        let Some(text) = checked(text.into()) else { return };
+        self.update(player, PlayerUpdate { action_bar: Some(text), ..Default::default() });
+    }
+
+    #[allow(dead_code)]
+    pub fn broadcast_action_bar(&mut self, text: impl Into<Text>) {
+        let Some(text) = checked(text.into()) else { return };
+        self.update_connected(|| PlayerUpdate {
+            action_bar: Some(text.clone()),
+            ..Default::default()
+        });
+    }
+
+    /// Replaces the player's title and subtitle.
+    #[allow(dead_code)]
+    pub fn title(&mut self, player: i32, title: Title) {
+        let Some(title) = checked_title(title) else { return };
+        let title = Some(TitleUpdate::Show(title));
+        self.update(player, PlayerUpdate { title, ..Default::default() });
+    }
+
+    pub fn broadcast_title(&mut self, title: Title) {
+        let Some(title) = checked_title(title) else { return };
+        self.update_connected(|| PlayerUpdate {
+            title: Some(TitleUpdate::Show(title.clone())),
+            ..Default::default()
+        });
+    }
+
+    #[allow(dead_code)]
+    pub fn clear_title(&mut self, player: i32) {
+        self.update(player, PlayerUpdate { title: Some(TitleUpdate::Clear), ..Default::default() });
+    }
+
+    fn update_connected(&mut self, update: impl Fn() -> PlayerUpdate) {
         // Index the members: `update` needs the context mutably.
         for index in 0..self.registry.members.len() {
             let player = self.registry.members[index];
             if self.connected(player) {
-                let update = PlayerUpdate { messages: vec![text.clone()], ..Default::default() };
-                self.update(player, update);
+                self.update(player, update());
             }
         }
     }
@@ -191,6 +237,19 @@ impl GameCtx<'_> {
             self.notices.push(entry.input.clone());
         }
     }
+}
+
+/// Games build their text, so out-of-bounds text is a server bug: it is dropped.
+fn checked(text: Text) -> Option<Rc<Text>> {
+    let valid = text.validate().is_ok();
+    debug_assert!(valid, "invalid game text: {text:?}");
+    valid.then(|| Rc::new(text))
+}
+
+fn checked_title(title: Title) -> Option<Rc<Title>> {
+    let valid = title.validate().is_ok();
+    debug_assert!(valid, "invalid game title: {title:?}");
+    valid.then(|| Rc::new(title))
 }
 
 /// Owner-side scoreboard operations. IDs belong to this instance and never

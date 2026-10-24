@@ -4,11 +4,12 @@ use mc_protocol::packets::client::{
     CommandMatch, CommandNode, CommandNodeKind, CommandNumberKind, CommandSuggestionsResponse,
     Commands, SystemChatMessage,
 };
-use mc_protocol::types::{Nbt, VarInt};
+use mc_protocol::types::VarInt;
 
 use crate::Client;
 use crate::error::Error;
 use crate::instance::{Instance, Registry};
+use crate::text::{Style, Text};
 
 mod gamemode;
 mod give;
@@ -77,16 +78,10 @@ pub async fn execute(text: &str, client: &mut Client) -> Result<(), Error> {
     }
     .await;
     let failed = result.is_err();
-    let reply = result.unwrap_or_else(|error| Reply::from(error.to_string()));
-    client
-        .send(&SystemChatMessage {
-            content: Nbt::Compound(vec![
-                ("text", Nbt::Str(&reply.message)),
-                ("color", Nbt::Str(if failed { "red" } else { "white" })),
-            ]),
-            overlay: false,
-        })
-        .await?;
+    let mut reply = result.unwrap_or_else(|error| Reply::from(error.to_string()));
+    let style = if failed { Style::RED } else { Style::WHITE };
+    let text = Text::new().push(std::mem::take(&mut reply.message), style);
+    client.send(&SystemChatMessage { content: text.nbt(), overlay: false }).await?;
     match reply.destination {
         Some(destination) => client.move_to(destination).await,
         None => Ok(()),

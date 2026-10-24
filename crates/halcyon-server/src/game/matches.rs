@@ -11,6 +11,7 @@ use super::{Destination, Game, GameEvent, Phase};
 use crate::instance::{GameCtx, Transform};
 use crate::lifecycle::PlayerRules;
 use crate::simulation::SIMULATION_HZ;
+use crate::text::{Text, Title};
 
 #[derive(Clone, Copy, Debug)]
 pub struct MatchRules {
@@ -127,7 +128,7 @@ impl<M: Match> Game for MatchRunner<M> {
         let waiting = ctx.player_count();
         self.game.on_arrive(ctx, player, waiting);
         let name = ctx.name(player).unwrap_or("?").to_owned();
-        ctx.broadcast(&format!("{name} joined ({waiting}/{}).", self.rules.max_players));
+        ctx.broadcast(format!("{name} joined ({waiting}/{}).", self.rules.max_players));
     }
 
     fn on_event(&mut self, ctx: &mut GameCtx<'_>, event: GameEvent) {
@@ -148,7 +149,7 @@ impl<M: Match> Game for MatchRunner<M> {
             }
             Stage::Gathering if count >= min => {
                 let seconds = self.rules.countdown_seconds;
-                ctx.broadcast(&format!("Starting in {seconds} seconds."));
+                ctx.broadcast(format!("Starting in {seconds} seconds."));
                 Stage::Countdown(seconds * SIMULATION_HZ)
             }
             Stage::Gathering => Stage::Gathering,
@@ -163,7 +164,9 @@ impl<M: Match> Game for MatchRunner<M> {
             }
             Stage::Countdown(steps) => {
                 if steps % SIMULATION_HZ == 0 && steps <= 3 * SIMULATION_HZ {
-                    ctx.broadcast(&format!("{}...", steps / SIMULATION_HZ));
+                    let seconds = (steps / SIMULATION_HZ).to_string();
+                    let title = Title::new(Text::new().gold(seconds)).timings(0, 25, 5);
+                    ctx.broadcast_title(title);
                 }
                 Stage::Countdown(steps - 1)
             }

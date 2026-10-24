@@ -1,4 +1,5 @@
 use super::*;
+use crate::text::Span;
 use mc_protocol::types::VarInt;
 
 fn board() -> Board {

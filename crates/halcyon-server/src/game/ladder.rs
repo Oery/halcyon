@@ -94,8 +94,8 @@ impl Ladder {
         self.fighting = true;
         self.sparring.generation.set(self.sparring.generation.get() + 1);
         let level = self.sparring.level.get();
-        ctx.message(player, &format!("Round {}: a level {level} bot.", self.round));
-        ctx.broadcast(super::FIGHT);
+        ctx.message(player, format!("Round {}: a level {level} bot.", self.round));
+        ctx.broadcast(super::fight());
     }
 
     fn finish(&mut self, ctx: &mut GameCtx<'_>, loser: i32) {
@@ -115,7 +115,7 @@ impl Ladder {
         let record = format!("{}-{}", self.wins, self.losses);
         let best = self.best.map_or(String::new(), |best| format!(", best win: level {best}"));
         let result = if won { "You win" } else { "You lose" };
-        ctx.message(player, &format!("{result} ({record}{best}). Next: level {next}."));
+        ctx.message(player, format!("{result} ({record}{best}). Next: level {next}."));
         self.start_fight(ctx, &[loser]);
     }
 }

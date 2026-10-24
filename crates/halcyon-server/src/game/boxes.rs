@@ -286,7 +286,7 @@ impl Match for Boxes {
             ctx.reset(player);
             self.alive[index].insert(player);
         }
-        ctx.broadcast(super::FIGHT);
+        ctx.broadcast(super::fight());
     }
 
     fn on_event(&mut self, ctx: &mut GameCtx<'_>, event: GameEvent) {
@@ -303,10 +303,8 @@ impl Match for Boxes {
             return;
         }
         let name = ctx.name(player).unwrap_or("?").to_owned();
-        match killer.and_then(|killer| ctx.name(killer)).map(str::to_owned) {
-            Some(killer) => ctx.broadcast(&format!("{name} was eliminated by {killer}.")),
-            None => ctx.broadcast(&format!("{name} was eliminated.")),
-        }
+        let killer = killer.and_then(|killer| ctx.name(killer)).map(str::to_owned);
+        ctx.broadcast(super::eliminated(&name, killer.as_deref()));
         // Eliminated players respawn on the gallery to watch.
         ctx.set_rules(player, PlayerRules::lobby(self.layout.gallery));
     }

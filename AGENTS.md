@@ -40,7 +40,7 @@ Add a packet: define `#[packet(State, 0xNN, Client|Server)] struct` in `crates/m
 
 ## Key Directories
 
-- `crates/halcyon-server/src/`: runtime — `main.rs`, `server.rs`, `client/mod.rs`, `transport.rs`, `packet.rs`, `lifecycle.rs`, `player.rs`, `combat.rs`, `effects.rs`, `movement/mod.rs`, `movement/physics.rs`, `movement/water.rs`, `movement/media.rs`, `simulation.rs`, `inventory/mod.rs`, `arena.rs`, `interaction/mod.rs`, `world_sync.rs`, `map.rs`, `shard.rs`, `game/mod.rs`, `instance/mod.rs`, `instance/manager.rs`, `visibility/mod.rs`, `cache.rs`, `chunks.rs`, `states/`, `auth/`, `encryption/`.
+- `crates/halcyon-server/src/`: runtime — `main.rs`, `server.rs`, `client/mod.rs`, `transport.rs`, `packet.rs`, `lifecycle.rs`, `player.rs`, `text.rs`, `combat.rs`, `effects.rs`, `movement/mod.rs`, `movement/physics.rs`, `movement/water.rs`, `movement/media.rs`, `simulation.rs`, `inventory/mod.rs`, `arena.rs`, `interaction/mod.rs`, `world_sync.rs`, `map.rs`, `shard.rs`, `game/mod.rs`, `instance/mod.rs`, `instance/manager.rs`, `visibility/mod.rs`, `cache.rs`, `chunks.rs`, `states/`, `auth/`, `encryption/`.
 - `crates/halcyon-world/src/`: startup world loading — `loader/mod.rs`, section palette encoding in `loader/section.rs`, `disk_nbt.rs`, `blockstates.rs`, `openings.rs`, `terrain.rs`, generated `collision_data.rs`, immutable world grid in `lib.rs`.
 - `crates/halcyon-commands/src/`: reusable command syntax — `lib.rs` traits and usage example, `argument.rs` built-in word/player/numeric arguments, `position.rs` world coordinates, `tree.rs` command graph. `CommandArgs` structs define positional fields; enums define alternative forms.
 - `crates/halcyon-commands-macros/src/`: derive macros and compile-time declaration checks.

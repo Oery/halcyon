@@ -7,6 +7,7 @@ use std::sync::Arc;
 use crate::instance::{GameCtx, InstanceId};
 use crate::map::Map;
 use crate::server::Server;
+use crate::text::{Style, Text};
 
 pub(crate) mod boxes;
 mod ffa;
@@ -22,6 +23,19 @@ pub use matches::MatchRunner;
 
 /// Announced to everyone when a combat round starts.
 pub const FIGHT: &str = "Fight!";
+
+fn fight() -> Text {
+    Text::new().push(FIGHT, Style::RED.bold())
+}
+
+/// A shared chat line for a player knocked out of a round.
+fn eliminated(name: &str, killer: Option<&str>) -> Text {
+    let text = Text::new().yellow(name).gray(" was eliminated");
+    match killer {
+        Some(killer) => text.gray(" by ").yellow(killer).gray("."),
+        None => text.gray("."),
+    }
+}
 
 /// Game kinds players can ask for by name.
 pub const KINDS: [&str; 5] = [Hub::KIND, Ffa::KIND, Boxes::KIND, Boxes::LONG_KIND, Ladder::KIND];

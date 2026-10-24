@@ -111,9 +111,11 @@ impl Client {
         update: crate::player::PlayerUpdate,
     ) -> Result<(), Error> {
         use crate::lifecycle::{DamageKind, TELEPORT_TIMEOUT};
+        use crate::player::TitleUpdate;
         use mc_protocol::packets::client::{
-            CombatKill, GameEvent, Respawn, SetContainerContent, SetContainerSlot, SetCursorItem,
-            SetEntityVelocity, SetHealth, SetHeldItemResponse, SyncPlayerPosition,
+            ClearTitles, CombatKill, GameEvent, Respawn, SetContainerContent, SetContainerSlot,
+            SetCursorItem, SetEntityVelocity, SetHealth, SetHeldItemResponse, SetSubtitleText,
+            SetTitleText, SetTitlesAnimation, SyncPlayerPosition, SystemChatMessage,
         };
         use mc_protocol::types::{LpVec3, Nbt};
         use std::borrow::Cow;
@@ -248,11 +250,27 @@ impl Client {
             .await?;
         }
         for message in &update.messages {
-            self.send(&mc_protocol::packets::client::SystemChatMessage {
-                content: Nbt::Str(message),
-                overlay: false,
-            })
-            .await?;
+            self.send(&SystemChatMessage { content: message.nbt(), overlay: false }).await?;
+        }
+        if let Some(text) = &update.action_bar {
+            self.send(&SystemChatMessage { content: text.nbt(), overlay: true }).await?;
+        }
+        match &update.title {
+            Some(TitleUpdate::Show(title)) => {
+                let ticks = |value: u32| value.min(i32::MAX as u32) as i32;
+                self.send(&SetTitlesAnimation {
+                    fade_in: ticks(title.fade_in),
+                    stay: ticks(title.stay),
+                    fade_out: ticks(title.fade_out),
+                })
+                .await?;
+                // An empty subtitle keeps an earlier one from showing again.
+                let subtitle = title.subtitle.as_ref().map_or(Nbt::Str(""), |text| text.nbt());
+                self.send(&SetSubtitleText { text: subtitle }).await?;
+                self.send(&SetTitleText { text: title.title.nbt() }).await?;
+            }
+            Some(TitleUpdate::Clear) => self.send(&ClearTitles { reset: true }).await?,
+            None => {}
         }
         // Leaving last lets this instance's final updates reach the client.
         if let Some(destination) = update.destination {

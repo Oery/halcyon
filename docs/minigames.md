@@ -113,7 +113,9 @@ directly and manages `phase()`, `send_to` and `close()` itself.
 | `teleport(player, transform)` | Nearest clear spot. Before the player is visible it sets the spawn; afterwards it is a queued teleport. |
 | `set_rules(player, rules)` | Immediate `PlayerRules`: protection, fall/void damage, PvP, block editing, respawn point. |
 | `reset(player)` | Queued full heal and fresh life at the rules' respawn point. |
-| `message(player, text)`, `broadcast(text)` | System chat, at most 16 lines buffered per player. |
+| `message(player, text)`, `broadcast(text)` | System chat, at most 16 lines buffered per player. `text` is a `&str`, a `String` or a styled `Text`. |
+| `action_bar(player, text)`, `broadcast_action_bar(text)` | The line above the hotbar; a newer line replaces one not yet delivered. |
+| `title(player, title)`, `broadcast_title(title)`, `clear_title(player)` | A `Title` with an optional subtitle and fade timings in ticks; the newest change wins. |
 | `scoreboards()` | Reliable shared and personal sidebar, below-name and Tab score displays; see below. |
 | `set_loadout(player, slots, selected)` | Queued inventory replacement. Queue it before a `reset` in the same step: a fresh life drops older queued actions. |
 | `set_blocks(cells)` | Trusted terrain edits through the instance's overlay, applied immediately in bounded batches. Shares the overlay's limits (16,384 changed cells, 1,024 per column). |
@@ -122,6 +124,20 @@ directly and manages `phase()`, `send_to` and `close()` itself.
 
 Queued calls (`reset`, `set_loadout`, `teleport` after spawning) share the player's 32-entry
 action queue and apply on the next step.
+
+## Formatted text
+
+`crate::text` builds styled literal text for chat, action bars, titles and scoreboards. Each
+span carries its own `Style`. The color methods cover the 16 vanilla colors; `Style::color`
+takes a `#rrggbb` value.
+
+```rust
+ctx.broadcast(Text::new().gold("Round 3").gray(": ").push(name, Style::YELLOW.bold()));
+ctx.broadcast_title(Title::new(Text::new().red("Fight!")).subtitle("Last one standing wins"));
+```
+
+Text is limited to 64 spans and 4 KiB. Text over those limits, or with an unknown color, is a
+bug in the game: debug builds panic and release builds drop the message.
 
 ## Scoreboards
 
@@ -326,12 +342,12 @@ Design constraints this places on today's code:
 | Map selection | Partial — one map per game kind through `create`; no rotation or voting. |
 | Spawn assignment | Partial — `teleport` and `set_rules`; spawn points are computed in code. |
 | Player rules | Partial — protection, fall/void damage, PvP and block editing per player; no hunger, natural regeneration or item drop rules. |
-| Chat messages | Done — per-player and broadcast system chat. |
+| Chat messages | Done — per-player and broadcast system chat with styled `Text`. |
 | Round timers | Partial — countdown and end delay come from `MatchRules`; in-round timers count steps (`SIMULATION_HZ` per second). |
 | Loadouts and item grants | Partial — `set_loadout` replaces a player's inventory; no single-item grants. |
 | Game mode changes | Not started in `GameCtx` — e.g. spectator for eliminated players. |
 | Terrain edits from games | Partial — `set_blocks` and the `on_create` hook build terrain; signs, jukeboxes and openings exist on `Instance` only. |
-| Titles, action bar and sounds | Not started |
+| Titles, action bar and sounds | Partial — titles and action bar lines; no game sounds. |
 | Scoreboards and sidebars | Done — shared and personal sidebar, below-name and Tab scores; static sidebar layouts with shared immutable bases, explicit event updates, stack formatting and custom number formats. Game-supplied values; no vanilla criteria or scoreboard commands. |
 | Boss bars | Not started |
 | Teams | Not started — membership, nametag colors, friendly fire. |

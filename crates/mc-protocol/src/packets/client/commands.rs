@@ -190,6 +190,26 @@ pub struct SystemChatMessage<'p> {
     pub overlay: bool,
 }
 
+/// Stored until the next title is shown.
+#[packet(Play, 0x72, Client)]
+pub struct SetSubtitleText<'p> {
+    pub text: Nbt<'p>,
+}
+
+/// Shows the title together with the stored subtitle.
+#[packet(Play, 0x74, Client)]
+pub struct SetTitleText<'p> {
+    pub text: Nbt<'p>,
+}
+
+/// Durations in ticks.
+#[packet(Play, 0x75, Client)]
+pub struct SetTitlesAnimation {
+    pub fade_in: i32,
+    pub stay: i32,
+    pub fade_out: i32,
+}
+
 /// Only the Update Game Mode action; profiles remain immutable and shared.
 #[derive(Debug)]
 pub struct PlayerInfoGameMode<'p> {

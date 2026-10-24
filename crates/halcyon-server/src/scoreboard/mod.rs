@@ -11,6 +11,8 @@ use mc_protocol::packets::client::{
 use mc_protocol::types::Nbt;
 
 use crate::instance::InstanceId;
+use crate::text::MAX_TEXT_BYTES;
+pub use crate::text::{Style, Text};
 pub use mc_protocol::packets::client::ScoreRender;
 
 mod delivery;
@@ -18,129 +20,7 @@ pub use delivery::ScoreboardObserver;
 
 const MAX_OBJECTIVES: usize = 512;
 const MAX_SCORES: usize = 16_384;
-const MAX_TEXT_BYTES: usize = 4096;
 pub const MAX_SIDEBAR_LINES: usize = 15;
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct Style {
-    /// A vanilla color name or `#rrggbb`.
-    pub color: Option<&'static str>,
-    pub bold: bool,
-    pub italic: bool,
-    pub underlined: bool,
-    pub strikethrough: bool,
-    pub obfuscated: bool,
-}
-
-impl Style {
-    pub const PLAIN: Self = Self {
-        color: None,
-        bold: false,
-        italic: false,
-        underlined: false,
-        strikethrough: false,
-        obfuscated: false,
-    };
-
-    fn nbt(&self) -> Nbt<'_> {
-        let mut fields = vec![
-            ("bold", Nbt::Bool(self.bold)),
-            ("italic", Nbt::Bool(self.italic)),
-            ("underlined", Nbt::Bool(self.underlined)),
-            ("strikethrough", Nbt::Bool(self.strikethrough)),
-            ("obfuscated", Nbt::Bool(self.obfuscated)),
-        ];
-        if let Some(color) = self.color {
-            fields.push(("color", Nbt::Str(color)));
-        }
-        Nbt::Compound(fields)
-    }
-
-    fn validate(&self) -> Result<(), ScoreboardError> {
-        if let Some(color) = self.color {
-            const COLORS: &[&str] = &[
-                "black",
-                "dark_blue",
-                "dark_green",
-                "dark_aqua",
-                "dark_red",
-                "dark_purple",
-                "gold",
-                "gray",
-                "dark_gray",
-                "blue",
-                "green",
-                "aqua",
-                "red",
-                "light_purple",
-                "yellow",
-                "white",
-            ];
-            if !COLORS.contains(&color)
-                && !(color.len() == 7
-                    && color.starts_with('#')
-                    && color.as_bytes()[1..].iter().all(u8::is_ascii_hexdigit))
-            {
-                return Err(ScoreboardError::InvalidText);
-            }
-        }
-        Ok(())
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Span {
-    pub text: String,
-    pub style: Style,
-}
-
-/// Literal text, with explicit styling on each span; no executable text events.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Text(pub Vec<Span>);
-
-impl From<&str> for Text {
-    fn from(text: &str) -> Self {
-        text.to_owned().into()
-    }
-}
-
-impl From<String> for Text {
-    fn from(text: String) -> Self {
-        Self(vec![Span { text, style: Style::default() }])
-    }
-}
-
-impl Text {
-    fn nbt(&self) -> Nbt<'_> {
-        let extra = self
-            .0
-            .iter()
-            .map(|span| {
-                let Nbt::Compound(mut fields) = span.style.nbt() else {
-                    unreachable!()
-                };
-                fields.push(("text", Nbt::Str(&span.text)));
-                Nbt::Compound(fields)
-            })
-            .collect();
-        Nbt::Compound(vec![("text", Nbt::Str("")), ("extra", Nbt::List(extra))])
-    }
-
-    fn validate(&self) -> Result<(), ScoreboardError> {
-        // Bound the input before constructing any NBT containers.
-        if self.0.len() > 64 || self.0.iter().map(|s| s.text.len()).sum::<usize>() > MAX_TEXT_BYTES
-        {
-            return Err(ScoreboardError::InvalidText);
-        }
-        for span in &self.0 {
-            span.style.validate()?;
-        }
-        if self.nbt().body_len() > MAX_TEXT_BYTES {
-            return Err(ScoreboardError::InvalidText);
-        }
-        Ok(())
-    }
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[allow(dead_code)] // Public game API; the built-in FFA uses blank numbers only.
@@ -162,8 +42,8 @@ impl NumberFormat {
     fn validate(&self) -> Result<(), ScoreboardError> {
         match self {
             Self::Blank => Ok(()),
-            Self::Styled(style) => style.validate(),
-            Self::Fixed(text) => text.validate(),
+            Self::Styled(style) => Ok(style.validate()?),
+            Self::Fixed(text) => Ok(text.validate()?),
         }
     }
 }
@@ -244,6 +124,12 @@ pub enum ScoreHolder {
     Line(LineId),
     /// A stable key (1–64 bytes) unrelated to the displayed text.
     Entry(String),
+}
+
+impl From<crate::text::InvalidText> for ScoreboardError {
+    fn from(_: crate::text::InvalidText) -> Self {
+        Self::InvalidText
+    }
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]

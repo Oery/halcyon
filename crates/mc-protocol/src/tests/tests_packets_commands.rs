@@ -1,4 +1,5 @@
 use super::*;
+use crate::packets::client::ClearTitles;
 use crate::packets::server::{ChatCommand, CommandSuggestion};
 use crate::packets::{Context, Packets};
 
@@ -95,6 +96,17 @@ fn feedback_and_game_modes_encode_network_nbt_and_roster_action() {
         encode(&SystemChatMessage { content: Nbt::Str("ok"), overlay: false }),
         [7, 0x7c, 8, 0, 2, b'o', b'k', 0]
     );
+    assert_eq!(
+        encode(&SystemChatMessage { content: Nbt::Str("ok"), overlay: true }),
+        [7, 0x7c, 8, 0, 2, b'o', b'k', 1]
+    );
+    assert_eq!(encode(&SetTitleText { text: Nbt::Str("ok") }), [6, 0x74, 8, 0, 2, b'o', b'k']);
+    assert_eq!(encode(&SetSubtitleText { text: Nbt::Str("") }), [4, 0x72, 8, 0, 0]);
+    assert_eq!(
+        encode(&SetTitlesAnimation { fade_in: 10, stay: 70, fade_out: 20 }),
+        [13, 0x75, 0, 0, 0, 10, 0, 0, 0, 70, 0, 0, 0, 20]
+    );
+    assert_eq!(encode(&ClearTitles { reset: true }), [2, 0x0e, 1]);
     for id in 0..4 {
         let mode = GameMode::try_from(id).unwrap();
         let bytes = encode(&PlayerInfoGameMode { players: &[(Uuid::nil(), mode)] });

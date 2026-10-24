@@ -29,6 +29,7 @@ mod server;
 mod shard;
 mod simulation;
 mod states;
+mod text;
 mod transport;
 mod visibility;
 mod world_sync;

@@ -17,6 +17,7 @@ use crate::inventory::{
 };
 use crate::lifecycle::{Damage, DamageKind, DamageResult, PlayerLife, PlayerRules, Teleport};
 use crate::movement::{Advance, MovementInput, MovementState, ProposalQueue};
+use crate::text::{Text, Title};
 
 const ACTIONS_PER_STEP: usize = 4;
 const MAX_ACTIONS: usize = 32;
@@ -200,6 +201,12 @@ impl ActionQueue {
     }
 }
 
+#[derive(Clone, Debug)]
+pub enum TitleUpdate {
+    Show(Rc<Title>),
+    Clear,
+}
+
 /// Replaceable self state; it never accumulates one packet per simulation step.
 #[derive(Default)]
 pub struct PlayerUpdate {
@@ -224,7 +231,11 @@ pub struct PlayerUpdate {
     pub inventory_slots: u64,
     pub inventory_full: bool,
     /// Game chat lines, oldest first and bounded.
-    pub messages: Vec<Rc<str>>,
+    pub messages: Vec<Rc<Text>>,
+    /// The latest action bar line replaces any earlier one.
+    pub action_bar: Option<Rc<Text>>,
+    /// The latest title change replaces any earlier one.
+    pub title: Option<TitleUpdate>,
     /// The game sends this connection to another instance.
     pub destination: Option<crate::game::Destination>,
 }
@@ -284,6 +295,12 @@ impl PlayerUpdate {
         self.messages.extend(newer.messages);
         let excess = self.messages.len().saturating_sub(crate::instance::MAX_MESSAGES);
         self.messages.drain(..excess);
+        if newer.action_bar.is_some() {
+            self.action_bar = newer.action_bar;
+        }
+        if newer.title.is_some() {
+            self.title = newer.title;
+        }
         if newer.destination.is_some() {
             self.destination = newer.destination;
         }
@@ -303,6 +320,8 @@ impl PlayerUpdate {
             || self.respawn
             || self.inventory.is_some()
             || !self.messages.is_empty()
+            || self.action_bar.is_some()
+            || self.title.is_some()
             || self.destination.is_some()
     }
 }

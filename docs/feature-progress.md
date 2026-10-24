@@ -288,14 +288,14 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | --- | --- |
 | Player chat | Not started |
 | Secure chat | Not started |
-| System messages | Not started |
+| System messages | Done — game and command system chat with styled text. |
 | Direct and team messages | Not started |
-| Rich text | Not started |
+| Rich text | Partial — literal spans with color, bold, italic, underline, strikethrough and obfuscation; no click/hover events, translations or fonts. |
 | Player-list entries | Done |
 | Scoreboards | Partial — game APIs provide shared and personal sidebars, below-name and Tab scores, formatted titles/labels and custom number formats. Static sidebar bases are shared; games explicitly publish individual line updates with stack formatting. FFA has a personal status sidebar. No teams, Tab header/footer, scoreboard commands or persistence. |
 | Teams | Not started |
 | Boss bars | Not started |
-| Titles and action bar | Not started |
+| Titles and action bar | Done — game APIs for styled titles with subtitles and timings, clearing, and action bar lines. |
 | Player HUD state | Partial — health and hotbar; food stays fixed. |
 | Locator bar and waypoints | Not started |
 | Sounds | Partial — positioned and entity sounds for nearby players, including melee attacks, opening/placement/break feedback and jukebox playback; observers hear player hurt sounds. |
