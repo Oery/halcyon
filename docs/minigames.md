@@ -124,7 +124,7 @@ action queue and apply on the next step.
 
 `ctx.scoreboards()` edits instance-owned scoreboard state immediately. The
 connection publishes changes reliably within its existing writer budgets.
-Games keep the returned `ObjectiveId` handles, update values when they change,
+Games keep the returned `ObjectiveId` handles, publish updates from game events,
 and explicitly remove objectives they no longer need. IDs belong to one
 instance and become invalid after removal.
 
@@ -161,39 +161,76 @@ fn show_points(ctx: &mut GameCtx<'_>) -> Result<(), ScoreboardError> {
 adds scores alongside existing Tab roster entries; it does not add fake
 players. Hearts rendering follows the client's behavior, chiefly in Tab.
 
-For a text sidebar, create an objective and replace its lines with `sidebar`:
+Declare a sidebar's immutable layout as static Rust data:
 
 ```rust
-use crate::scoreboard::{DisplayOverride, DisplaySlot, ObjectiveSpec, Text};
+use crate::scoreboard::{LineId, SidebarLayout, SidebarLine};
 
-let mut boards = ctx.scoreboards();
-let personal = boards.create_personal_objective(player, ObjectiveSpec::default())?;
-boards.sidebar(personal, "Free for all".into(), &[
-    Text::from("Remaining: 4"),
-    Text::from(""),
-    Text::from("Status: Alive"),
-])?;
-boards.display_for(player, DisplaySlot::Sidebar, DisplayOverride::Objective(personal))?;
+const SCORE_LINE: LineId = LineId::new(0);
+const TIME_LINE: LineId = LineId::new(2);
+static SIDEBAR: SidebarLayout = SidebarLayout::new("My minigame", &[
+    SidebarLine::new("Score: 0"),
+    SidebarLine::new(""),
+    SidebarLine::new("Time: 60s"),
+]);
 ```
 
-Initialize the sidebar once, then update individual lines as values change:
+Create a shared or personal view of that layout during admission or round
+initialization, then select its sidebar slot:
 
 ```rust
-// Update an existing line by its zero-based position. Other lines and the
-// objective title are untouched; this produces one changed score entry.
-ctx.scoreboards().set_sidebar_line(
-    personal, 0, format!("Time: {remaining_seconds}s").into(),
+let mut boards = ctx.scoreboards();
+let personal = boards.create_personal_sidebar(player, &SIDEBAR)?;
+boards.display_for(player, DisplaySlot::Sidebar, DisplayOverride::Objective(personal))?;
+// Alternatively: create_sidebar(&SIDEBAR), then display(Sidebar, Some(id)).
+```
+
+The minigame owns its values. An event updates both its game state and the
+corresponding scoreboard line; no polling, text comparison or previous-value
+tracking is needed:
+
+```rust
+// Inside the scoring event handler:
+self.score += 1;
+ctx.scoreboards().update_line(
+    self.sidebar, SCORE_LINE, format_args!("Score: {}", self.score),
+)?;
+
+// Inside the game's seconds-timer event handler:
+self.seconds_left -= 1;
+ctx.scoreboards().update_line(
+    self.sidebar, TIME_LINE, format_args!("Time: {}s", self.seconds_left),
 )?;
 ```
 
-A seconds timer normally calls this only when its displayed second changes.
-Identical text returns without encoding or sending a packet. Use `set_score`
-for the equivalent incremental update to a player or custom score entry.
+`format_args!` is consumed synchronously. Both temporary text and encoding
+scratch use bounded stack buffers; no rendered `String` is retained. Each
+explicit call publishes a new line revision, even for identical text. Only
+the latest immutable encoded packet is kept for delivery; slow clients
+coalesce to it. Unaffected lines and the title are not rebuilt.
 
-The initialization/replacement helper `sidebar` replaces all scores in that objective, preserves line order, hides
-ordering numbers, and supports repeated text and blank lines. It accepts at
-most 15 lines and does not select a display slot itself. Use an instance-owned
-objective with `display(Sidebar, Some(id))` for a shared sidebar.
+`update_lines(objectives, line, format_args!(...))` encodes a common event
+update once for multiple views of the same layout. Pass a clonable iterator
+of objective IDs, such as `self.sidebars.values().copied()`. FFA uses this to
+publish the remaining-player count to all personal views.
+
+The layout fixes the title, initial labels, ordering and styles at compile
+time. Encoding happens once per instance/layout when its wire name is known.
+Every view shares that immutable cached base. Per-view updates remain
+separate; late viewers receive the base's unchanged entries and the latest
+updates, without replaying event history. Updates never modify the base.
+
+Layouts support up to 15 lines, including duplicates and blank lines, with
+ordering numbers hidden. `SidebarLine.style` and `SidebarLayout.title_style`
+accept constant `Style` values with a color and decorations; `Style::PLAIN`
+is available for constant struct initialization. A `LineId` is its zero-based
+position, checked by `LineId::new` during constant evaluation. Updating a
+position absent from the chosen layout returns `ScoreboardError`.
+
+Static layouts occupy only `Sidebar`. To change the layout between game
+phases, create a view of another static layout and select it. The former
+`sidebar` replacement helper and owned-text `set_sidebar_line` API have been
+replaced by static creation and `update_line`.
 
 Each viewer inherits the instance's three shared slots. `display_for` can
 override each slot independently with `Objective(id)`, `Hidden`, or `Inherit`.
@@ -201,30 +238,33 @@ Shared objectives can also be selected for specific viewers, for example to
 show a team's statistics only to its members. Personal objectives can be
 selected only by their owner. Only selected objectives are sent to a viewer.
 
-`Text` owns literal `Span`s with `Style`: a vanilla color or `#rrggbb`, bold,
-italic, underline, strikethrough and obfuscation. Styles are explicit per span.
+The general objective API still supports `Text` inputs with styled literal
+`Span`s: a static vanilla color or `#rrggbb`, bold, italic, underline,
+strikethrough and obfuscation. Styles are explicit per span.
 `Score.display` supplies a custom label for a sidebar entry; use a stable
 `ScoreHolder::Entry(key)` independent of that label. Use player holders for
 below-name and Tab scores. `NumberFormat` supports blank numbers, styled
 integers and fixed text, on an objective or individual score. An absent score
 format inherits the objective's format.
 
-`update_objective` changes title/rendering/number format in place.
+`set_score` explicitly publishes a player or custom entry, without comparing
+it to a retained value. General objectives can occupy any of the three slots.
+`update_objective` changes their title/rendering/number format in place.
 `reset_score` removes one score; `remove_objective` removes its scores and
 slot assignments. Removing a personally selected objective hides that slot;
 call `Inherit` explicitly to resume the shared display. `display(slot, None)`
 clears a shared slot while keeping personal overrides.
 
-`set_sidebar_line` requires an existing line at position 0–14 and does not
-reorder or rebuild the remaining lines. Use `sidebar` to replace the layout;
-even that operation only publishes entries whose content actually changed.
+Static layouts reject objective-property changes, generic score writes and
+individual score removals. Their only mutable data is the separate encoded
+line-update state. `remove_objective` also removes an entire static view.
 
 Each instance allows 512 objectives and 16,384 total score entries. Custom
 entry keys contain 1–64 bytes; each text component allows up to 64 spans and
 4 KiB of encoded NBT. Invalid operations return `ScoreboardError` and retain
-the previous state, including an invalid sidebar replacement. Identical
-updates generate no new work. Slow writers coalesce to current state rather
-than accumulating score events.
+the previous state, including formatting overflow or failure. Multi-view
+updates validate every target before publication. Slow writers coalesce to
+current encoded state rather than accumulating score events.
 
 Personal objectives, viewer overrides and scores keyed to a departing player
 are cleaned up automatically. Ordinary respawn retains displays; an instance
@@ -285,7 +325,7 @@ Design constraints this places on today's code:
 | Game mode changes | Not started in `GameCtx` — e.g. spectator for eliminated players. |
 | Terrain edits from games | Not started in `GameCtx` — `set_block`, signs, jukeboxes and openings exist on `Instance` only. |
 | Titles, action bar and sounds | Not started |
-| Scoreboards and sidebars | Done — shared and personal sidebar, below-name and Tab scores; formatted text, number formats and ordered text sidebars. Game-supplied values; no vanilla criteria or scoreboard commands. |
+| Scoreboards and sidebars | Done — shared and personal sidebar, below-name and Tab scores; static sidebar layouts with shared immutable bases, explicit event updates, stack formatting and custom number formats. Game-supplied values; no vanilla criteria or scoreboard commands. |
 | Boss bars | Not started |
 | Teams | Not started — membership, nametag colors, friendly fire. |
 | Objectives and regions | Not started — capture zones, checkpoints, region enter/leave events. |

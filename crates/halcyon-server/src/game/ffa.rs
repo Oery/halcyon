@@ -7,13 +7,28 @@ use super::matches::{Match, MatchRules, Outcome, ring_spawn};
 use crate::instance::GameCtx;
 use crate::lifecycle::PlayerRules;
 use crate::scoreboard::{
-    DisplayOverride, DisplaySlot, ObjectiveId, ObjectiveSpec, Span, Style, Text,
+    DisplayOverride, DisplaySlot, LineId, ObjectiveId, SidebarLayout, SidebarLine, Style,
 };
 
 pub const MAP: &str = "Parkour Spiral";
 const CAPACITY: usize = 8;
 /// Players start on a ring around the map spawn.
 const SPAWN_RADIUS: f64 = 4.0;
+
+const REMAINING: LineId = LineId::new(0);
+const STATUS: LineId = LineId::new(2);
+static SIDEBAR: SidebarLayout = SidebarLayout {
+    title: "Free for all",
+    title_style: Style { color: Some("gold"), bold: true, ..Style::PLAIN },
+    ..SidebarLayout::new(
+        "Free for all",
+        &[
+            SidebarLine::new("Waiting for the round"),
+            SidebarLine::new(""),
+            SidebarLine::new("Status: Waiting"),
+        ],
+    )
+};
 
 #[derive(Default)]
 pub struct Ffa {
@@ -25,10 +40,11 @@ impl Ffa {
     pub const KIND: &str = "ffa";
 
     fn update_remaining(&self, ctx: &mut GameCtx<'_>) {
-        let remaining = Text::from(format!("Remaining: {}", self.alive.len()));
-        for &objective in self.sidebars.values() {
-            let _ = ctx.scoreboards().set_sidebar_line(objective, 0, remaining.clone());
-        }
+        let _ = ctx.scoreboards().update_lines(
+            self.sidebars.values().copied(),
+            REMAINING,
+            format_args!("Remaining: {}", self.alive.len()),
+        );
     }
 }
 
@@ -48,20 +64,7 @@ impl Match for Ffa {
         ctx.set_rules(player, PlayerRules::lobby(at));
         self.sidebars.retain(|player, _| ctx.name(*player).is_some());
         let mut boards = ctx.scoreboards();
-        if let Ok(objective) = boards.create_personal_objective(player, ObjectiveSpec::default()) {
-            let title = Text(vec![Span {
-                text: "Free for all".into(),
-                style: Style { color: Some("gold".into()), bold: true, ..Default::default() },
-            }]);
-            let _ = boards.sidebar(
-                objective,
-                title,
-                &[
-                    Text::from("Waiting for the round"),
-                    Text::from(""),
-                    Text::from("Status: Waiting"),
-                ],
-            );
+        if let Ok(objective) = boards.create_personal_sidebar(player, &SIDEBAR) {
             let _ = boards.display_for(
                 player,
                 DisplaySlot::Sidebar,
@@ -81,9 +84,11 @@ impl Match for Ffa {
         self.alive = roster.iter().copied().collect();
         self.sidebars.retain(|player, _| ctx.name(*player).is_some());
         self.update_remaining(ctx);
-        for &objective in self.sidebars.values() {
-            let _ = ctx.scoreboards().set_sidebar_line(objective, 2, "Status: Alive".into());
-        }
+        let _ = ctx.scoreboards().update_lines(
+            self.sidebars.values().copied(),
+            STATUS,
+            format_args!("Status: Alive"),
+        );
         ctx.broadcast("Fight!");
     }
 
@@ -105,10 +110,10 @@ impl Match for Ffa {
                 let at = ctx.map_spawn();
                 ctx.set_rules(player, PlayerRules::lobby(at));
                 if let Some(&objective) = self.sidebars.get(&player) {
-                    let _ = ctx.scoreboards().set_sidebar_line(
+                    let _ = ctx.scoreboards().update_line(
                         objective,
-                        2,
-                        "Status: Eliminated".into(),
+                        STATUS,
+                        format_args!("Status: Eliminated"),
                     );
                 }
                 self.update_remaining(ctx);

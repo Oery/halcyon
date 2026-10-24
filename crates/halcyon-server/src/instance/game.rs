@@ -8,8 +8,8 @@ use crate::game::Destination;
 use crate::lifecycle::PlayerRules;
 use crate::player::{PlayerAction, PlayerUpdate};
 use crate::scoreboard::{
-    DisplayOverride, DisplaySlot, ObjectiveId, ObjectiveSpec, Score, ScoreHolder, ScoreboardError,
-    Text,
+    DisplayOverride, DisplaySlot, LineId, ObjectiveId, ObjectiveSpec, Score, ScoreHolder,
+    ScoreboardError, SidebarLayout,
 };
 
 /// Chat lines a single update holds; older lines are dropped first.
@@ -182,6 +182,22 @@ impl Scoreboards<'_> {
         self.registry.scoreboards.create(Some(viewer), spec)
     }
 
+    pub fn create_sidebar(
+        &mut self,
+        layout: &'static SidebarLayout,
+    ) -> Result<ObjectiveId, ScoreboardError> {
+        self.registry.scoreboards.create_sidebar(None, layout)
+    }
+
+    pub fn create_personal_sidebar(
+        &mut self,
+        viewer: i32,
+        layout: &'static SidebarLayout,
+    ) -> Result<ObjectiveId, ScoreboardError> {
+        self.player(viewer)?;
+        self.registry.scoreboards.create_sidebar(Some(viewer), layout)
+    }
+
     pub fn update_objective(
         &mut self,
         id: ObjectiveId,
@@ -221,6 +237,7 @@ impl Scoreboards<'_> {
     ) -> Result<(), ScoreboardError> {
         let name: Rc<str> = match &holder {
             ScoreHolder::Player(player) => Rc::from(self.player(*player)?),
+            ScoreHolder::Line(_) => return Err(ScoreboardError::InvalidKey),
             ScoreHolder::Entry(key) => {
                 if key.is_empty() || key.len() > 64 {
                     return Err(ScoreboardError::InvalidKey);
@@ -239,24 +256,24 @@ impl Scoreboards<'_> {
         self.registry.scoreboards.reset_score(objective, holder)
     }
 
-    /// Replaces all scores in this objective with an ordered text sidebar.
-    /// It does not change which viewers display the objective.
-    pub fn sidebar(
+    /// Publish one line from a game event. Formatting is immediate and uses
+    /// stack storage; the caller's arguments are never retained or compared.
+    pub fn update_line(
         &mut self,
         objective: ObjectiveId,
-        title: Text,
-        lines: &[Text],
+        line: LineId,
+        text: std::fmt::Arguments<'_>,
     ) -> Result<(), ScoreboardError> {
-        self.registry.scoreboards.sidebar(objective, title, lines)
+        self.registry.scoreboards.update_line(objective, line, text)
     }
 
-    /// Updates one existing line (zero-based), without rebuilding other lines.
-    pub fn set_sidebar_line(
+    /// Encode a shared event update once for several personal views of one layout.
+    pub fn update_lines(
         &mut self,
-        objective: ObjectiveId,
-        line: usize,
-        text: Text,
+        objectives: impl Iterator<Item = ObjectiveId> + Clone,
+        line: LineId,
+        text: std::fmt::Arguments<'_>,
     ) -> Result<(), ScoreboardError> {
-        self.registry.scoreboards.set_sidebar_line(objective, line, text)
+        self.registry.scoreboards.update_lines(objectives, line, text)
     }
 }

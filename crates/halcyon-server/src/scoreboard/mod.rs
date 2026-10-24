@@ -21,10 +21,10 @@ const MAX_SCORES: usize = 16_384;
 const MAX_TEXT_BYTES: usize = 4096;
 pub const MAX_SIDEBAR_LINES: usize = 15;
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Style {
     /// A vanilla color name or `#rrggbb`.
-    pub color: Option<String>,
+    pub color: Option<&'static str>,
     pub bold: bool,
     pub italic: bool,
     pub underlined: bool,
@@ -33,6 +33,15 @@ pub struct Style {
 }
 
 impl Style {
+    pub const PLAIN: Self = Self {
+        color: None,
+        bold: false,
+        italic: false,
+        underlined: false,
+        strikethrough: false,
+        obfuscated: false,
+    };
+
     fn nbt(&self) -> Nbt<'_> {
         let mut fields = vec![
             ("bold", Nbt::Bool(self.bold)),
@@ -41,14 +50,14 @@ impl Style {
             ("strikethrough", Nbt::Bool(self.strikethrough)),
             ("obfuscated", Nbt::Bool(self.obfuscated)),
         ];
-        if let Some(color) = &self.color {
+        if let Some(color) = self.color {
             fields.push(("color", Nbt::Str(color)));
         }
         Nbt::Compound(fields)
     }
 
     fn validate(&self) -> Result<(), ScoreboardError> {
-        if let Some(color) = &self.color {
+        if let Some(color) = self.color {
             const COLORS: &[&str] = &[
                 "black",
                 "dark_blue",
@@ -67,7 +76,7 @@ impl Style {
                 "yellow",
                 "white",
             ];
-            if !COLORS.contains(&color.as_str())
+            if !COLORS.contains(&color)
                 && !(color.len() == 7
                     && color.starts_with('#')
                     && color.as_bytes()[1..].iter().all(u8::is_ascii_hexdigit))
@@ -228,8 +237,11 @@ pub enum DisplayOverride {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[allow(dead_code)] // Public game API also supports arbitrary score entries.
 pub enum ScoreHolder {
     Player(i32),
+    /// A compile-time sidebar line identifier.
+    Line(LineId),
     /// A stable key (1–64 bytes) unrelated to the displayed text.
     Entry(String),
 }
@@ -250,6 +262,10 @@ pub enum ScoreboardError {
     InvalidKey,
     #[error("sidebar line must name an existing position from 0 to 14")]
     InvalidLine,
+    #[error("static sidebar layout cannot be modified; publish a line update instead")]
+    ImmutableLayout,
+    #[error("static sidebar layouts can only occupy the sidebar slot")]
+    SidebarSlot,
     #[error("could not encode scoreboard data")]
     Encode,
 }
@@ -266,20 +282,48 @@ fn objective_name(serial: u64) -> String {
 
 struct Entry {
     holder: Rc<str>,
-    score: Score,
     frame: Rc<[u8]>,
     revision: u64,
 }
 
 struct Objective {
     owner: Option<i32>,
-    spec: ObjectiveSpec,
+    name: Rc<str>,
+    base: Option<Rc<SidebarBase>>,
     create: Rc<[u8]>,
     update: Rc<[u8]>,
     properties_revision: u64,
     revision: u64,
     scores: BTreeMap<ScoreHolder, Entry>,
 }
+
+impl Objective {
+    fn score(&self, key: &ScoreHolder) -> Option<&Entry> {
+        self.scores.get(key).or_else(|| self.base.as_ref()?.scores.get(key))
+    }
+
+    fn score_count(&self) -> usize {
+        self.base.as_ref().map_or(self.scores.len(), |base| base.scores.len())
+    }
+
+    fn next_score(&self, after: Option<&ScoreHolder>) -> Option<(&ScoreHolder, &Entry)> {
+        use std::ops::Bound::{Excluded, Unbounded};
+        let start = after.map_or(Unbounded, Excluded);
+        let update = self.scores.range::<ScoreHolder, _>((start, Unbounded)).next();
+        let base = self
+            .base
+            .as_ref()
+            .and_then(|base| base.scores.range::<ScoreHolder, _>((start, Unbounded)).next());
+        match (update, base) {
+            (Some(update), Some(base)) => Some(if update.0 <= base.0 { update } else { base }),
+            (update, base) => update.or(base),
+        }
+    }
+}
+
+mod template;
+use template::SidebarBase;
+pub use template::{LineId, SidebarLayout, SidebarLine};
 
 #[derive(Default)]
 pub struct Board {
@@ -290,6 +334,7 @@ pub struct Board {
     slots: [Option<u64>; 3],
     viewers: HashMap<i32, [DisplayOverride; 3]>,
     score_count: usize,
+    bases: HashMap<&'static SidebarLayout, Rc<SidebarBase>>,
 }
 
 impl Board {
@@ -326,7 +371,8 @@ impl Board {
             serial,
             Objective {
                 owner,
-                spec,
+                name: Rc::from(name),
+                base: None,
                 create,
                 update,
                 properties_revision: self.revision,
@@ -343,10 +389,10 @@ impl Board {
         spec: ObjectiveSpec,
     ) -> Result<(), ScoreboardError> {
         let serial = self.serial(id)?;
-        spec.validate()?;
-        if self.objectives[&serial].spec == spec {
-            return Ok(());
+        if self.objectives[&serial].base.is_some() {
+            return Err(ScoreboardError::ImmutableLayout);
         }
+        spec.validate()?;
         let name = objective_name(serial);
         let create =
             encode(&SetObjective { name: &name, action: ObjectiveAction::Create(spec.wire()) })?;
@@ -354,7 +400,6 @@ impl Board {
             encode(&SetObjective { name: &name, action: ObjectiveAction::Update(spec.wire()) })?;
         self.revision += 1;
         let objective = self.objectives.get_mut(&serial).unwrap();
-        objective.spec = spec;
         objective.create = create;
         objective.update = update;
         objective.properties_revision = self.revision;
@@ -364,7 +409,7 @@ impl Board {
 
     pub(crate) fn remove(&mut self, id: ObjectiveId) -> Result<(), ScoreboardError> {
         let serial = self.serial(id)?;
-        self.score_count -= self.objectives.remove(&serial).unwrap().scores.len();
+        self.score_count -= self.objectives.remove(&serial).unwrap().score_count();
         for slot in &mut self.slots {
             if *slot == Some(serial) {
                 *slot = None;
@@ -396,6 +441,7 @@ impl Board {
         let serial = id.map(|id| self.serial(id)).transpose()?;
         if let Some(serial) = serial {
             self.audience(serial, None)?;
+            self.validate_slot(serial, slot)?;
         }
         if self.slots[slot as usize] != serial {
             self.slots[slot as usize] = serial;
@@ -413,6 +459,7 @@ impl Board {
         if let DisplayOverride::Objective(id) = value {
             let serial = self.serial(id)?;
             self.audience(serial, Some(viewer))?;
+            self.validate_slot(serial, slot)?;
         }
         let current = self
             .viewers
@@ -438,6 +485,13 @@ impl Board {
         })
     }
 
+    fn validate_slot(&self, serial: u64, slot: DisplaySlot) -> Result<(), ScoreboardError> {
+        if self.objectives[&serial].base.is_some() && slot != DisplaySlot::Sidebar {
+            return Err(ScoreboardError::SidebarSlot);
+        }
+        Ok(())
+    }
+
     fn entry(
         &self,
         id: ObjectiveId,
@@ -460,7 +514,7 @@ impl Board {
             display: score.display.as_ref().map(Text::nbt),
             number_format: score.number_format.as_ref().map(NumberFormat::wire),
         })?;
-        Ok(Entry { holder, score, frame, revision: self.revision + 1 })
+        Ok(Entry { holder, frame, revision: self.revision + 1 })
     }
 
     pub(crate) fn set_score(
@@ -471,10 +525,13 @@ impl Board {
         score: Score,
     ) -> Result<(), ScoreboardError> {
         let serial = self.serial(id)?;
-        let old = self.objectives[&serial].scores.get(&key);
-        if old.is_some_and(|old| old.score == score && old.holder == holder) {
-            return Ok(());
+        if self.objectives[&serial].base.is_some() {
+            return Err(ScoreboardError::ImmutableLayout);
         }
+        if matches!(key, ScoreHolder::Line(_)) {
+            return Err(ScoreboardError::InvalidKey);
+        }
+        let old = self.objectives[&serial].scores.get(&key);
         if old.is_none() && self.score_count == MAX_SCORES {
             return Err(ScoreboardError::Capacity);
         }
@@ -494,6 +551,9 @@ impl Board {
         key: &ScoreHolder,
     ) -> Result<(), ScoreboardError> {
         let serial = self.serial(id)?;
+        if self.objectives[&serial].base.is_some() {
+            return Err(ScoreboardError::ImmutableLayout);
+        }
         let objective = self.objectives.get_mut(&serial).unwrap();
         if objective.scores.remove(key).is_some() {
             self.score_count -= 1;
@@ -501,85 +561,6 @@ impl Board {
             objective.revision = self.revision;
         }
         Ok(())
-    }
-
-    /// The helper owns this objective's scores; validate/encode the whole replacement first.
-    pub(crate) fn sidebar(
-        &mut self,
-        id: ObjectiveId,
-        title: Text,
-        lines: &[Text],
-    ) -> Result<(), ScoreboardError> {
-        let serial = self.serial(id)?;
-        if lines.len() > MAX_SIDEBAR_LINES {
-            return Err(ScoreboardError::Capacity);
-        }
-        let spec =
-            ObjectiveSpec { title, number_format: Some(NumberFormat::Blank), ..Default::default() };
-        spec.validate()?;
-        let old = &self.objectives[&serial];
-        if self.score_count - old.scores.len() + lines.len() > MAX_SCORES {
-            return Err(ScoreboardError::Capacity);
-        }
-        let mut entries = BTreeMap::new();
-        for (index, text) in lines.iter().enumerate() {
-            let key = ScoreHolder::Entry(format!("line_{index}"));
-            let score = Score {
-                value: (MAX_SIDEBAR_LINES - index) as i32,
-                display: Some(text.clone()),
-                ..Default::default()
-            };
-            if let Some(entry) = old.scores.get(&key).filter(|entry| entry.score == score) {
-                entries.insert(
-                    key,
-                    Entry {
-                        holder: entry.holder.clone(),
-                        score,
-                        frame: entry.frame.clone(),
-                        revision: entry.revision,
-                    },
-                );
-            } else {
-                let holder = Rc::from(format!("$halcyon:line_{index}"));
-                entries.insert(key.clone(), self.entry(id, key, holder, score)?);
-            }
-        }
-        let changed = entries.len() != old.scores.len()
-            || entries.iter().any(|(key, entry)| {
-                old.scores.get(key).is_none_or(|old| old.revision != entry.revision)
-            });
-        self.update(id, spec)?;
-        if changed {
-            self.revision += 1;
-            let objective = self.objectives.get_mut(&serial).unwrap();
-            self.score_count = self.score_count - objective.scores.len() + entries.len();
-            objective.scores = entries;
-            objective.revision = self.revision;
-        }
-        Ok(())
-    }
-
-    /// Change one initialized sidebar label, preserving its order and format.
-    /// Unchanged text returns before encoding; other lines are never rebuilt.
-    pub(crate) fn set_sidebar_line(
-        &mut self,
-        id: ObjectiveId,
-        line: usize,
-        text: Text,
-    ) -> Result<(), ScoreboardError> {
-        let serial = self.serial(id)?;
-        if line >= MAX_SIDEBAR_LINES {
-            return Err(ScoreboardError::InvalidLine);
-        }
-        let key = ScoreHolder::Entry(format!("line_{line}"));
-        let entry =
-            self.objectives[&serial].scores.get(&key).ok_or(ScoreboardError::InvalidLine)?;
-        let score = Score {
-            value: entry.score.value,
-            display: Some(text),
-            number_format: entry.score.number_format.clone(),
-        };
-        self.set_score(id, key, entry.holder.clone(), score)
     }
 
     pub(crate) fn player_left(&mut self, player: i32) {
@@ -608,32 +589,19 @@ impl Board {
     #[cfg(test)]
     pub(crate) fn retained_payload_bytes(&self) -> usize {
         use std::mem::size_of;
-        fn text(text: &Text) -> usize {
-            text.0.len() * size_of::<Span>()
-                + text
-                    .0
-                    .iter()
-                    .map(|span| span.text.len() + span.style.color.as_ref().map_or(0, String::len))
-                    .sum::<usize>()
-        }
-        fn format(format: &Option<NumberFormat>) -> usize {
-            match format {
-                Some(NumberFormat::Fixed(value)) => text(value),
-                Some(NumberFormat::Styled(style)) => style.color.as_ref().map_or(0, String::len),
-                _ => 0,
-            }
-        }
         size_of::<Self>()
             + self.viewers.len() * size_of::<(i32, [DisplayOverride; 3])>()
+            + self.bases.values().map(|base| base.retained_payload_bytes()).sum::<usize>()
             + self
                 .objectives
                 .values()
                 .map(|objective| {
                     size_of::<(u64, Objective)>()
-                        + text(&objective.spec.title)
-                        + format(&objective.spec.number_format)
-                        + objective.create.len()
-                        + objective.update.len()
+                        + if objective.base.is_none() {
+                            objective.name.len() + objective.create.len() + objective.update.len()
+                        } else {
+                            0
+                        }
                         + objective
                             .scores
                             .iter()
@@ -645,8 +613,6 @@ impl Board {
                                         ScoreHolder::Entry(key) => key.len(),
                                         _ => 0,
                                     }
-                                    + entry.score.display.as_ref().map_or(0, text)
-                                    + format(&entry.score.number_format)
                             })
                             .sum::<usize>()
                 })

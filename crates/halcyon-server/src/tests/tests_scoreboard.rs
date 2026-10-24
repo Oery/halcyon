@@ -76,15 +76,20 @@ fn personal_views_inherit_hide_and_never_publish_unselected_objectives() {
 }
 
 #[test]
-fn sidebar_stable_keys_support_duplicates_blank_lines_and_no_op_updates() {
+fn static_bases_are_shared_immutable_and_support_duplicates_and_blank_lines() {
+    static LAYOUT: SidebarLayout = SidebarLayout::new(
+        "title",
+        &[SidebarLine::new("same"), SidebarLine::new(""), SidebarLine::new("same")],
+    );
     let mut board = board();
-    let id = objective(&mut board, None, "title");
-    let lines = [Text::from("same"), Text::from(""), Text::from("same")];
-    board.sidebar(id, "title".into(), &lines).unwrap();
-    board.display(DisplaySlot::Sidebar, Some(id)).unwrap();
-    let entries = &board.objectives[&id.serial].scores;
+    let id = board.create_sidebar(Some(1), &LAYOUT).unwrap();
+    let other = board.create_sidebar(Some(2), &LAYOUT).unwrap();
+    let base = board.objectives[&id.serial].base.as_ref().unwrap().clone();
+    assert!(Rc::ptr_eq(&base, board.objectives[&other.serial].base.as_ref().unwrap()));
+    board.display_for(1, DisplaySlot::Sidebar, DisplayOverride::Objective(id)).unwrap();
+    board.display_for(2, DisplaySlot::Sidebar, DisplayOverride::Objective(other)).unwrap();
+    let entries = &base.scores;
     assert_eq!(entries.len(), 3);
-    assert_eq!(entries.values().map(|entry| entry.score.value).collect::<Vec<_>>(), [15, 14, 13]);
     assert!(entries.values().all(|entry| !entry.holder.starts_with('#')));
     let mut observer = ScoreboardObserver::default();
     let initial = drain(&mut observer, &board, 1);
@@ -92,33 +97,44 @@ fn sidebar_stable_keys_support_duplicates_blank_lines_and_no_op_updates() {
         initial.iter().map(|frame| payload(frame).0).collect::<Vec<_>>(),
         [0x6C, 0x70, 0x70, 0x70, 0x64]
     );
-    let revision = board.revision;
-    board.sidebar(id, "title".into(), &lines).unwrap();
-    assert_eq!(board.revision, revision);
-    assert!(drain(&mut observer, &board, 1).is_empty());
-    board.sidebar(id, "new title".into(), &lines[..1]).unwrap();
-    let changed = drain(&mut observer, &board, 1);
+    let mut second = ScoreboardObserver::default();
+    let same_base = drain(&mut second, &board, 2);
+    assert!(initial.iter().zip(&same_base).all(|(a, b)| Rc::ptr_eq(a, b) || payload(a).0 == 0x64));
+    assert_eq!(board.update(id, ObjectiveSpec::default()), Err(ScoreboardError::ImmutableLayout));
     assert_eq!(
-        changed.iter().map(|frame| payload(frame).0).collect::<Vec<_>>(),
-        [0x6C, 0x50, 0x50]
+        board.reset_score(id, &ScoreHolder::Line(LineId::new(0))),
+        Err(ScoreboardError::ImmutableLayout)
     );
-    let mut body = payload(&changed[0]).1;
-    <&str>::read(&mut body).unwrap();
-    assert_eq!(u8::read(&mut body).unwrap(), 2);
+    assert_eq!(
+        board.display_for(1, DisplaySlot::BelowName, DisplayOverride::Objective(id)),
+        Err(ScoreboardError::SidebarSlot)
+    );
+    board.update_line(id, LineId::new(0), format_args!("personal")).unwrap();
+    assert_eq!(drain(&mut observer, &board, 1).len(), 1);
+    assert!(drain(&mut second, &board, 2).is_empty());
+    assert!(board.objectives[&other.serial].scores.is_empty());
+    assert_eq!(base.scores[&ScoreHolder::Line(LineId::new(0))].revision, 0);
+    assert_eq!(base.layout.lines[0].text, "same");
 }
 
 #[test]
 fn a_timer_changes_one_line_without_rebuilding_or_sending_other_lines() {
+    static LAYOUT: SidebarLayout = SidebarLayout::new(
+        "Game",
+        &[SidebarLine::new("Time: 60s"), SidebarLine::new(""), SidebarLine::new("Score: 10")],
+    );
     let mut board = board();
-    let id = objective(&mut board, None, "Game");
-    board.sidebar(id, "Game".into(), &["Time: 60s".into(), "".into(), "Score: 10".into()]).unwrap();
+    let id = board.create_sidebar(None, &LAYOUT).unwrap();
     board.display(DisplaySlot::Sidebar, Some(id)).unwrap();
     let mut observer = ScoreboardObserver::default();
     drain(&mut observer, &board, 1);
-    let unchanged =
-        board.objectives[&id.serial].scores[&ScoreHolder::Entry("line_2".into())].frame.clone();
+    let unchanged = board.objectives[&id.serial]
+        .score(&ScoreHolder::Line(LineId::new(2)))
+        .unwrap()
+        .frame
+        .clone();
     let definition = board.objectives[&id.serial].create.clone();
-    board.set_sidebar_line(id, 0, "Time: 59s".into()).unwrap();
+    board.update_line(id, LineId::new(0), format_args!("Time: {}s", 59)).unwrap();
     let frames = drain(&mut observer, &board, 1);
     assert_eq!(frames.len(), 1);
     let (packet, mut body) = payload(&frames[0]);
@@ -126,18 +142,126 @@ fn a_timer_changes_one_line_without_rebuilding_or_sending_other_lines() {
     assert_eq!(<&str>::read(&mut body).unwrap(), "$halcyon:line_0");
     assert!(Rc::ptr_eq(
         &unchanged,
-        &board.objectives[&id.serial].scores[&ScoreHolder::Entry("line_2".into())].frame
+        &board.objectives[&id.serial].score(&ScoreHolder::Line(LineId::new(2))).unwrap().frame
     ));
     assert!(Rc::ptr_eq(&definition, &board.objectives[&id.serial].create));
     let revision = board.revision;
     for _ in 0..20 {
-        board.set_sidebar_line(id, 0, "Time: 59s".into()).unwrap();
+        board.update_line(id, LineId::new(0), format_args!("Time: 59s")).unwrap();
     }
+    // Every explicit request publishes a new revision, without comparing text.
+    // Slow writers still coalesce those requests into the latest encoded value.
+    assert_eq!(board.revision, revision + 20);
+    assert_eq!(drain(&mut observer, &board, 1).len(), 1);
+    assert_eq!(
+        board.update_line(id, LineId::new(3), format_args!("missing")),
+        Err(ScoreboardError::InvalidLine)
+    );
+    assert_eq!(board.revision, revision + 20);
+}
+
+#[test]
+fn explicit_updates_share_encoded_payloads_and_preserve_current_values_for_late_viewers() {
+    static LAYOUT: SidebarLayout = SidebarLayout::new(
+        "Game",
+        &[SidebarLine::new("Time: 60s"), SidebarLine::new("Status: Waiting")],
+    );
+    let mut board = board();
+    let first = board.create_sidebar(Some(1), &LAYOUT).unwrap();
+    let second = board.create_sidebar(Some(2), &LAYOUT).unwrap();
+    board.display_for(1, DisplaySlot::Sidebar, DisplayOverride::Objective(first)).unwrap();
+    board.display_for(2, DisplaySlot::Sidebar, DisplayOverride::Objective(second)).unwrap();
+    let mut slow = ScoreboardObserver::default();
+    drain(&mut slow, &board, 1);
+    board
+        .update_lines([first, second].into_iter(), LineId::new(0), format_args!("Time: 59s"))
+        .unwrap();
+    let key = ScoreHolder::Line(LineId::new(0));
+    assert!(Rc::ptr_eq(
+        &board.objectives[&first.serial].score(&key).unwrap().frame,
+        &board.objectives[&second.serial].score(&key).unwrap().frame
+    ));
+    let in_flight = slow.next_frame(&board, 1).unwrap().unwrap();
+    for second_left in (30..59).rev() {
+        board
+            .update_lines(
+                [first, second].into_iter(),
+                LineId::new(0),
+                format_args!("Time: {second_left}s"),
+            )
+            .unwrap();
+    }
+    assert!(Rc::ptr_eq(&in_flight, &slow.next_frame(&board, 1).unwrap().unwrap()));
+    assert!(in_flight.windows(9).any(|w| w == b"Time: 59s"));
+    slow.sent();
+    let current = drain(&mut slow, &board, 1);
+    assert_eq!(current.len(), 1);
+    assert!(current[0].windows(9).any(|w| w == b"Time: 30s"));
+    assert_eq!(board.objectives[&first.serial].scores.len(), 1);
+    let mut late = ScoreboardObserver::default();
+    let initial = drain(&mut late, &board, 2);
+    assert_eq!(initial.iter().filter(|frame| payload(frame).0 == 0x70).count(), 2);
+    assert!(initial.iter().any(|frame| frame.windows(9).any(|w| w == b"Time: 30s")));
+    assert!(!initial.iter().any(|frame| frame.windows(9).any(|w| w == b"Time: 60s")));
+    assert_eq!(
+        board.objectives[&second.serial].base.as_ref().unwrap().layout.lines[0].text,
+        "Time: 60s"
+    );
+}
+
+#[test]
+fn formatting_failures_and_invalid_batches_leave_published_state_untouched() {
+    static LAYOUT: SidebarLayout = SidebarLayout::new("Game", &[SidebarLine::new("Score: 0")]);
+    static OTHER: SidebarLayout = SidebarLayout::new("Other", &[SidebarLine::new("Score: 0")]);
+    struct Fails;
+    impl std::fmt::Display for Fails {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("partial")?;
+            Err(std::fmt::Error)
+        }
+    }
+    let mut board = board();
+    let id = board.create_sidebar(None, &LAYOUT).unwrap();
+    let other = board.create_sidebar(None, &OTHER).unwrap();
+    let revision = board.revision;
+    assert_eq!(
+        board.update_line(id, LineId::new(0), format_args!("{}", Fails)),
+        Err(ScoreboardError::InvalidText)
+    );
+    assert_eq!(
+        board.update_line(id, LineId::new(0), format_args!("{:>5000}", "")),
+        Err(ScoreboardError::InvalidText)
+    );
+    assert_eq!(
+        board.update_lines([id, other].into_iter(), LineId::new(0), format_args!("Score: 10")),
+        Err(ScoreboardError::InvalidLine)
+    );
     assert_eq!(board.revision, revision);
-    assert!(drain(&mut observer, &board, 1).is_empty());
-    assert_eq!(board.set_sidebar_line(id, 3, "missing".into()), Err(ScoreboardError::InvalidLine));
-    assert_eq!(board.set_sidebar_line(id, 15, "outside".into()), Err(ScoreboardError::InvalidLine));
-    assert_eq!(board.revision, revision);
+    assert!(board.objectives[&id.serial].scores.is_empty());
+    assert!(board.objectives[&other.serial].scores.is_empty());
+}
+
+#[test]
+fn continuous_events_do_not_starve_other_objectives_or_initial_slot_assignment() {
+    static LAYOUT: SidebarLayout = SidebarLayout::new("Game", &[SidebarLine::new("Ready")]);
+    let mut board = board();
+    let scores = objective(&mut board, None, "Scores");
+    let sidebar = board.create_sidebar(None, &LAYOUT).unwrap();
+    board.display(DisplaySlot::PlayerList, Some(scores)).unwrap();
+    board.display(DisplaySlot::Sidebar, Some(sidebar)).unwrap();
+    let mut observer = ScoreboardObserver::default();
+    let mut displayed = [false; 2];
+    for value in 0..40 {
+        set(&mut board, scores, "points", value);
+        if let Some(frame) = observer.next_frame(&board, 1).unwrap() {
+            let (id, mut body) = payload(&frame);
+            if id == 0x64 {
+                displayed[VarInt::read(&mut body).unwrap().0 as usize] = true;
+            }
+            observer.sent();
+        }
+    }
+    assert_eq!(displayed, [true, true]);
 }
 
 #[test]
@@ -234,24 +358,26 @@ fn departure_and_transfer_cleanup_remove_only_delivered_state() {
 }
 
 #[test]
-fn invalid_replacements_and_capacity_limits_are_atomic_and_ids_are_scoped() {
+fn invalid_publications_and_capacity_limits_are_atomic_and_ids_are_scoped() {
     let mut board = board();
     let id = objective(&mut board, None, "title");
     set(&mut board, id, "keep", 42);
     let revision = board.revision;
     assert_eq!(
-        board.sidebar(id, "title".into(), &vec![Text::from("x"); 16]),
-        Err(ScoreboardError::Capacity)
-    );
-    assert_eq!(
-        board.sidebar(id, Text::from("x".repeat(MAX_TEXT_BYTES)), &[]),
+        board.update(
+            id,
+            ObjectiveSpec { title: Text::from("x".repeat(MAX_TEXT_BYTES)), ..Default::default() }
+        ),
         Err(ScoreboardError::InvalidText)
     );
     let bad = Text(vec![Span {
         text: "bad".into(),
-        style: Style { color: Some("unknown".into()), ..Default::default() },
+        style: Style { color: Some("unknown"), ..Default::default() },
     }]);
-    assert_eq!(board.sidebar(id, "title".into(), &[bad]), Err(ScoreboardError::InvalidText));
+    assert_eq!(
+        board.update(id, ObjectiveSpec { title: bad, ..Default::default() }),
+        Err(ScoreboardError::InvalidText)
+    );
     assert_eq!(board.revision, revision);
     assert_eq!(board.score_count, 1);
     let foreign = ObjectiveId { instance: InstanceId { shard: 1, local: 1 }, ..id };

@@ -292,7 +292,7 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Direct and team messages | Not started |
 | Rich text | Not started |
 | Player-list entries | Done |
-| Scoreboards | Partial — game APIs provide shared and personal sidebars, below-name and Tab scores, formatted titles/labels and custom number formats. FFA has a personal status sidebar. No teams, Tab header/footer, scoreboard commands or persistence. |
+| Scoreboards | Partial — game APIs provide shared and personal sidebars, below-name and Tab scores, formatted titles/labels and custom number formats. Static sidebar bases are shared; games explicitly publish individual line updates with stack formatting. FFA has a personal status sidebar. No teams, Tab header/footer, scoreboard commands or persistence. |
 | Teams | Not started |
 | Boss bars | Not started |
 | Titles and action bar | Not started |

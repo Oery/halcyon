@@ -88,26 +88,27 @@ impl Nbt<'_> {
     }
 }
 
-fn write_string(w: &mut Vec<u8>, value: &str) -> crate::encode::Result {
+pub(crate) fn write_string(w: &mut impl std::io::Write, value: &str) -> crate::encode::Result {
     let len =
         u16::try_from(string_len(value)).map_err(|_| crate::error::EncodeError::InvalidLength)?;
-    w.extend_from_slice(&len.to_be_bytes());
+    w.write_all(&len.to_be_bytes())?;
     // NBT uses DataOutput.writeUTF, unlike protocol strings: NUL takes two
     // bytes and supplementary characters are encoded as UTF-16 surrogate pairs.
     if value.is_ascii() && !value.as_bytes().contains(&0) {
-        w.extend_from_slice(value.as_bytes());
+        w.write_all(value.as_bytes())?;
     } else {
         for unit in value.encode_utf16() {
             match unit {
-                1..=0x7F => w.push(unit as u8),
+                1..=0x7F => w.write_all(&[unit as u8])?,
                 0..=0x7FF => {
-                    w.push(0xC0 | (unit >> 6) as u8);
-                    w.push(0x80 | (unit & 0x3F) as u8);
+                    w.write_all(&[0xC0 | (unit >> 6) as u8, 0x80 | (unit & 0x3F) as u8])?;
                 }
                 _ => {
-                    w.push(0xE0 | (unit >> 12) as u8);
-                    w.push(0x80 | ((unit >> 6) & 0x3F) as u8);
-                    w.push(0x80 | (unit & 0x3F) as u8);
+                    w.write_all(&[
+                        0xE0 | (unit >> 12) as u8,
+                        0x80 | ((unit >> 6) & 0x3F) as u8,
+                        0x80 | (unit & 0x3F) as u8,
+                    ])?;
                 }
             }
         }
@@ -115,7 +116,7 @@ fn write_string(w: &mut Vec<u8>, value: &str) -> crate::encode::Result {
     Ok(())
 }
 
-fn string_len(value: &str) -> usize {
+pub(crate) fn string_len(value: &str) -> usize {
     value.len()
         + value
             .chars()

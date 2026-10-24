@@ -3,8 +3,8 @@
 use super::*;
 use crate::encryption::ciphers;
 use crate::scoreboard::{
-    DisplayOverride, DisplaySlot, ObjectiveId, ObjectiveSpec, Score, ScoreHolder,
-    ScoreboardObserver, Text,
+    DisplayOverride, DisplaySlot, LineId, ObjectiveId, ObjectiveSpec, Score, ScoreHolder,
+    ScoreboardObserver, SidebarLayout, SidebarLine,
 };
 use crate::transport::ClientStream;
 use futures_lite::future::block_on;
@@ -109,6 +109,10 @@ struct Scenario {
 }
 
 fn scoreboard_setup(registry: &mut Registry) -> (ObjectiveId, Vec<ObjectiveId>) {
+    static SIDEBAR: SidebarLayout = SidebarLayout::new(
+        "Minigame",
+        &[SidebarLine::new("Player:"), SidebarLine::new(""), SidebarLine::new("Points: 0")],
+    );
     registry.scoreboards.bind(crate::instance::InstanceId { shard: 0, local: 1 });
     let shared = registry
         .scoreboards
@@ -118,8 +122,11 @@ fn scoreboard_setup(registry: &mut Registry) -> (ObjectiveId, Vec<ObjectiveId>) 
     registry.scoreboards.display(DisplaySlot::PlayerList, Some(shared)).unwrap();
     let personal: Vec<_> = (0..PLAYERS)
         .map(|id| {
-            let objective =
-                registry.scoreboards.create(Some(id), ObjectiveSpec::default()).unwrap();
+            let objective = registry.scoreboards.create_sidebar(Some(id), &SIDEBAR).unwrap();
+            registry
+                .scoreboards
+                .update_line(objective, LineId::new(0), format_args!("Player: {id}"))
+                .unwrap();
             registry
                 .scoreboards
                 .display_for(id, DisplaySlot::Sidebar, DisplayOverride::Objective(objective))
@@ -148,29 +155,14 @@ fn scoreboard_update(
                 Score { value: value + id, ..Default::default() },
             )
             .unwrap();
-        if value == 0 {
-            registry
-                .scoreboards
-                .sidebar(
-                    personal[id as usize],
-                    "Minigame".into(),
-                    &[
-                        Text::from(format!("Player: {id}")),
-                        Text::from(""),
-                        Text::from(format!("Points: {}", value + id)),
-                    ],
-                )
-                .unwrap();
-        } else {
-            registry
-                .scoreboards
-                .set_sidebar_line(
-                    personal[id as usize],
-                    2,
-                    Text::from(format!("Points: {}", value + id)),
-                )
-                .unwrap();
-        }
+        registry
+            .scoreboards
+            .update_line(
+                personal[id as usize],
+                LineId::new(2),
+                format_args!("Points: {}", value + id),
+            )
+            .unwrap();
     }
 }
 

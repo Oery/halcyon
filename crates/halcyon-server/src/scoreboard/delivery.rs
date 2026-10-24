@@ -7,7 +7,7 @@ use mc_protocol::packets::client::{
     ObjectiveAction, ResetScore, SetDisplayObjective, SetObjective,
 };
 
-use super::{Board, MAX_SCORES, ScoreHolder, ScoreboardError, encode, objective_name};
+use super::{Board, MAX_SCORES, ScoreHolder, ScoreboardError, encode};
 
 /// Comparisons per reconciliation call, including unchanged scores. Large boards yield
 /// rather than monopolizing the executor while looking for a changed entry.
@@ -15,13 +15,14 @@ const SCAN_BUDGET: usize = 256;
 
 #[derive(Default)]
 struct DeliveredObjective {
+    name: Rc<str>,
     properties: u64,
     revision: Option<u64>,
     scores: BTreeMap<ScoreHolder, (u64, Rc<str>)>,
 }
 
 enum Commit {
-    Create(u64, u64),
+    Create(u64, u64, Rc<str>),
     Properties(u64, u64),
     Remove(u64),
     Slot(usize, Option<u64>),
@@ -47,6 +48,7 @@ pub struct ScoreboardObserver {
     slots: [Option<u64>; 3],
     active: Option<Frame>,
     scan: Option<Scan>,
+    scan_after: Option<u64>,
     pending: bool,
 }
 
@@ -75,8 +77,8 @@ impl ScoreboardObserver {
         if let Some((&serial, _)) =
             self.known.iter().find(|(serial, _)| !desired.contains(&Some(**serial)))
         {
-            let name = objective_name(serial);
-            let bytes = encode(&SetObjective { name: &name, action: ObjectiveAction::Remove })?;
+            let name = &self.known[&serial].name;
+            let bytes = encode(&SetObjective { name, action: ObjectiveAction::Remove })?;
             return self.frame(bytes, Commit::Remove(serial));
         }
 
@@ -87,7 +89,7 @@ impl ScoreboardObserver {
             let Some(known) = self.known.get(&serial) else {
                 return self.frame(
                     objective.create.clone(),
-                    Commit::Create(serial, objective.properties_revision),
+                    Commit::Create(serial, objective.properties_revision, objective.name.clone()),
                 );
             };
             if known.properties != objective.properties_revision {
@@ -98,16 +100,28 @@ impl ScoreboardObserver {
             }
         }
 
+        if let Some(frame) = self.slot_frame(board, &slots)? {
+            return Ok(Some(frame));
+        }
+
         let mut budget = SCAN_BUDGET;
         loop {
             if self.scan.as_ref().is_some_and(|scan| !desired.contains(&Some(scan.objective))) {
                 self.scan = None;
             }
             if self.scan.is_none() {
-                let dirty = desired.iter().flatten().copied().find(|serial| {
+                let dirty = |serial: &u64| {
                     self.known[serial].revision != Some(board.objectives[serial].revision)
-                });
-                let Some(serial) = dirty else { break };
+                };
+                let next = desired
+                    .iter()
+                    .flatten()
+                    .copied()
+                    .find(|serial| {
+                        self.scan_after.is_none_or(|after| *serial > after) && dirty(serial)
+                    })
+                    .or_else(|| desired.iter().flatten().copied().find(dirty));
+                let Some(serial) = next else { break };
                 self.scan = Some(Scan {
                     objective: serial,
                     revision: board.objectives[&serial].revision,
@@ -129,9 +143,9 @@ impl ScoreboardObserver {
                     }
                     budget -= 1;
                     scan.after = Some(key.clone());
-                    if !objective.scores.contains_key(key) {
-                        let name = objective_name(serial);
-                        let bytes = encode(&ResetScore { holder, objective: Some(&name) })?;
+                    if objective.score(key).is_none() {
+                        let name = &objective.name;
+                        let bytes = encode(&ResetScore { holder, objective: Some(name) })?;
                         let key = key.clone();
                         return self.frame(bytes, Commit::Reset(serial, key));
                     }
@@ -140,7 +154,7 @@ impl ScoreboardObserver {
                     scan.after = None;
                 }
             } else {
-                let next = objective.scores.range::<ScoreHolder, _>((start, Unbounded)).next();
+                let next = objective.next_score(scan.after.as_ref());
                 if let Some((key, entry)) = next {
                     if budget == 0 {
                         return Ok(None);
@@ -162,11 +176,9 @@ impl ScoreboardObserver {
                                 .unwrap()
                                 .0;
                             let victim = *victim;
-                            let name = objective_name(victim);
-                            let bytes = encode(&SetObjective {
-                                name: &name,
-                                action: ObjectiveAction::Remove,
-                            })?;
+                            let name = &self.known[&victim].name;
+                            let bytes =
+                                encode(&SetObjective { name, action: ObjectiveAction::Remove })?;
                             return self.frame(bytes, Commit::Remove(victim));
                         }
                         return self.frame(
@@ -183,20 +195,36 @@ impl ScoreboardObserver {
                     // Edits during a pass require another pass. The cursor
                     // finishes this pass first, so low keys cannot starve others.
                     known.revision = Some(scan.revision);
+                    self.scan_after = Some(serial);
                     self.scan = None;
                 }
             }
         }
 
-        // Publish a newly selected slot after its initial entries arrive.
+        if let Some(frame) = self.slot_frame(board, &slots)? {
+            return Ok(Some(frame));
+        }
+        self.pending = false;
+        Ok(None)
+    }
+
+    /// A constantly updated objective must not delay other slots or keep a
+    /// hydrated display hidden while it catches up with newer revisions.
+    fn slot_frame(
+        &mut self,
+        board: &Board,
+        slots: &[Option<u64>; 3],
+    ) -> Result<Option<Rc<[u8]>>, ScoreboardError> {
         for (slot, desired) in slots.iter().enumerate() {
-            if self.slots[slot] != *desired {
-                let name = desired.map(objective_name).unwrap_or_default();
-                let bytes = encode(&SetDisplayObjective { slot: slot as i32, name: &name })?;
+            let ready = desired.is_none_or(|serial| self.known[&serial].revision.is_some());
+            if self.slots[slot] != *desired && ready {
+                let name = desired
+                    .map(|serial| board.objectives[&serial].name.as_ref())
+                    .unwrap_or_default();
+                let bytes = encode(&SetDisplayObjective { slot: slot as i32, name })?;
                 return self.frame(bytes, Commit::Slot(slot, *desired));
             }
         }
-        self.pending = false;
         Ok(None)
     }
 
@@ -212,8 +240,9 @@ impl ScoreboardObserver {
     pub fn sent(&mut self) {
         let Some(frame) = self.active.take() else { return };
         match frame.commit {
-            Commit::Create(serial, properties) => {
-                self.known.insert(serial, DeliveredObjective { properties, ..Default::default() });
+            Commit::Create(serial, properties, name) => {
+                self.known
+                    .insert(serial, DeliveredObjective { name, properties, ..Default::default() });
             }
             Commit::Properties(serial, revision) => {
                 self.known.get_mut(&serial).unwrap().properties = revision;
@@ -250,9 +279,9 @@ impl ScoreboardObserver {
                 frames.push(encode(&SetDisplayObjective { slot: slot as i32, name: "" })?);
             }
         }
-        for &serial in self.known.keys() {
-            let name = objective_name(serial);
-            frames.push(encode(&SetObjective { name: &name, action: ObjectiveAction::Remove })?);
+        for objective in self.known.values() {
+            let name = &objective.name;
+            frames.push(encode(&SetObjective { name, action: ObjectiveAction::Remove })?);
         }
         *self = Self::default();
         Ok(frames)
