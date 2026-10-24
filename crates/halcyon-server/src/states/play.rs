@@ -354,11 +354,10 @@ pub async fn enter_instance(client: &mut Client) -> Result<(), Error> {
     let crate::instance::Transform { x: sx, y: sy, z: sz, yaw, pitch, .. } = client.pos;
     let scx = (sx.floor() as i32) >> 4;
     let scz = (sz.floor() as i32) >> 4;
-    let dimension = client.dimension.clone();
     client.send(&GameEvent { event: 13, value: 0.0 }).await?;
     client
         .send(&SetDefaultSpawnPosition {
-            dimension_name: &dimension,
+            dimension_name: crate::client::OVERWORLD,
             location: pack_block_pos(sx.floor() as i32, sy.floor() as i32, sz.floor() as i32),
             yaw,
             pitch,

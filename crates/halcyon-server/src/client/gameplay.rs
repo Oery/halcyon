@@ -123,10 +123,9 @@ impl Client {
             self.game_mode = mode;
         }
         if update.respawn {
-            let dimension = self.dimension.clone();
             self.send(&Respawn {
                 dimension_type: 0,
-                dimension_name: &dimension,
+                dimension_name: crate::client::OVERWORLD,
                 hashed_seed: 0,
                 game_mode: self.game_mode.current as i32,
                 previous_game_mode: self.game_mode.previous.map_or(0, |mode| mode as i32 + 1),

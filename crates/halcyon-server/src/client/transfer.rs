@@ -1,7 +1,8 @@
-//! Moving a connection between instances. The client sees a dimension
-//! change: it discards the old level, then loads the new one. An instance on
-//! another shard takes the whole connection there, socket and cipher state
-//! included, so the player's gameplay stays on one core.
+//! Moving a connection between instances. The client sees two dimension
+//! changes that end in the overworld: it discards the old level, then loads
+//! the new one. An instance on another shard takes the whole connection
+//! there, socket and cipher state included, so the player's gameplay stays
+//! on one core.
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -21,6 +22,9 @@ use crate::server::{Account, Server};
 use crate::shard::{Shard, ShardMsg};
 use crate::transport::ClientStream;
 
+/// The level a client briefly enters between instances; nothing is sent in it.
+const LIMBO: &str = "halcyon:limbo";
+
 pub(super) struct Handoff {
     shard: u16,
     destination: Destination,
@@ -37,8 +41,6 @@ pub struct Parked {
     chunks: ChunkTracker,
     account: Option<Account>,
     profile_info: Box<[u8]>,
-    dimension: String,
-    levels: u32,
     entity_id: i32,
     destination: Destination,
     /// Received but not yet handled; the new shard handles these first.
@@ -111,23 +113,24 @@ impl Client {
         self.sneaking = false;
         self.sprinting = false;
         self.game_mode = Default::default();
-        self.levels += 1;
-        self.dimension = format!("halcyon:level_{}", self.levels);
-        let dimension = self.dimension.clone();
-        self.send(&Respawn {
-            dimension_type: 0,
-            dimension_name: &dimension,
-            hashed_seed: 0,
-            game_mode: self.game_mode.current as i32,
-            previous_game_mode: self.game_mode.previous.map_or(0, |mode| mode as i32 + 1),
-            is_debug: false,
-            is_flat: false,
-            death_location: None,
-            portal_cooldown: 0,
-            sea_level: 63,
-            data_kept: 0,
-        })
-        .await?;
+        // The client only rebuilds its level when the name changes, so pass
+        // through a placeholder level and back into the overworld.
+        for dimension_name in [LIMBO, super::OVERWORLD] {
+            self.send(&Respawn {
+                dimension_type: 0,
+                dimension_name,
+                hashed_seed: 0,
+                game_mode: self.game_mode.current as i32,
+                previous_game_mode: self.game_mode.previous.map_or(0, |mode| mode as i32 + 1),
+                is_debug: false,
+                is_flat: false,
+                death_location: None,
+                portal_cooldown: 0,
+                sea_level: 63,
+                data_kept: 0,
+            })
+            .await?;
+        }
         Ok(entity_id)
     }
 
@@ -164,8 +167,6 @@ impl Client {
             chunks: self.chunks,
             account: self.account,
             profile_info: Box::from(&*profile_info),
-            dimension: self.dimension,
-            levels: self.levels,
             entity_id: handoff.entity_id,
             destination: handoff.destination,
             unread,
@@ -199,8 +200,6 @@ impl Client {
             client.chunks = parked.chunks;
             client.account = parked.account;
             client.profile_info = Some(Rc::from(parked.profile_info));
-            client.dimension = parked.dimension;
-            client.levels = parked.levels;
             let target = client.instances.resolve(parked.destination).unwrap_or(home);
             if let Err(error) = client.join_instance(target, parked.entity_id).await {
                 if client.server.diagnostics {

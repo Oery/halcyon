@@ -31,7 +31,8 @@ mod writer;
 
 const INITIAL_BUFFER: usize = 1_024;
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
-/// The level a connection starts in, named by Play Login.
+/// Every level the client is in. Clients treat other names as foreign
+/// dimensions, so instances never rename it.
 pub const OVERWORLD: &str = "minecraft:overworld";
 
 pub struct Client {
@@ -52,10 +53,6 @@ pub struct Client {
     pub shard: Rc<crate::shard::Shard>,
     /// Set once the player has left its instance for one on another shard.
     handoff: Option<transfer::Handoff>,
-    /// The client's current level name; a new name makes it discard the old world.
-    pub dimension: String,
-    /// Levels entered after login, which keeps each new level name unique.
-    levels: u32,
     pub session: Option<Session>,
     /// Keeps a second connection on this account out of every instance.
     account: Option<crate::server::Account>,
@@ -121,8 +118,6 @@ impl Client {
             instances,
             shard,
             handoff: None,
-            dimension: OVERWORLD.to_owned(),
-            levels: 0,
             session: None,
             account: None,
             profile_info: None,
