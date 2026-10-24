@@ -22,6 +22,7 @@ use crate::player::{PendingAttack, PlayerAction, PlayerState, PlayerUpdate};
 
 pub(super) struct Player {
     pub(super) snapshot: PlayerSnapshot,
+    pub(super) cues: Cues,
     pub(super) active: bool,
     pub(super) input: Rc<Input>,
     pub(super) state: PlayerState,
@@ -33,6 +34,15 @@ type ColumnMove = (i32, Option<(i32, i32)>, (i32, i32));
 const SPECTATE_REACH: f64 = 8.0;
 type ActionResponse =
     glommio::channels::oneshot::Receiver<Result<(), crate::player::PlayerActionError>>;
+
+/// What observers saw a player do: the arena ticks of its latest hurt
+/// flash and arm swing. Bots perceive opponents through these, as a client
+/// does through the hurt and swing animations.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Cues {
+    pub hurt_at: Option<u64>,
+    pub swing_at: Option<u64>,
+}
 
 /// Read-only access to the current published lobby state.
 #[derive(Default)]
@@ -65,6 +75,20 @@ pub struct Registry {
     rng: crate::bot::rng::Rng,
     /// Membership and life changes for the game, drained after each step.
     pub(super) events: Vec<crate::game::GameEvent>,
+    /// Every resolved melee hit, for the combat bench.
+    #[cfg(test)]
+    pub(super) hits: Vec<HitRecord>,
+}
+
+/// A resolved melee hit; `dealt` is None when the target ignored it.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(super) struct HitRecord {
+    pub attacker: i32,
+    pub strength: f32,
+    pub crit: bool,
+    pub sprint_knockback: bool,
+    pub dealt: Option<f32>,
 }
 
 /// A validated melee attack, computed from the attacker's and target's authority.
@@ -242,6 +266,7 @@ impl Registry {
                         state
                     },
                     snapshot,
+                    cues: Cues::default(),
                     active: true,
                     input: Rc::new(Input::new(Rc::default())),
                 },
@@ -304,6 +329,14 @@ impl Registry {
 
     pub fn players(&self) -> impl Iterator<Item = &PlayerSnapshot> {
         self.players.values().filter(|player| player.active).map(|player| &player.snapshot)
+    }
+
+    /// The latest hurt and swing a player showed observers.
+    pub fn cues(&self, entity_id: i32) -> Cues {
+        self.players
+            .get(&entity_id)
+            .filter(|player| player.active)
+            .map_or_else(Cues::default, |p| p.cues)
     }
 
     pub fn get(&self, entity_id: i32) -> Option<&PlayerSnapshot> {
@@ -389,6 +422,7 @@ impl Registry {
         self.players.insert(
             entity_id,
             Player {
+                cues: Cues::default(),
                 snapshot: PlayerSnapshot {
                     game_mode: Default::default(),
                     entity_id,
@@ -538,6 +572,7 @@ impl Registry {
             if player.active {
                 if let Some(damage) = update.damage {
                     self.effects.hurt(id, damage);
+                    player.cues.hurt_at = Some(self.arena.tick());
                 }
                 let swings = input.swings.replace(0);
                 if swings & (1 << InteractionHand::Main as u8) != 0 {
@@ -549,6 +584,7 @@ impl Registry {
                         if swings & (1 << hand as u8) != 0 {
                             // Bots have no client; a human already saw its own swing.
                             self.effects.swing(id, hand, Some(id));
+                            player.cues.swing_at = Some(self.arena.tick());
                         }
                     }
                 }
@@ -755,8 +791,16 @@ impl Registry {
             self.attack_sound(Sound::ATTACK_KNOCKBACK, pos);
         }
         let extra = hit.sprint_knockback.then_some(combat::SPRINT_KNOCKBACK);
-        let Some(dealt) = self.melee_damage(hit, hit.target, hit.damage, extra, now, notices)
-        else {
+        let dealt = self.melee_damage(hit, hit.target, hit.damage, extra, now, notices);
+        #[cfg(test)]
+        self.hits.push(HitRecord {
+            attacker: id,
+            strength: hit.strength,
+            crit: hit.crit,
+            sprint_knockback: hit.sprint_knockback,
+            dealt,
+        });
+        let Some(dealt) = dealt else {
             self.attack_sound(Sound::ATTACK_NODAMAGE, pos);
             return;
         };
@@ -891,6 +935,7 @@ impl Registry {
         };
         if victim.active {
             self.effects.hurt(target, damage);
+            victim.cues.hurt_at = Some(self.arena.tick());
         }
         let transform = victim.state.movement.transform();
         let resistance = Armor::worn(&victim.state.equipment).knockback_resistance;

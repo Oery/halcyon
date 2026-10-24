@@ -758,3 +758,17 @@ fn match_runner_gathers_counts_down_runs_the_round_and_returns_everyone() {
     }
     assert!(close, "the instance stops once its players have left");
 }
+
+/// Real owner rules decide bot duels by skill: a level-100 fighter beats a
+/// level-0 one in a `boxes` box.
+#[test]
+fn strong_bot_wins_duels_against_a_beginner() {
+    use super::combat_benchmarks::{Contender, duel};
+    let world = crate::game::boxes::test_world();
+    let layout = crate::game::boxes::Layout::new(&world).unwrap();
+    let (strong, weak) = (Contender::level(100), Contender::level(0));
+    for seed in 0..4 {
+        let result = duel(&world, &layout, [&strong, &weak], seed, seed % 2 == 1, false);
+        assert_eq!(result.winner, Some(0), "seed {seed}");
+    }
+}

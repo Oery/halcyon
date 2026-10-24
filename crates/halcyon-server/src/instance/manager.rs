@@ -55,6 +55,7 @@ impl InstanceManager {
             let id = InstanceId { shard: inner.shard, local: inner.next };
             let ids = inner.server.entity_ids.clone();
             let kind = game.kind();
+            let sparring = game.sparring();
             let instance = match Instance::spawn(id, map, game, ids, inner.server.diagnostics) {
                 Ok(instance) => instance,
                 Err(error) => {
@@ -64,6 +65,9 @@ impl InstanceManager {
             };
             inner.next += 1;
             inner.instances.insert(id.local, instance.clone());
+            if let Some(sparring) = sparring {
+                crate::bot::spar(instance.clone(), sparring);
+            }
             instance
         };
         // Other shards matchmaking at the same moment should find it.

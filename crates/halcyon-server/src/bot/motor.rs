@@ -21,6 +21,11 @@ pub struct Intent {
     /// Executing a committed maneuver: aim error is sampled once at the start
     /// and the camera tracks faster.
     pub precise: bool,
+    /// Smooth pursuit: how fast the aim point is moving across the view, in
+    /// degrees per tick, added to the corrective turn like a human tracking
+    /// a moving target.
+    pub yaw_rate: f32,
+    pub pitch_rate: f32,
 }
 
 impl Intent {
@@ -96,9 +101,13 @@ impl Motor {
         let target = intent.yaw + self.aim_error;
         let delta = wrap_degrees(target - self.yaw);
         let easing = if intent.precise { 0.6 } else { profile.turn_easing() };
-        self.yaw += (delta * easing).clamp(-profile.turn_rate(), profile.turn_rate()) + shake[0];
+        let turn = delta * easing + intent.yaw_rate;
+        self.yaw += turn.clamp(-profile.turn_rate(), profile.turn_rate()) + shake[0];
         self.yaw = wrap_degrees(self.yaw);
-        self.pitch += (intent.pitch - self.pitch) * easing + shake[1];
+        // Wrists move the mouse vertically slower than across.
+        let rise = (intent.pitch - self.pitch) * easing + intent.pitch_rate;
+        let limit = profile.turn_rate() * 0.6;
+        self.pitch += rise.clamp(-limit, limit) + shake[1];
         self.pitch = self.pitch.clamp(-90.0, 90.0);
     }
 }

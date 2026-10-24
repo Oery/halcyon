@@ -34,6 +34,9 @@ pub trait Match {
 
     fn rules(&self) -> MatchRules;
 
+    /// The instance starts, before anyone arrives: build terrain here.
+    fn on_create(&mut self, _ctx: &mut GameCtx<'_>) {}
+
     /// Places a player arriving before the round starts, before its client
     /// learns its entity ID. `waiting` counts players here, it included.
     fn on_arrive(&mut self, ctx: &mut GameCtx<'_>, player: i32, waiting: usize) {
@@ -72,22 +75,28 @@ pub struct MatchRunner<M> {
     stage: Stage,
     /// Someone arrived, so an empty instance is abandoned rather than new.
     arrived: bool,
+    /// Steps since the round started.
+    elapsed: u64,
 }
 
 impl<M: Match> MatchRunner<M> {
     pub fn new(game: M) -> Self {
         let rules = game.rules();
-        Self { game, rules, stage: Stage::Gathering, arrived: false }
+        Self { game, rules, stage: Stage::Gathering, arrived: false, elapsed: 0 }
     }
 
     fn finish(&mut self, ctx: &mut GameCtx<'_>, outcome: Outcome) {
         let names: Vec<String> =
             outcome.winners.iter().filter_map(|&id| ctx.name(id)).map(str::to_owned).collect();
-        match names.as_slice() {
-            [] => ctx.broadcast("Nobody wins."),
-            [name] => ctx.broadcast(&format!("{name} wins!")),
-            names => ctx.broadcast(&format!("{} win!", names.join(", "))),
-        }
+        let result = match names.as_slice() {
+            [] => "Nobody wins.".to_owned(),
+            [name] => format!("{name} wins!"),
+            names => format!("{} win!", names.join(", ")),
+        };
+        ctx.broadcast(&result);
+        // One line per round, so unattended games can be followed from the log.
+        let seconds = self.elapsed / SIMULATION_HZ;
+        println!("instance {} ({}): {result} ({seconds}s)", ctx.instance(), self.game.kind());
         self.stage = Stage::Ending(self.rules.end_seconds * SIMULATION_HZ);
     }
 }
@@ -107,6 +116,10 @@ impl<M: Match> Game for MatchRunner<M> {
             Stage::Running => Phase::Running,
             Stage::Ending(_) | Stage::Closing => Phase::Ending,
         }
+    }
+
+    fn on_create(&mut self, ctx: &mut GameCtx<'_>) {
+        self.game.on_create(ctx);
     }
 
     fn on_join(&mut self, ctx: &mut GameCtx<'_>, player: i32) {
@@ -159,7 +172,10 @@ impl<M: Match> Game for MatchRunner<M> {
                     self.finish(ctx, outcome);
                     self.stage
                 }
-                None => Stage::Running,
+                None => {
+                    self.elapsed += 1;
+                    Stage::Running
+                }
             },
             Stage::Ending(0) => {
                 let players: Vec<i32> = ctx.players().collect();

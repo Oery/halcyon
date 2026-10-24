@@ -20,7 +20,7 @@ mod session;
 pub use game::{GameCtx, MAX_MESSAGES};
 pub use manager::{InstanceManager, Route};
 use owner::{Driver, run_owner};
-pub use registry::Registry;
+pub use registry::{Cues, Registry};
 pub use session::Session;
 use session::{Input, Signal};
 
@@ -242,10 +242,6 @@ impl Instance {
         // Build the shared openings catalog before the first use reaches a tick.
         halcyon_world::opening(0);
         crate::interaction::initialize();
-        let registry = Rc::new(RefCell::new(state));
-        let (sender, receiver) = local_channel::new_bounded(REGISTRATION_CAPACITY);
-        let owner = Rc::new(Signal::default());
-        let metrics = Rc::new(Metrics::default());
         let status = Rc::new(Status {
             id,
             kind: game.kind(),
@@ -253,12 +249,19 @@ impl Instance {
             phase: Cell::new(game.phase()),
             closed: Cell::new(false),
         });
+        let mut driver = Driver::new(game, status.clone(), map.clone());
+        // Game terrain exists before anyone can be admitted.
+        driver.create(&mut state);
+        let registry = Rc::new(RefCell::new(state));
+        let (sender, receiver) = local_channel::new_bounded(REGISTRATION_CAPACITY);
+        let owner = Rc::new(Signal::default());
+        let metrics = Rc::new(Metrics::default());
         glommio::spawn_local(run_owner(
             registry.clone(),
             receiver,
             owner.clone(),
             metrics.clone(),
-            Driver::new(game, status.clone(), map.clone()),
+            driver,
             diagnostics,
         ))
         .detach();
@@ -443,6 +446,10 @@ impl Instance {
 #[cfg(test)]
 #[path = "../bench/gameplay/mod.rs"]
 mod gameplay_benchmarks;
+
+#[cfg(test)]
+#[path = "../bench/bot_combat.rs"]
+mod combat_benchmarks;
 
 #[cfg(test)]
 #[path = "../tests/tests_instance.rs"]
