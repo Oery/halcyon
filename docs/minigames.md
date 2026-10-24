@@ -113,18 +113,131 @@ directly and manages `phase()`, `send_to` and `close()` itself.
 | `set_rules(player, rules)` | Immediate `PlayerRules`: protection, fall/void damage, PvP, block editing, respawn point. |
 | `reset(player)` | Queued full heal and fresh life at the rules' respawn point. |
 | `message(player, text)`, `broadcast(text)` | System chat, at most 16 lines buffered per player. |
+| `scoreboards()` | Reliable shared and personal sidebar, below-name and Tab score displays; see below. |
 | `send_to(player, destination)` | Moves the connection to `Hub`, `Matchmake(kind)` or `Instance(id)`, on any shard. |
 | `close()` | Stops the instance once it is empty. |
 
 Queued calls (`reset`, `teleport` after spawning) share the player's 32-entry
 action queue and apply on the next step.
 
+## Scoreboards
+
+`ctx.scoreboards()` edits instance-owned scoreboard state immediately. The
+connection publishes changes reliably within its existing writer budgets.
+Games keep the returned `ObjectiveId` handles, update values when they change,
+and explicitly remove objectives they no longer need. IDs belong to one
+instance and become invalid after removal.
+
+An objective has a title, integer or hearts rendering, an optional number
+format and scores keyed by players or custom entries. Games supply all values;
+there are no automatic health, kill-count or other vanilla criteria.
+
+```rust
+use crate::scoreboard::{
+    DisplaySlot, ObjectiveSpec, Score, ScoreHolder, ScoreboardError,
+};
+
+fn show_points(ctx: &mut GameCtx<'_>) -> Result<(), ScoreboardError> {
+    let roster: Vec<_> = ctx.players().collect();
+    let mut boards = ctx.scoreboards();
+    let points = boards.create_objective(ObjectiveSpec {
+        title: "Points".into(),
+        ..Default::default()
+    })?;
+    for player in roster {
+        boards.set_score(points, ScoreHolder::Player(player), Score {
+            value: 10,
+            ..Default::default()
+        })?;
+    }
+    boards.display(DisplaySlot::BelowName, Some(points))?;
+    boards.display(DisplaySlot::PlayerList, Some(points))?;
+    // Store `points` in the game to update it later.
+    Ok(())
+}
+```
+
+`BelowName` is vanilla's score line **below** a player's name. `PlayerList`
+adds scores alongside existing Tab roster entries; it does not add fake
+players. Hearts rendering follows the client's behavior, chiefly in Tab.
+
+For a text sidebar, create an objective and replace its lines with `sidebar`:
+
+```rust
+use crate::scoreboard::{DisplayOverride, DisplaySlot, ObjectiveSpec, Text};
+
+let mut boards = ctx.scoreboards();
+let personal = boards.create_personal_objective(player, ObjectiveSpec::default())?;
+boards.sidebar(personal, "Free for all".into(), &[
+    Text::from("Remaining: 4"),
+    Text::from(""),
+    Text::from("Status: Alive"),
+])?;
+boards.display_for(player, DisplaySlot::Sidebar, DisplayOverride::Objective(personal))?;
+```
+
+Initialize the sidebar once, then update individual lines as values change:
+
+```rust
+// Update an existing line by its zero-based position. Other lines and the
+// objective title are untouched; this produces one changed score entry.
+ctx.scoreboards().set_sidebar_line(
+    personal, 0, format!("Time: {remaining_seconds}s").into(),
+)?;
+```
+
+A seconds timer normally calls this only when its displayed second changes.
+Identical text returns without encoding or sending a packet. Use `set_score`
+for the equivalent incremental update to a player or custom score entry.
+
+The initialization/replacement helper `sidebar` replaces all scores in that objective, preserves line order, hides
+ordering numbers, and supports repeated text and blank lines. It accepts at
+most 15 lines and does not select a display slot itself. Use an instance-owned
+objective with `display(Sidebar, Some(id))` for a shared sidebar.
+
+Each viewer inherits the instance's three shared slots. `display_for` can
+override each slot independently with `Objective(id)`, `Hidden`, or `Inherit`.
+Shared objectives can also be selected for specific viewers, for example to
+show a team's statistics only to its members. Personal objectives can be
+selected only by their owner. Only selected objectives are sent to a viewer.
+
+`Text` owns literal `Span`s with `Style`: a vanilla color or `#rrggbb`, bold,
+italic, underline, strikethrough and obfuscation. Styles are explicit per span.
+`Score.display` supplies a custom label for a sidebar entry; use a stable
+`ScoreHolder::Entry(key)` independent of that label. Use player holders for
+below-name and Tab scores. `NumberFormat` supports blank numbers, styled
+integers and fixed text, on an objective or individual score. An absent score
+format inherits the objective's format.
+
+`update_objective` changes title/rendering/number format in place.
+`reset_score` removes one score; `remove_objective` removes its scores and
+slot assignments. Removing a personally selected objective hides that slot;
+call `Inherit` explicitly to resume the shared display. `display(slot, None)`
+clears a shared slot while keeping personal overrides.
+
+`set_sidebar_line` requires an existing line at position 0–14 and does not
+reorder or rebuild the remaining lines. Use `sidebar` to replace the layout;
+even that operation only publishes entries whose content actually changed.
+
+Each instance allows 512 objectives and 16,384 total score entries. Custom
+entry keys contain 1–64 bytes; each text component allows up to 64 spans and
+4 KiB of encoded NBT. Invalid operations return `ScoreboardError` and retain
+the previous state, including an invalid sidebar replacement. Identical
+updates generate no new work. Slow writers coalesce to current state rather
+than accumulating score events.
+
+Personal objectives, viewer overrides and scores keyed to a departing player
+are cleaned up automatically. Ordinary respawn retains displays; an instance
+transfer clears them before the destination initializes its own displays.
+Teams, name prefixes/suffixes, Tab display names/header/footer, scoreboard
+commands and persistence are not provided by this API.
+
 ## Built-in games
 
 | Kind | Behavior |
 | --- | --- |
 | `hub` | Protected lobby (PvP with `HALCYON_PVP=1`). Holds `HALCYON_HUB_CAPACITY` players (default 100, bots included); players fill the fullest hub with room across shards. Each shard keeps one permanent hub; overflow hubs stop after 60 s empty. Map: `HALCYON_HUB_MAP`. |
-| `ffa` | `Match` for 2–8 players: 5 s countdown, PvP until one player is left, back to the hub after 5 s. Map: `HALCYON_FFA_MAP`. |
+| `ffa` | `Match` for 2–8 players: 5 s countdown, PvP until one player is left, back to the hub after 5 s. Personal sidebar shows waiting status, then remaining players and alive/eliminated status. Map: `HALCYON_FFA_MAP`. |
 
 Both default to the `Parkour Spiral` map.
 
@@ -172,7 +285,7 @@ Design constraints this places on today's code:
 | Game mode changes | Not started in `GameCtx` — e.g. spectator for eliminated players. |
 | Terrain edits from games | Not started in `GameCtx` — `set_block`, signs, jukeboxes and openings exist on `Instance` only. |
 | Titles, action bar and sounds | Not started |
-| Scoreboards and sidebars | Not started |
+| Scoreboards and sidebars | Done — shared and personal sidebar, below-name and Tab scores; formatted text, number formats and ordered text sidebars. Game-supplied values; no vanilla criteria or scoreboard commands. |
 | Boss bars | Not started |
 | Teams | Not started — membership, nametag colors, friendly fire. |
 | Objectives and regions | Not started — capture zones, checkpoints, region enter/leave events. |

@@ -2,6 +2,10 @@
 
 use super::*;
 use crate::encryption::ciphers;
+use crate::scoreboard::{
+    DisplayOverride, DisplaySlot, ObjectiveId, ObjectiveSpec, Score, ScoreHolder,
+    ScoreboardObserver, Text,
+};
 use crate::transport::ClientStream;
 use futures_lite::future::block_on;
 use futures_lite::{AsyncWrite, AsyncWriteExt};
@@ -43,6 +47,7 @@ impl AsyncWrite for CountingWriter {
 
 struct Receiver {
     observer: Observer,
+    scoreboard: ScoreboardObserver,
     terrain: HashSet<Column>,
     stream: ClientStream<CountingWriter>,
 }
@@ -54,14 +59,32 @@ impl Receiver {
         stream.enable_encryption(enc, dec).unwrap();
         let center = if sparse { id * 4 } else { 0 };
         let terrain = (-8..=8).flat_map(|dx| (-8..=8).map(move |dz| (center + dx, dz))).collect();
-        Self { observer: Observer::default(), terrain, stream }
+        Self {
+            observer: Observer::default(),
+            scoreboard: ScoreboardObserver::default(),
+            terrain,
+            stream,
+        }
     }
 
     /// One production-sized writer pass. A packet group remains indivisible.
-    fn drain_slice(&mut self) {
+    fn drain_slice(&mut self, registry: &Registry, id: i32) {
         block_on(async {
             let mut frames = 0;
             let mut bytes = 0;
+            // Same shared limits as production, with scoreboard work capped at
+            // eight frames; this component benchmark has no world/effect frames.
+            for _ in 0..8 {
+                let Some(frame) = self.scoreboard.next_frame(&registry.scoreboards, id).unwrap()
+                else {
+                    break;
+                };
+                frames += 1;
+                bytes += frame.len();
+                self.stream.write_all(&frame).await.unwrap();
+                self.stream.flush().await.unwrap();
+                self.scoreboard.sent();
+            }
             while frames < WRITE_SLICE_FRAMES && bytes < WRITE_SLICE_BYTES {
                 let Some(frame) = self.observer.next_frame().unwrap() else {
                     break;
@@ -82,6 +105,73 @@ struct Scenario {
     sparse: bool,
     input_period: usize,
     visibility_churn: bool,
+    scoreboards: bool,
+}
+
+fn scoreboard_setup(registry: &mut Registry) -> (ObjectiveId, Vec<ObjectiveId>) {
+    registry.scoreboards.bind(crate::instance::InstanceId { shard: 0, local: 1 });
+    let shared = registry
+        .scoreboards
+        .create(None, ObjectiveSpec { title: "Points".into(), ..Default::default() })
+        .unwrap();
+    registry.scoreboards.display(DisplaySlot::BelowName, Some(shared)).unwrap();
+    registry.scoreboards.display(DisplaySlot::PlayerList, Some(shared)).unwrap();
+    let personal: Vec<_> = (0..PLAYERS)
+        .map(|id| {
+            let objective =
+                registry.scoreboards.create(Some(id), ObjectiveSpec::default()).unwrap();
+            registry
+                .scoreboards
+                .display_for(id, DisplaySlot::Sidebar, DisplayOverride::Objective(objective))
+                .unwrap();
+            objective
+        })
+        .collect();
+    scoreboard_update(registry, shared, &personal, 0);
+    (shared, personal)
+}
+
+fn scoreboard_update(
+    registry: &mut Registry,
+    shared: ObjectiveId,
+    personal: &[ObjectiveId],
+    value: i32,
+) {
+    for id in 0..PLAYERS {
+        let name = registry.get(id).unwrap().profile.username.clone();
+        registry
+            .scoreboards
+            .set_score(
+                shared,
+                ScoreHolder::Player(id),
+                name.into(),
+                Score { value: value + id, ..Default::default() },
+            )
+            .unwrap();
+        if value == 0 {
+            registry
+                .scoreboards
+                .sidebar(
+                    personal[id as usize],
+                    "Minigame".into(),
+                    &[
+                        Text::from(format!("Player: {id}")),
+                        Text::from(""),
+                        Text::from(format!("Points: {}", value + id)),
+                    ],
+                )
+                .unwrap();
+        } else {
+            registry
+                .scoreboards
+                .set_sidebar_line(
+                    personal[id as usize],
+                    2,
+                    Text::from(format!("Points: {}", value + id)),
+                )
+                .unwrap();
+        }
+    }
 }
 
 fn measure(scenario: Scenario) -> Value {
@@ -89,6 +179,7 @@ fn measure(scenario: Scenario) -> Value {
         .map(|id| tests::player(id, if scenario.sparse { id as f64 * 64.0 + 1.0 } else { 1.0 }, 1))
         .collect();
     let mut registry = Registry::from_snapshots(players.clone(), 1);
+    let scoreboard_ids = scenario.scoreboards.then(|| scoreboard_setup(&mut registry));
     let mut receivers: Vec<_> = (0..PLAYERS).map(|id| Receiver::new(id, scenario.sparse)).collect();
 
     // Roster and entity admission use the same pacing and drain budgets as runtime.
@@ -98,7 +189,7 @@ fn measure(scenario: Scenario) -> Value {
         registry.publish_transforms([]);
         for (id, receiver) in receivers.iter_mut().enumerate() {
             receiver.observer.reconcile(&registry, id as i32, &receiver.terrain).unwrap();
-            receiver.drain_slice();
+            receiver.drain_slice(&registry, id as i32);
         }
         if receivers.iter().enumerate().all(|(id, receiver)| {
             let expected = registry.candidates(&receiver.terrain).len() - 1;
@@ -106,6 +197,7 @@ fn measure(scenario: Scenario) -> Value {
                 && receiver.observer.visible_count() == expected
                 && receiver.observer.queued_frames() == 0
                 && receiver.observer.latest.is_empty()
+                && !receiver.scoreboard.pending_work()
                 && registry.get(id as i32).is_some()
         }) {
             break;
@@ -117,6 +209,7 @@ fn measure(scenario: Scenario) -> Value {
                 && receiver.observer.visible_count()
                     == registry.candidates(&receiver.terrain).len() - 1
                 && receiver.observer.queued_frames() == 0
+                && !receiver.scoreboard.pending_work()
         }),
         "paced setup did not complete"
     );
@@ -127,11 +220,23 @@ fn measure(scenario: Scenario) -> Value {
     let mut queue_peak_bytes = 0;
     let mut queue_peak_frames = 0;
     let empty = HashSet::new();
+    let mut scoreboard_lag = [0usize; PLAYERS as usize];
+    let mut max_scoreboard_lag_steps = 0;
     for tick in 0..WARMUP + SAMPLES {
         if tick == WARMUP {
             sent_before = receivers.iter().map(|receiver| receiver.stream.inner.bytes).sum::<u64>();
         }
         let start = Instant::now();
+        if tick % WORKLOAD_HZ as usize == 0
+            && let Some((shared, personal)) = &scoreboard_ids
+        {
+            scoreboard_update(
+                &mut registry,
+                *shared,
+                personal,
+                (tick / WORKLOAD_HZ as usize) as i32,
+            );
+        }
         if scenario.input_period != 0 && tick % scenario.input_period == 0 {
             let update = tick / scenario.input_period;
             registry.publish_transforms(players.iter().map(|player| {
@@ -153,7 +258,15 @@ fn measure(scenario: Scenario) -> Value {
                 queue_peak_bytes = queue_peak_bytes.max(receiver.observer.queued_bytes());
                 queue_peak_frames = queue_peak_frames.max(receiver.observer.queued_frames());
             }
-            receiver.drain_slice();
+            receiver.drain_slice(&registry, id as i32);
+            if tick >= WARMUP {
+                if receiver.scoreboard.pending_work() {
+                    scoreboard_lag[id] += 1;
+                } else {
+                    scoreboard_lag[id] = 0;
+                }
+                max_scoreboard_lag_steps = max_scoreboard_lag_steps.max(scoreboard_lag[id]);
+            }
         }
         if tick >= WARMUP {
             samples[tick - WARMUP] = start.elapsed().as_nanos() as u64;
@@ -195,6 +308,11 @@ fn measure(scenario: Scenario) -> Value {
         "final_pending_motions": pending_motions, "final_max_revision_lag": max_revision_lag,
         "registry_payload_capacity_bytes": registry.capacity_payload_bytes(),
         "observer_payload_capacity_bytes": observer_payload,
+        "scoreboards": scenario.scoreboards, "scoreboard_update_hz": if scenario.scoreboards { 1 } else { 0 },
+        "max_scoreboard_pending_steps": max_scoreboard_lag_steps,
+        "final_pending_scoreboards": receivers.iter().filter(|receiver| receiver.scoreboard.pending_work()).count(),
+        "scoreboard_retained_payload_bytes": registry.scoreboards.retained_payload_bytes(),
+        "scoreboard_observer_retained_payload_bytes": receivers.iter().map(|receiver| receiver.scoreboard.retained_payload_bytes()).sum::<usize>(),
     })
 }
 
@@ -205,30 +323,47 @@ fn measure(scenario: Scenario) -> Value {
 fn target_world_benchmark() {
     assert!(!cfg!(debug_assertions), "run this benchmark with cargo test --release");
     let cases = [
-        Scenario { name: "idle", sparse: false, input_period: 0, visibility_churn: false },
+        Scenario {
+            name: "idle",
+            sparse: false,
+            input_period: 0,
+            visibility_churn: false,
+            scoreboards: false,
+        },
         Scenario {
             name: "spread_20hz_input",
+            scoreboards: false,
             sparse: true,
             input_period: 6,
             visibility_churn: false,
         },
         Scenario {
             name: "crowded_20hz_input",
+            scoreboards: false,
             sparse: false,
             input_period: 6,
             visibility_churn: false,
         },
         Scenario {
             name: "crowded_120hz_input",
+            scoreboards: false,
             sparse: false,
             input_period: 1,
             visibility_churn: false,
         },
         Scenario {
             name: "visibility_churn",
+            scoreboards: false,
             sparse: false,
             input_period: 6,
             visibility_churn: true,
+        },
+        Scenario {
+            name: "scoreboards_shared_and_personal_1hz",
+            sparse: false,
+            input_period: 6,
+            visibility_churn: false,
+            scoreboards: true,
         },
     ]
     .map(measure);

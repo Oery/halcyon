@@ -94,6 +94,9 @@ impl Client {
         let entity_id = self.entity_id()?;
         // The old owner removes the player on its next pass.
         self.session = None;
+        for frame in self.scoreboard.clear()? {
+            self.send_encoded(&frame).await?;
+        }
         let roster = self.observer.roster_uuids();
         if !roster.is_empty() {
             self.send(&PlayerInfoRemove { uuids: &roster }).await?;

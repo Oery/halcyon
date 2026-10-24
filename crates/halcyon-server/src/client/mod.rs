@@ -63,6 +63,7 @@ pub struct Client {
     observer: Observer,
     world_observer: crate::world_sync::WorldObserver,
     effects: crate::effects::EffectCursor,
+    scoreboard: crate::scoreboard::ScoreboardObserver,
     pub pending_teleport: Option<i32>,
     pub teleport_deadline: Option<Instant>,
     selected_slot: HotbarSlot,
@@ -128,6 +129,7 @@ impl Client {
             observer: Observer::default(),
             world_observer: crate::world_sync::WorldObserver::default(),
             effects: crate::effects::EffectCursor::default(),
+            scoreboard: crate::scoreboard::ScoreboardObserver::default(),
             pending_teleport: None,
             teleport_deadline: None,
             selected_slot: HotbarSlot::FIRST,
@@ -263,6 +265,7 @@ impl Client {
                 wake = wake.min(deadline);
             }
             if self.observer.has_pending()
+                || self.scoreboard.pending_work()
                 || self.world_observer.pending_work()
                 || self.instance.with_registry(|registry| self.effects.pending(&registry.effects))
             {

@@ -40,10 +40,11 @@ impl Nbt<'_> {
             Nbt::Short(_) => 2,
             Nbt::Int(_) | Nbt::Float(_) => 4,
             Nbt::Long(_) | Nbt::Double(_) => 8,
-            Nbt::Str(s) => 2 + s.len(),
+            Nbt::Str(s) => 2 + string_len(s),
             Nbt::List(items) => 1 + 4 + items.iter().map(Nbt::payload_len).sum::<usize>(),
             Nbt::Compound(entries) => {
-                entries.iter().map(|(k, v)| 1 + 2 + k.len() + v.payload_len()).sum::<usize>() + 1
+                entries.iter().map(|(k, v)| 1 + 2 + string_len(k) + v.payload_len()).sum::<usize>()
+                    + 1
             }
         }
     }
@@ -88,10 +89,42 @@ impl Nbt<'_> {
 }
 
 fn write_string(w: &mut Vec<u8>, value: &str) -> crate::encode::Result {
-    let len = u16::try_from(value.len()).map_err(|_| crate::error::EncodeError::InvalidLength)?;
+    let len =
+        u16::try_from(string_len(value)).map_err(|_| crate::error::EncodeError::InvalidLength)?;
     w.extend_from_slice(&len.to_be_bytes());
-    w.extend_from_slice(value.as_bytes());
+    // NBT uses DataOutput.writeUTF, unlike protocol strings: NUL takes two
+    // bytes and supplementary characters are encoded as UTF-16 surrogate pairs.
+    if value.is_ascii() && !value.as_bytes().contains(&0) {
+        w.extend_from_slice(value.as_bytes());
+    } else {
+        for unit in value.encode_utf16() {
+            match unit {
+                1..=0x7F => w.push(unit as u8),
+                0..=0x7FF => {
+                    w.push(0xC0 | (unit >> 6) as u8);
+                    w.push(0x80 | (unit & 0x3F) as u8);
+                }
+                _ => {
+                    w.push(0xE0 | (unit >> 12) as u8);
+                    w.push(0x80 | ((unit >> 6) & 0x3F) as u8);
+                    w.push(0x80 | (unit & 0x3F) as u8);
+                }
+            }
+        }
+    }
     Ok(())
+}
+
+fn string_len(value: &str) -> usize {
+    value.len()
+        + value
+            .chars()
+            .map(|c| match c {
+                '\0' => 1,
+                '\u{10000}'.. => 2,
+                _ => 0,
+            })
+            .sum::<usize>()
 }
 
 impl PacketWriter<'_> for Nbt<'_> {

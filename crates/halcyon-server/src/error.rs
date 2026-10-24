@@ -32,6 +32,9 @@ pub enum Error {
     #[error("packet encode failed: {0}")]
     Encode(#[from] EncodeError),
 
+    #[error("scoreboard delivery failed: {0}")]
+    Scoreboard(#[from] crate::scoreboard::ScoreboardError),
+
     #[error("world load failed: {0}")]
     World(#[from] halcyon_world::LoadError),
 

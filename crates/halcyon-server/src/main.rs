@@ -24,6 +24,7 @@ mod map;
 mod movement;
 mod packet;
 mod player;
+mod scoreboard;
 mod server;
 mod shard;
 mod simulation;

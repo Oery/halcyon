@@ -26,6 +26,8 @@ mod commands;
 pub use commands::*;
 mod blocks;
 pub use blocks::*;
+mod scoreboard;
+pub use scoreboard::*;
 
 // TODO: how to handle borrowing here
 #[packet(Status, 0x00, Client)]

@@ -7,6 +7,10 @@ use super::{InstanceId, Registry, Transform};
 use crate::game::Destination;
 use crate::lifecycle::PlayerRules;
 use crate::player::{PlayerAction, PlayerUpdate};
+use crate::scoreboard::{
+    DisplayOverride, DisplaySlot, ObjectiveId, ObjectiveSpec, Score, ScoreHolder, ScoreboardError,
+    Text,
+};
 
 /// Chat lines a single update holds; older lines are dropped first.
 pub const MAX_MESSAGES: usize = 16;
@@ -20,6 +24,11 @@ pub struct GameCtx<'r> {
 }
 
 impl GameCtx<'_> {
+    /// Reliable displays, published through the connection's bounded writer.
+    pub fn scoreboards(&mut self) -> Scoreboards<'_> {
+        self.registry.scoreboards.bind(self.id);
+        Scoreboards { registry: self.registry }
+    }
     // Game APIs are intentionally available before a concrete game consumes them.
     #[allow(dead_code)]
     pub fn instance(&self) -> InstanceId {
@@ -136,5 +145,118 @@ impl GameCtx<'_> {
             entry.input.update.borrow_mut().merge(update);
             self.notices.push(entry.input.clone());
         }
+    }
+}
+
+/// Owner-side scoreboard operations. IDs belong to this instance and never
+/// become valid again after removal. New viewers inherit the shared slots.
+pub struct Scoreboards<'r> {
+    registry: &'r mut Registry,
+}
+
+// These APIs intentionally precede consumers in future minigames.
+#[allow(dead_code)]
+impl Scoreboards<'_> {
+    fn player(&self, player: i32) -> Result<&str, ScoreboardError> {
+        let entry = self.registry.players.get(&player).ok_or(ScoreboardError::Player)?;
+        if entry.input.closed.get() {
+            return Err(ScoreboardError::Player);
+        }
+        Ok(&entry.snapshot.profile.username)
+    }
+
+    pub fn create_objective(
+        &mut self,
+        spec: ObjectiveSpec,
+    ) -> Result<ObjectiveId, ScoreboardError> {
+        self.registry.scoreboards.create(None, spec)
+    }
+
+    /// Only this viewer may display the objective; it is removed on departure.
+    pub fn create_personal_objective(
+        &mut self,
+        viewer: i32,
+        spec: ObjectiveSpec,
+    ) -> Result<ObjectiveId, ScoreboardError> {
+        self.player(viewer)?;
+        self.registry.scoreboards.create(Some(viewer), spec)
+    }
+
+    pub fn update_objective(
+        &mut self,
+        id: ObjectiveId,
+        spec: ObjectiveSpec,
+    ) -> Result<(), ScoreboardError> {
+        self.registry.scoreboards.update(id, spec)
+    }
+
+    pub fn remove_objective(&mut self, id: ObjectiveId) -> Result<(), ScoreboardError> {
+        self.registry.scoreboards.remove(id)
+    }
+
+    /// None hides the shared slot. Personal overrides continue to apply.
+    pub fn display(
+        &mut self,
+        slot: DisplaySlot,
+        objective: Option<ObjectiveId>,
+    ) -> Result<(), ScoreboardError> {
+        self.registry.scoreboards.display(slot, objective)
+    }
+
+    pub fn display_for(
+        &mut self,
+        viewer: i32,
+        slot: DisplaySlot,
+        value: DisplayOverride,
+    ) -> Result<(), ScoreboardError> {
+        self.player(viewer)?;
+        self.registry.scoreboards.display_for(viewer, slot, value)
+    }
+
+    pub fn set_score(
+        &mut self,
+        objective: ObjectiveId,
+        holder: ScoreHolder,
+        score: Score,
+    ) -> Result<(), ScoreboardError> {
+        let name: Rc<str> = match &holder {
+            ScoreHolder::Player(player) => Rc::from(self.player(*player)?),
+            ScoreHolder::Entry(key) => {
+                if key.is_empty() || key.len() > 64 {
+                    return Err(ScoreboardError::InvalidKey);
+                }
+                Rc::from(format!("$halcyon:{key}"))
+            }
+        };
+        self.registry.scoreboards.set_score(objective, holder, name, score)
+    }
+
+    pub fn reset_score(
+        &mut self,
+        objective: ObjectiveId,
+        holder: &ScoreHolder,
+    ) -> Result<(), ScoreboardError> {
+        self.registry.scoreboards.reset_score(objective, holder)
+    }
+
+    /// Replaces all scores in this objective with an ordered text sidebar.
+    /// It does not change which viewers display the objective.
+    pub fn sidebar(
+        &mut self,
+        objective: ObjectiveId,
+        title: Text,
+        lines: &[Text],
+    ) -> Result<(), ScoreboardError> {
+        self.registry.scoreboards.sidebar(objective, title, lines)
+    }
+
+    /// Updates one existing line (zero-based), without rebuilding other lines.
+    pub fn set_sidebar_line(
+        &mut self,
+        objective: ObjectiveId,
+        line: usize,
+        text: Text,
+    ) -> Result<(), ScoreboardError> {
+        self.registry.scoreboards.set_sidebar_line(objective, line, text)
     }
 }

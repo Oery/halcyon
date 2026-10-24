@@ -39,6 +39,7 @@ type ActionResponse =
 pub struct Registry {
     pub arena: crate::arena::Arena,
     pub effects: crate::effects::EffectLog,
+    pub scoreboards: crate::scoreboard::Board,
     pub(super) world_actions: std::collections::VecDeque<WorldAction>,
     pub(super) players: HashMap<i32, Player>,
     uuids: HashSet<Uuid>,
@@ -425,6 +426,7 @@ impl Registry {
             return false;
         };
         self.events.push(GameEvent::Left(entity_id));
+        self.scoreboards.player_left(entity_id);
         self.arena.cracks.remove(&entity_id);
         self.uuids.remove(&player.snapshot.profile.uuid);
         if let Ok(index) = self.members.binary_search(&entity_id) {

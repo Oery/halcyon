@@ -66,6 +66,18 @@ impl Client {
         Ok(Some((frame.len(), count)))
     }
 
+    async fn send_scoreboard_frame(&mut self) -> Result<Option<usize>, Error> {
+        let Some(session) = &self.session else { return Ok(None) };
+        let id = session.entity_id();
+        let frame = self
+            .instance
+            .with_registry(|registry| self.scoreboard.next_frame(&registry.scoreboards, id))?;
+        let Some(frame) = frame else { return Ok(None) };
+        self.send_encoded(&frame).await?;
+        self.scoreboard.sent();
+        Ok(Some(frame.len()))
+    }
+
     /// The cached base chunk must be followed by its current edits before any
     /// entity admission. A resent center chunk resets the delivered baseline too.
     pub async fn send_terrain_overlay(&mut self, column: (i32, i32)) -> Result<(), Error> {
@@ -138,7 +150,20 @@ impl Client {
             self.world_observer.reconcile(&registry.arena, self.chunks.terrain())
         });
         let (mut bytes, mut frames) = self.send_effects().await?;
+        let mut scoreboard_frames = 0;
+        let mut scoreboard_done = false;
         while frames < WRITE_SLICE_FRAMES && bytes < WRITE_SLICE_BYTES {
+            // Alternate scoreboard and player/world work. Never give score
+            // churn more than eight packets of this shared writer slice.
+            if !scoreboard_done && scoreboard_frames < 8 && frames % 2 == 0 {
+                if let Some(size) = self.send_scoreboard_frame().await? {
+                    bytes += size;
+                    frames += 1;
+                    scoreboard_frames += 1;
+                    continue;
+                }
+                scoreboard_done = true;
+            }
             // Share the connection budget fairly with world changes. World
             // frames contain at most sixteen patches or two entity packets.
             if frames < WRITE_SLICE_FRAMES / 2
@@ -159,6 +184,15 @@ impl Client {
                     frames += count;
                     continue;
                 }
+                if !scoreboard_done
+                    && scoreboard_frames < 8
+                    && let Some(size) = self.send_scoreboard_frame().await?
+                {
+                    bytes += size;
+                    frames += 1;
+                    scoreboard_frames += 1;
+                    continue;
+                }
                 break;
             };
             bytes += size;
@@ -168,7 +202,10 @@ impl Client {
             }
         }
         self.report_observer();
-        if frames >= WRITE_SLICE_FRAMES || bytes >= WRITE_SLICE_BYTES {
+        if frames >= WRITE_SLICE_FRAMES
+            || bytes >= WRITE_SLICE_BYTES
+            || self.scoreboard.pending_work()
+        {
             glommio::executor().yield_now().await;
         }
         Ok(())

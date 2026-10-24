@@ -292,7 +292,7 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | Direct and team messages | Not started |
 | Rich text | Not started |
 | Player-list entries | Done |
-| Scoreboards | Not started |
+| Scoreboards | Partial — game APIs provide shared and personal sidebars, below-name and Tab scores, formatted titles/labels and custom number formats. FFA has a personal status sidebar. No teams, Tab header/footer, scoreboard commands or persistence. |
 | Teams | Not started |
 | Boss bars | Not started |
 | Titles and action bar | Not started |
@@ -331,7 +331,7 @@ Update this tracker when feature support changes. Packet definitions, static cli
 | World and entity manipulation | Partial — player teleport, health, inventory, terrain changes, static sign text, manual opening control and jukebox playback through Rust game APIs. |
 | Data inspection and modification | Not started |
 | Command storage | Excluded |
-| Scoreboard logic and triggers | Not started |
+| Scoreboard logic and triggers | Partial — games explicitly set objective scores and display assignments; no automatic vanilla criteria, operations, triggers or command interface. |
 | Functions | Excluded |
 | Function scheduling | Not started |
 | Command blocks | Excluded |
